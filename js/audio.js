@@ -3,19 +3,19 @@ const AudioModule = {
     audioBridge: null,
     roomId: null,
     channelId: null,
+    displayName: 'User',
     localStream: null,
     remoteAudio: null,
     isMuted: false,
     participantsUpdateInterval: null,
     offerCreated: false,
-    jsepProcessed: false
+    jsepProcessed: false,
 
-    // Инициализация Janus Gateway
-    async init(roomId, channelId = null) {
-        console.log('🎯 Audio.init вызван с roomId:', roomId, typeof roomId, 'channelId:', channelId);
+    async init(roomId, channelId = null, displayName = 'User') {
+        console.log('🎯 Audio.init:', roomId, channelId, displayName);
         this.roomId = roomId;
-        this.channelId = channelId; // Сохраняем channelId для пересоздания комнаты
-        console.log('✅ roomId сохранен:', this.roomId, 'channelId:', this.channelId);
+        this.channelId = channelId;
+        this.displayName = displayName;
         
         // Проверка, загружена ли библиотека adapter (WebRTC)
         // Adapter может быть доступен как window.adapter
@@ -280,7 +280,7 @@ const AudioModule = {
         const joinRequest = {
             request: 'join',
             room: this.roomId,
-            display: 'User'
+            display: this.displayName
         };
         console.log('📤 Отправляем join запрос:', joinRequest);
         try {

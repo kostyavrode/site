@@ -359,6 +359,7 @@
     <script>
         let currentGroupId = null;
         let currentUserId = null;
+        let currentNickName = 'User';
         let currentAudioChannel = null;
         
         // Функция для получения Audio модуля
@@ -385,6 +386,7 @@
             const user = await Auth.getCurrentUser();
             if (user) {
                 currentUserId = user.id;
+                currentNickName = user.nickName || user.email || 'User';
                 const authNav = document.getElementById('auth-nav');
                 authNav.innerHTML = `
                     <span style="color: var(--text-secondary); margin-right: var(--spacing-md);">
@@ -677,11 +679,45 @@
             }
         });
 
+        // Загрузка участников канала
+        let participantsUpdateInterval = null;
+        
+        async function loadChannelParticipants(channelId) {
+            try {
+                const participants = await API.get(`${API.baseUrls.audio}/api/audio/AudioChannels/${channelId}/participants`);
+                const container = document.getElementById(`channelParticipants-${channelId}`);
+                if (container) {
+                    if (participants && participants.length > 0) {
+                        const names = participants.map(p => p.displayName || 'User').join(', ');
+                        container.innerHTML = `<span style="color: var(--accent-green);">🎤 ${participants.length}:</span> ${Utils.escapeHtml(names)}`;
+                    } else {
+                        container.innerHTML = '<span style="color: var(--text-secondary);">Пусто</span>';
+                    }
+                }
+            } catch (error) {
+                // Игнорируем ошибки
+            }
+        }
+
+        async function loadAllChannelParticipants() {
+            const channels = document.querySelectorAll('.audio-channel');
+            channels.forEach(ch => {
+                const channelId = ch.dataset.channelId;
+                if (channelId) loadChannelParticipants(channelId);
+            });
+        }
+
+        function startParticipantsPolling() {
+            if (participantsUpdateInterval) clearInterval(participantsUpdateInterval);
+            participantsUpdateInterval = setInterval(loadAllChannelParticipants, 5000);
+        }
+
         // Загрузка аудио каналов
         async function loadAudioChannels() {
             try {
                 const channels = await API.get(`${API.baseUrls.audio}/api/audio/AudioChannels/groups/${currentGroupId}`);
                 displayAudioChannels(channels);
+                startParticipantsPolling();
             } catch (error) {
                 console.error('Load audio channels error:', error);
                 document.getElementById('audioChannelsList').innerHTML = '<p style="color: var(--text-secondary);">Ошибка при загрузке каналов</p>';
@@ -697,17 +733,18 @@
             }
 
             container.innerHTML = channels.map(channel => `
-                    <div class="audio-channel" data-channel-id="${channel.id}" data-janus-room="${channel.janusRoomId}">
+                <div class="audio-channel" data-channel-id="${channel.id}" data-janus-room="${channel.janusRoomId}">
                     <div style="font-weight: 600; margin-bottom: var(--spacing-sm);">${Utils.escapeHtml(channel.name)}</div>
                     ${channel.description ? `<div style="font-size: 12px; color: var(--text-secondary); margin-bottom: var(--spacing-sm);">${Utils.escapeHtml(channel.description)}</div>` : ''}
+                    <div id="channelParticipants-${channel.id}" class="channel-participants" style="font-size: 12px; color: var(--text-secondary); margin-bottom: var(--spacing-sm);"></div>
                     <div style="display: flex; gap: var(--spacing-sm); align-items: center;">
                         <button class="btn btn-sm btn-primary join-audio-btn" data-channel-id="${channel.id}" data-janus-room="${channel.janusRoomId}">Подключиться</button>
-                        <div id="audioStatus-${channel.id}" style="display: none; font-size: 12px; color: var(--accent-green);">
-                            <span id="micIndicator-${channel.id}">🎤</span> <span id="participantsCount-${channel.id}">0 участников</span>
-                        </div>
                     </div>
                 </div>
             `).join('');
+
+            // Загружаем участников для каждого канала
+            channels.forEach(channel => loadChannelParticipants(channel.id));
 
             // Обработчики подключения к каналам
             container.querySelectorAll('.join-audio-btn').forEach(btn => {
@@ -768,7 +805,7 @@
                     }
                 }
                 
-                await audioModule.init(janusRoomId, channelId); // Передаем channelId для пересоздания комнаты
+                await audioModule.init(janusRoomId, channelId, currentNickName);
                 currentAudioChannel = channelId;
                 button.textContent = 'Отключиться';
                 button.disabled = false; // Активируем кнопку после успешного подключения
@@ -846,6 +883,7 @@
 
         // Очистка при закрытии страницы
         window.addEventListener('beforeunload', async () => {
+            if (participantsUpdateInterval) clearInterval(participantsUpdateInterval);
             await Chat.leaveGroup();
             const audioModule = getAudioModule();
             if (audioModule) {
