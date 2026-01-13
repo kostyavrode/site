@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Группа - Audio Chat</title>
+    <link rel="stylesheet" href="css/main.css">
+    <script src="https://unpkg.com/@microsoft/signalr@7.0.0/dist/browser/signalr.min.js"></script>
+    <!-- WebRTC Adapter - должен загружаться ДО Janus -->
+    <script>
+        let adapterLoaded = false;
+        
+        function checkAdapterLoaded() {
+            // Проверяем, что adapter доступен (может быть window.adapter)
+            const adapterObj = typeof adapter !== 'undefined' ? adapter : (typeof window !== 'undefined' ? window.adapter : undefined);
+            if (adapterObj) {
+                adapterLoaded = true;
+                // Убеждаемся, что adapter доступен глобально
+                if (typeof adapter === 'undefined' && typeof window !== 'undefined') {
+                    window.adapter = adapterObj;
+                    console.log('Set window.adapter');
+                }
+                console.log('Adapter loaded successfully:', typeof adapterObj);
+                // Если Janus уже загружен, можно инициализировать
+                if (typeof Janus !== 'undefined') {
+                    console.log('Both adapter and Janus are loaded');
+                }
+            } else {
+                console.warn('Adapter script loaded but adapter is undefined, retrying...');
+                setTimeout(checkAdapterLoaded, 100);
+            }
+        }
+        
+        function loadAdapterFromCDN() {
+            console.warn('Local adapter.js not found, loading from CDN...');
+            const script = document.createElement('script');
+            script.src = 'https://unpkg.com/adapter-webrtc@7.7.0/out/adapter.js';
+            script.onload = checkAdapterLoaded;
+            script.onerror = function() {
+                console.error('Failed to load adapter.js from CDN');
+                alert('Не удалось загрузить adapter.js. Проверьте подключение к интернету.');
+            };
+            document.head.appendChild(script);
+        }
+        
+        // Загружаем adapter.js
+        const adapterScript = document.createElement('script');
+        adapterScript.src = 'js/adapter.js';
+        adapterScript.onload = checkAdapterLoaded;
+        adapterScript.onerror = loadAdapterFromCDN;
+        document.head.appendChild(adapterScript);
+    </script>
+    <!-- Janus Gateway библиотека - должен загружаться ПОСЛЕ adapter -->
+    <!-- ВАЖНО: Скачайте janus.js вручную в папку site/js/ -->
+    <!-- Инструкция: см. файл DOWNLOAD_JANUS.md -->
+    <script>
+        // Проверяем, что adapter загружен перед загрузкой Janus
+        function loadJanus() {
+            // Проверяем несколько раз, так как adapter может загружаться асинхронно
+            const adapterObj = typeof adapter !== 'undefined' ? adapter : (typeof window !== 'undefined' ? window.adapter : undefined);
+            
+            // Если adapter объект найден, считаем что он загружен
+            if (adapterObj) {
+                if (!adapterLoaded) {
+                    adapterLoaded = true;
+                    console.log('Adapter объект найден, устанавливаем флаг adapterLoaded');
+                }
+            } else {
+                console.log('Adapter не загружен, ожидаем... (adapter:', typeof adapter, ', window.adapter:', typeof window !== 'undefined' ? typeof window.adapter : 'N/A', ', adapterLoaded:', adapterLoaded, ')');
+                setTimeout(loadJanus, 200);
+                return;
+            }
+            
+            console.log('Adapter is ready, loading Janus...');
+            const script = document.createElement('script');
+            script.src = 'js/janus.js';
+            script.onload = function() {
+                console.log('Janus.js loaded successfully');
+                // Даем немного времени на инициализацию Janus
+                setTimeout(function() {
+                    if (typeof Janus !== 'undefined') {
+                        console.log('Janus is ready');
+                    } else {
+                        console.error('Janus script loaded but Janus is undefined');
+                    }
+                }, 100);
+            };
+            script.onerror = handleJanusLoadError;
+            document.head.appendChild(script);
+        }
+        // Загружаем Janus после загрузки adapter
+        // Даем время на загрузку adapter
+        setTimeout(function() {
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', loadJanus);
+            } else {
+                loadJanus();
+            }
+        }, 500);
+    </script>
+    <script>
+        function handleJanusLoadError() {
+            console.error('Не удалось загрузить janus.js');
+            const errorDiv = document.createElement('div');
+            errorDiv.style.cssText = 'position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: #ff4444; color: white; padding: 15px 20px; border-radius: 5px; z-index: 10000; max-width: 500px;';
+            errorDiv.innerHTML = `
+                <strong>Ошибка загрузки Janus</strong><br>
+                Скачайте файл janus.js вручную:<br>
+                <a href="https://raw.githubusercontent.com/meetecho/janus-gateway/master/html/janus.js" target="_blank" style="color: white; text-decoration: underline;">Скачать janus.js</a><br>
+                Сохраните в папку: site/js/janus.js<br>
+                <button onclick="this.parentElement.remove(); location.reload();" style="margin-top: 10px; padding: 5px 10px; cursor: pointer;">Обновить страницу</button>
+            `;
+            document.body.appendChild(errorDiv);
+        }
+    </script>
+    <style>
+        .group-layout {
+            display: grid;
+            grid-template-columns: 300px 1fr 250px;
+            gap: var(--spacing-md);
+            height: calc(100vh - 120px);
+        }
+        
+        .sidebar {
+            overflow-y: auto;
+            border-right: 1px solid var(--border-color);
+        }
+        
+        .main-content {
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        
+        .chat-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        
+        .messages-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: var(--spacing-md);
+            background-color: var(--bg-primary);
+        }
+        
+        .message {
+            margin-bottom: var(--spacing-md);
+            padding: var(--spacing-sm);
+            background-color: var(--bg-secondary);
+            border-left: 2px solid var(--accent-blue);
+            border-radius: var(--border-radius);
+        }
+        
+        .message-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+        
+        .message-author {
+            color: var(--accent-blue);
+            font-weight: 600;
+        }
+        
+        .message-time {
+            color: var(--text-secondary);
+        }
+        
+        .message-content {
+            color: var(--text-primary);
+            word-wrap: break-word;
+        }
+        
+        .chat-input-container {
+            border-top: 1px solid var(--border-color);
+            padding: var(--spacing-md);
+            background-color: var(--bg-secondary);
+        }
+        
+        .chat-input-form {
+            display: flex;
+            gap: var(--spacing-sm);
+        }
+        
+        .chat-input {
+            flex: 1;
+        }
+        
+        .audio-channels {
+            overflow-y: auto;
+            border-left: 1px solid var(--border-color);
+        }
+        
+        .audio-channel {
+            padding: var(--spacing-md);
+            margin-bottom: var(--spacing-sm);
+            background-color: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius);
+        }
+        
+        .audio-channel.active {
+            border-color: var(--accent-green);
+        }
+        
+        .audio-controls {
+            display: flex;
+            gap: var(--spacing-sm);
+            margin-top: var(--spacing-sm);
+        }
+        
+        @media (max-width: 1200px) {
+            .group-layout {
+                grid-template-columns: 250px 1fr;
+            }
+            .audio-channels {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="page-container">
+        <nav class="navbar">
+            <div class="navbar-content">
+                <div class="navbar-brand">Audio Chat</div>
+                <ul class="navbar-nav">
+                    <li><a href="index.html">Главная</a></li>
+                    <li><a href="groups.html">Группы</a></li>
+                    <li id="auth-nav">
+                        <a href="login.html">Вход</a>
+                    </li>
+                </ul>
+            </div>
+        </nav>
+
+        <main class="content" style="padding: var(--spacing-md);">
+            <div id="groupContent" class="hidden">
+                <div class="d-flex" style="justify-content: space-between; align-items: center; margin-bottom: var(--spacing-md);">
+                    <div>
+                        <h1 id="groupName">Загрузка...</h1>
+                        <p id="groupDescription" style="color: var(--text-secondary);"></p>
+                    </div>
+                    <div class="d-flex gap-sm">
+                        <button class="btn btn-sm" id="joinGroupBtn" style="display: none;">Присоединиться</button>
+                        <a href="groups.html" class="btn btn-sm">Назад к группам</a>
+                    </div>
+                </div>
+
+                <div class="group-layout">
+                    <!-- Участники -->
+                    <div class="sidebar">
+                        <h3 style="margin-bottom: var(--spacing-md);">Участники</h3>
+                        <div id="membersList">
+                            <p style="color: var(--text-secondary);">Загрузка...</p>
+                        </div>
+                    </div>
+
+                    <!-- Чат -->
+                    <div class="main-content">
+                        <div class="chat-container">
+                            <div class="messages-container" id="messagesContainer">
+                                <p style="color: var(--text-secondary); text-align: center;">Загрузка сообщений...</p>
+                            </div>
+                            <div class="chat-input-container">
+                                <form id="messageForm" class="chat-input-form">
+                                    <input 
+                                        type="text" 
+                                        id="messageInput" 
+                                        class="form-input chat-input" 
+                                        placeholder="Введите сообщение..."
+                                        autocomplete="off"
+                                    >
+                                    <button type="submit" class="btn btn-primary">Отправить</button>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Аудио каналы -->
+                    <div class="audio-channels">
+                        <div class="d-flex" style="justify-content: space-between; align-items: center; margin-bottom: var(--spacing-md);">
+                            <h3>Аудио каналы</h3>
+                            <button class="btn btn-sm btn-primary" id="createAudioChannelBtn">+</button>
+                        </div>
+                        <div id="audioChannelsList">
+                            <p style="color: var(--text-secondary);">Загрузка...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="loadingContent" class="card">
+                <div class="card-body text-center">
+                    <p>Загрузка группы...</p>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Модальное окно присоединения к группе -->
+    <div id="joinGroupModal" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 1000;">
+        <div class="card" style="max-width: 400px; width: 90%;">
+            <div class="card-header">
+                <h3 class="card-title">Присоединиться к группе</h3>
+            </div>
+            <div class="card-body">
+                <form id="joinGroupForm">
+                    <div class="form-group">
+                        <label class="form-label" for="groupPasswordInput">Пароль группы</label>
+                        <input type="password" id="groupPasswordInput" class="form-input">
+                        <div class="form-help">Оставьте пустым, если группа публичная</div>
+                    </div>
+                    <div class="form-group">
+                        <button type="submit" class="btn btn-primary" style="width: 100%;">Присоединиться</button>
+                        <button type="button" class="btn" style="width: 100%; margin-top: var(--spacing-sm);" onclick="document.getElementById('joinGroupModal').classList.add('hidden')">Отмена</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Модальное окно создания аудио канала -->
+    <div id="createAudioChannelModal" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 1000;">
+        <div class="card" style="max-width: 400px; width: 90%;">
+            <div class="card-header">
+                <h3 class="card-title">Создать аудио канал</h3>
+            </div>
+            <div class="card-body">
+                <form id="createAudioChannelForm">
+                    <div class="form-group">
+                        <label class="form-label" for="audioChannelName">Название</label>
+                        <input type="text" id="audioChannelName" class="form-input" required>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="audioChannelDescription">Описание (необязательно)</label>
+                        <textarea id="audioChannelDescription" class="form-textarea" rows="2"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <button type="submit" class="btn btn-primary" style="width: 100%;">Создать</button>
+                        <button type="button" class="btn" style="width: 100%; margin-top: var(--spacing-sm);" onclick="document.getElementById('createAudioChannelModal').classList.add('hidden')">Отмена</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/api.js"></script>
+    <script src="js/utils.js"></script>
+    <script src="js/auth.js"></script>
+    <script src="js/groups.js"></script>
+    <script src="js/chat.js"></script>
+    <script src="js/audio.js"></script>
+    <script>
+        let currentGroupId = null;
+        let currentUserId = null;
+        let currentAudioChannel = null;
+        
+        // Функция для получения Audio модуля
+        function getAudioModule() {
+            if (typeof AudioModule !== 'undefined' && typeof AudioModule.disconnect === 'function') {
+                return AudioModule;
+            }
+            if (typeof Audio !== 'undefined' && typeof Audio.disconnect === 'function') {
+                return Audio;
+            }
+            return null;
+        }
+
+        // Инициализация страницы
+        document.addEventListener('DOMContentLoaded', async () => {
+            // Проверка авторизации
+            const isAuth = await Auth.isAuthenticated();
+            if (!isAuth) {
+                window.location.href = 'login.html';
+                return;
+            }
+
+            // Обновление навигации
+            const user = await Auth.getCurrentUser();
+            if (user) {
+                currentUserId = user.id;
+                const authNav = document.getElementById('auth-nav');
+                authNav.innerHTML = `
+                    <span style="color: var(--text-secondary); margin-right: var(--spacing-md);">
+                        ${user.nickName || user.email}
+                    </span>
+                    <a href="#" id="logout-link">Выход</a>
+                `;
+                document.getElementById('logout-link').onclick = async (e) => {
+                    e.preventDefault();
+                    await Chat.leaveGroup();
+                    const audioModule = getAudioModule();
+                    if (audioModule) {
+                        await audioModule.disconnect();
+                    }
+                    await Auth.logout();
+                    window.location.href = 'index.html';
+                };
+            }
+
+            // Получение ID группы из URL
+            const urlParams = new URLSearchParams(window.location.search);
+            const groupId = urlParams.get('id');
+            if (!groupId) {
+                Utils.showError('ID группы не указан');
+                window.location.href = 'groups.html';
+                return;
+            }
+
+            currentGroupId = groupId;
+            await loadGroup();
+        });
+
+        // Загрузка информации о группе
+        async function loadGroup() {
+            try {
+                const group = await Groups.getGroupById(currentGroupId);
+                document.getElementById('groupName').textContent = group.name;
+                document.getElementById('groupDescription').textContent = group.description || '';
+                
+                // Проверка, является ли пользователь участником
+                let isMember = false;
+                let members = [];
+                try {
+                    members = await Groups.getGroupMembers(currentGroupId);
+                    isMember = members.some(m => m.userId === currentUserId);
+                } catch (membersError) {
+                    // Если не можем получить участников (например, 403), считаем что не участник
+                    console.log('Не удалось получить список участников, считаем что не участник:', membersError);
+                    isMember = false;
+                    members = []; // Инициализируем пустым массивом
+                }
+                
+                if (!isMember) {
+                    // Показываем информацию о группе и кнопку присоединения
+                    document.getElementById('loadingContent').classList.add('hidden');
+                    document.getElementById('groupContent').classList.remove('hidden');
+                    
+                    // Скрываем layout группы
+                    const groupLayout = document.querySelector('.group-layout');
+                    if (groupLayout) {
+                        groupLayout.style.display = 'none';
+                    }
+                    
+                    // Показываем сообщение о необходимости присоединения
+                    const groupContent = document.getElementById('groupContent');
+                    const existingMessage = groupContent.querySelector('.join-message');
+                    if (!existingMessage) {
+                        const messageDiv = document.createElement('div');
+                        messageDiv.className = 'join-message';
+                        messageDiv.innerHTML = `
+                            <div class="card" style="margin-top: var(--spacing-md);">
+                                <div class="card-body text-center">
+                                    <p>Вы не участник этой группы. Присоединитесь, чтобы просмотреть содержимое.</p>
+                                    <button class="btn btn-primary" id="joinGroupBtnInline" style="margin-top: var(--spacing-md);">Присоединиться к группе</button>
+                                </div>
+                            </div>
+                        `;
+                        groupContent.appendChild(messageDiv);
+                        
+                        // Обработчик кнопки присоединения
+                        document.getElementById('joinGroupBtnInline').onclick = () => {
+                            document.getElementById('joinGroupModal').classList.remove('hidden');
+                        };
+                    }
+                    
+                    // Показываем кнопку в заголовке
+                    document.getElementById('joinGroupBtn').style.display = 'block';
+                    document.getElementById('joinGroupBtn').onclick = () => {
+                        document.getElementById('joinGroupModal').classList.remove('hidden');
+                    };
+                    return;
+                }
+
+                document.getElementById('loadingContent').classList.add('hidden');
+                document.getElementById('groupContent').classList.remove('hidden');
+
+                // Убираем сообщение о присоединении, если было
+                const joinMessage = document.querySelector('.join-message');
+                if (joinMessage) {
+                    joinMessage.remove();
+                }
+                
+                // Показываем layout группы
+                const groupLayout = document.querySelector('.group-layout');
+                if (groupLayout) {
+                    groupLayout.style.display = 'grid';
+                }
+                
+                // Скрываем кнопку присоединения
+                document.getElementById('joinGroupBtn').style.display = 'none';
+
+                // Загрузка участников
+                displayMembers(members);
+
+                // Инициализация чата
+                await Chat.init(currentGroupId);
+                await loadMessages();
+
+                // Загрузка аудио каналов
+                await loadAudioChannels();
+            } catch (error) {
+                console.error('Load group error:', error);
+                
+                // Если ошибка 404 или 403, показываем сообщение о необходимости присоединения
+                if (error.message && (error.message.includes('404') || error.message.includes('403') || error.message.includes('Not Found'))) {
+                    // Показываем информацию о группе и кнопку присоединения
+                    document.getElementById('loadingContent').classList.add('hidden');
+                    document.getElementById('groupContent').classList.remove('hidden');
+                    
+                    // Скрываем layout группы
+                    const groupLayout = document.querySelector('.group-layout');
+                    if (groupLayout) {
+                        groupLayout.style.display = 'none';
+                    }
+                    
+                    // Показываем сообщение о необходимости присоединения
+                    const groupContent = document.getElementById('groupContent');
+                    const existingMessage = groupContent.querySelector('.join-message');
+                    if (!existingMessage) {
+                        const messageDiv = document.createElement('div');
+                        messageDiv.className = 'join-message';
+                        messageDiv.innerHTML = `
+                            <div class="card" style="margin-top: var(--spacing-md);">
+                                <div class="card-body text-center">
+                                    <p>Вы не участник этой группы. Присоединитесь, чтобы просмотреть содержимое.</p>
+                                    <button class="btn btn-primary" id="joinGroupBtnInline" style="margin-top: var(--spacing-md);">Присоединиться к группе</button>
+                                </div>
+                            </div>
+                        `;
+                        groupContent.appendChild(messageDiv);
+                        
+                        // Обработчик кнопки присоединения
+                        document.getElementById('joinGroupBtnInline').onclick = () => {
+                            document.getElementById('joinGroupModal').classList.remove('hidden');
+                        };
+                    }
+                    
+                    // Показываем кнопку в заголовке
+                    document.getElementById('joinGroupBtn').style.display = 'block';
+                    document.getElementById('joinGroupBtn').onclick = () => {
+                        document.getElementById('joinGroupModal').classList.remove('hidden');
+                    };
+                } else {
+                    Utils.showError(error.message || 'Ошибка при загрузке группы');
+                }
+            }
+        }
+
+        // Отображение участников
+        function displayMembers(members) {
+            const container = document.getElementById('membersList');
+            if (!members || members.length === 0) {
+                container.innerHTML = '<p style="color: var(--text-secondary);">Участники не найдены</p>';
+                return;
+            }
+
+            container.innerHTML = members.map(member => `
+                <div style="padding: var(--spacing-sm); margin-bottom: var(--spacing-sm); background-color: var(--bg-secondary); border-radius: var(--border-radius);">
+                    <div style="font-weight: 600;">${Utils.escapeHtml(member.userId || 'Пользователь')}</div>
+                    <div style="font-size: 12px; color: var(--text-secondary);">${member.role || 'Member'}</div>
+                </div>
+            `).join('');
+        }
+
+        // Загрузка сообщений
+        async function loadMessages() {
+            try {
+                const result = await Chat.getMessages(50, 0);
+                const messages = result.messages || result;
+                displayMessages(messages);
+            } catch (error) {
+                console.error('Load messages error:', error);
+            }
+        }
+
+        // Отображение сообщений
+        function displayMessages(messages) {
+            const container = document.getElementById('messagesContainer');
+            if (!messages || messages.length === 0) {
+                container.innerHTML = '<p style="color: var(--text-secondary); text-align: center;">Нет сообщений</p>';
+                return;
+            }
+
+            container.innerHTML = messages.map(msg => `
+                <div class="message">
+                    <div class="message-header">
+                        <span class="message-author">${Utils.escapeHtml(msg.userNickName || 'Пользователь')}</span>
+                        <span class="message-time">${Utils.formatRelativeTime(msg.createdAt)}</span>
+                    </div>
+                    <div class="message-content">${Utils.escapeHtml(msg.content)}</div>
+                </div>
+            `).join('');
+            container.scrollTop = container.scrollHeight;
+        }
+
+        // Отправка сообщения
+        document.getElementById('messageForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const input = document.getElementById('messageInput');
+            const content = input.value.trim();
+            
+            if (!content) return;
+
+            try {
+                await Chat.sendMessage(content);
+                input.value = '';
+            } catch (error) {
+                Utils.showError(error.message || 'Ошибка при отправке сообщения');
+            }
+        });
+
+        // Обработчики для визуальной индикации аудио
+        window.onAudioConnected = () => {
+            if (currentAudioChannel) {
+                const indicator = document.getElementById(`micIndicator-${currentAudioChannel}`);
+                if (indicator) {
+                    indicator.textContent = '🎤 🔊';
+                }
+            }
+        };
+        
+        window.onParticipantsUpdate = (participants) => {
+            console.log('🔄 Обновление UI участников:', participants);
+            console.log('🔍 currentAudioChannel:', currentAudioChannel);
+            if (currentAudioChannel) {
+                const countEl = document.getElementById(`participantsCount-${currentAudioChannel}`);
+                console.log('🔍 countEl найден:', countEl ? 'ДА' : 'НЕТ', 'для канала', currentAudioChannel);
+                if (countEl) {
+                    const count = Array.isArray(participants) ? participants.length : 0;
+                    countEl.textContent = `${count} участников`;
+                    console.log(`📊 Обновлен счетчик для канала ${currentAudioChannel}: ${count} участников`);
+                } else {
+                    console.error('❌ Элемент participantsCount не найден для канала', currentAudioChannel);
+                }
+            } else {
+                console.warn('⚠️ currentAudioChannel не установлен, не могу обновить счетчик');
+            }
+        };
+        
+        // Обработка получения нового сообщения
+        window.onReceiveMessage = (message) => {
+            const container = document.getElementById('messagesContainer');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message';
+            messageDiv.innerHTML = `
+                <div class="message-header">
+                    <span class="message-author">${Utils.escapeHtml(message.userNickName || 'Пользователь')}</span>
+                    <span class="message-time">${Utils.formatRelativeTime(message.createdAt)}</span>
+                </div>
+                <div class="message-content">${Utils.escapeHtml(message.content)}</div>
+            `;
+            container.appendChild(messageDiv);
+            container.scrollTop = container.scrollHeight;
+        };
+
+        // Присоединение к группе
+        document.getElementById('joinGroupForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const password = document.getElementById('groupPasswordInput').value.trim();
+            
+            try {
+                await Groups.joinGroup(currentGroupId, password || null);
+                document.getElementById('joinGroupModal').classList.add('hidden');
+                document.getElementById('joinGroupForm').reset();
+                
+                // Перезагружаем группу без полной перезагрузки страницы
+                await loadGroup();
+            } catch (error) {
+                // Ошибка уже показана в Groups.joinGroup
+            }
+        });
+
+        // Загрузка аудио каналов
+        async function loadAudioChannels() {
+            try {
+                const channels = await API.get(`${API.baseUrls.audio}/api/audio/AudioChannels/groups/${currentGroupId}`);
+                displayAudioChannels(channels);
+            } catch (error) {
+                console.error('Load audio channels error:', error);
+                document.getElementById('audioChannelsList').innerHTML = '<p style="color: var(--text-secondary);">Ошибка при загрузке каналов</p>';
+            }
+        }
+
+        // Отображение аудио каналов
+        function displayAudioChannels(channels) {
+            const container = document.getElementById('audioChannelsList');
+            if (!channels || channels.length === 0) {
+                container.innerHTML = '<p style="color: var(--text-secondary);">Нет аудио каналов</p>';
+                return;
+            }
+
+            container.innerHTML = channels.map(channel => `
+                    <div class="audio-channel" data-channel-id="${channel.id}" data-janus-room="${channel.janusRoomId}">
+                    <div style="font-weight: 600; margin-bottom: var(--spacing-sm);">${Utils.escapeHtml(channel.name)}</div>
+                    ${channel.description ? `<div style="font-size: 12px; color: var(--text-secondary); margin-bottom: var(--spacing-sm);">${Utils.escapeHtml(channel.description)}</div>` : ''}
+                    <div style="display: flex; gap: var(--spacing-sm); align-items: center;">
+                        <button class="btn btn-sm btn-primary join-audio-btn" data-channel-id="${channel.id}" data-janus-room="${channel.janusRoomId}">Подключиться</button>
+                        <div id="audioStatus-${channel.id}" style="display: none; font-size: 12px; color: var(--accent-green);">
+                            <span id="micIndicator-${channel.id}">🎤</span> <span id="participantsCount-${channel.id}">0 участников</span>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+
+            // Обработчики подключения к каналам
+            container.querySelectorAll('.join-audio-btn').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    const channelId = btn.dataset.channelId;
+                    const janusRoomId = parseInt(btn.dataset.janusRoom);
+                    await connectToAudioChannel(channelId, janusRoomId, btn);
+                });
+            });
+        }
+
+        // Подключение к аудио каналу
+        async function connectToAudioChannel(channelId, janusRoomId, button) {
+            if (currentAudioChannel === channelId) {
+                const audioModule = getAudioModule();
+                if (audioModule) {
+                    await audioModule.disconnect();
+                }
+                currentAudioChannel = null;
+                button.textContent = 'Подключиться';
+                button.closest('.audio-channel').classList.remove('active');
+                
+                // Скрываем индикатор аудио активности
+                const statusDiv = document.getElementById(`audioStatus-${channelId}`);
+                if (statusDiv) {
+                    statusDiv.style.display = 'none';
+                }
+                return;
+            }
+
+            // Проверка, загружена ли библиотека Janus
+            if (typeof Janus === 'undefined') {
+                Utils.showError('Библиотека Janus не загружена. Проверьте подключение к интернету и обновите страницу.');
+                return;
+            }
+
+            if (!janusRoomId || isNaN(janusRoomId)) {
+                Utils.showError('Аудио канал не настроен. Обратитесь к администратору группы.');
+                return;
+            }
+
+            try {
+                button.disabled = true;
+                button.textContent = 'Подключение...';
+                
+                // Проверяем, что Audio модуль загружен
+                const audioModule = getAudioModule();
+                if (!audioModule) {
+                    throw new Error('Audio модуль не загружен. Обновите страницу.');
+                }
+                
+                // Отключаемся от предыдущего канала, если подключены
+                if (currentAudioChannel) {
+                    try {
+                        await audioModule.disconnect();
+                    } catch (disconnectError) {
+                        console.warn('Error disconnecting from previous channel:', disconnectError);
+                    }
+                }
+                
+                await audioModule.init(janusRoomId, channelId); // Передаем channelId для пересоздания комнаты
+                currentAudioChannel = channelId;
+                button.textContent = 'Отключиться';
+                button.disabled = false; // Активируем кнопку после успешного подключения
+                button.closest('.audio-channel').classList.add('active');
+                
+                // Показываем индикатор аудио активности
+                const statusDiv = document.getElementById(`audioStatus-${channelId}`);
+                if (statusDiv) {
+                    statusDiv.style.display = 'block';
+                }
+                
+                // Обработчик успешного подключения
+                window.onAudioConnected = () => {
+                    console.log('✅ Аудио подключение установлено для канала', channelId);
+                    button.disabled = false;
+                    button.textContent = 'Отключиться';
+                };
+                
+                // Устанавливаем обработчик ошибок для этого канала
+                window.onAudioError = (errorMsg) => {
+                    console.error('Audio error:', errorMsg);
+                    if (errorMsg && errorMsg.includes('No such room')) {
+                        Utils.showError('Комната в Janus не существует. Администратор группы должен пересоздать аудио канал.');
+                        // Отключаемся от канала
+                        button.textContent = 'Подключиться';
+                        button.closest('.audio-channel').classList.remove('active');
+                        currentAudioChannel = null;
+                        if (statusDiv) {
+                            statusDiv.style.display = 'none';
+                        }
+                    } else {
+                        Utils.showError(errorMsg || 'Ошибка подключения к аудио каналу');
+                    }
+                };
+                
+                document.querySelectorAll('.audio-channel').forEach(ch => {
+                    if (ch.dataset.channelId !== channelId) {
+                        ch.classList.remove('active');
+                        const btn = ch.querySelector('.join-audio-btn');
+                        if (btn) btn.textContent = 'Подключиться';
+                    }
+                });
+            } catch (error) {
+                console.error('Audio connection error:', error);
+                Utils.showError(error.message || 'Ошибка при подключении к аудио каналу');
+                button.textContent = 'Подключиться';
+                button.disabled = false;
+            }
+        }
+
+        // Создание аудио канала
+        document.getElementById('createAudioChannelBtn').addEventListener('click', () => {
+            document.getElementById('createAudioChannelModal').classList.remove('hidden');
+        });
+
+        document.getElementById('createAudioChannelForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const name = document.getElementById('audioChannelName').value.trim();
+            const description = document.getElementById('audioChannelDescription').value.trim();
+
+            try {
+                await API.post(`${API.baseUrls.audio}/api/audio/AudioChannels`, {
+                    groupId: currentGroupId,
+                    name: name,
+                    description: description || null
+                });
+                Utils.showSuccess('Аудио канал создан');
+                document.getElementById('createAudioChannelModal').classList.add('hidden');
+                document.getElementById('createAudioChannelForm').reset();
+                await loadAudioChannels();
+            } catch (error) {
+                Utils.showError(error.message || 'Ошибка при создании аудио канала');
+            }
+        });
+
+        // Очистка при закрытии страницы
+        window.addEventListener('beforeunload', async () => {
+            await Chat.leaveGroup();
+            const audioModule = getAudioModule();
+            if (audioModule) {
+                await audioModule.disconnect();
+            }
+        });
+    </script>
+</body>
+</html>

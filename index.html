@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Chat</title>
+    <link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+    <div class="page-container">
+        <nav class="navbar">
+            <div class="navbar-content">
+                <div class="navbar-brand">Audio Chat</div>
+                <ul class="navbar-nav">
+                    <li><a href="index.html" class="active">Главная</a></li>
+                    <li><a href="groups.html">Группы</a></li>
+                    <li id="auth-nav">
+                        <a href="login.html">Вход</a>
+                        <span id="user-info" class="hidden"></span>
+                    </li>
+                </ul>
+            </div>
+        </nav>
+
+        <main class="content">
+            <div class="container">
+                <h1>Добро пожаловать</h1>
+                <p>Это минималистичный интерфейс для аудио чата.</p>
+                
+                <div id="main-content">
+                    <div class="card">
+                        <div class="card-body">
+                            <p>Для начала работы войдите в систему или зарегистрируйтесь.</p>
+                            <div class="d-flex gap-md mt-md">
+                                <a href="login.html" class="btn btn-primary">Войти</a>
+                                <a href="register.html" class="btn">Регистрация</a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="js/api.js"></script>
+    <script src="js/utils.js"></script>
+    <script src="js/auth.js"></script>
+    <script src="js/groups.js"></script>
+    <script>
+        // Проверка аутентификации при загрузке
+        document.addEventListener('DOMContentLoaded', async () => {
+            const isAuth = await Auth.isAuthenticated();
+            if (isAuth) {
+                try {
+                    const user = await Auth.getCurrentUser();
+                    if (user) {
+                        const authNav = document.getElementById('auth-nav');
+                        authNav.innerHTML = `
+                            <span style="color: var(--text-secondary); margin-right: var(--spacing-md);">
+                                ${user.nickName || user.email}
+                            </span>
+                            <a href="#" id="logout-link">Выход</a>
+                        `;
+                        document.getElementById('logout-link').onclick = async (e) => {
+                            e.preventDefault();
+                            await Auth.logout();
+                            window.location.href = 'index.html';
+                        };
+                        
+                        const mainContent = document.getElementById('main-content');
+                        mainContent.innerHTML = `
+                            <div class="card">
+                                <div class="card-body">
+                                    <p>Добро пожаловать, ${Utils.escapeHtml(user.nickName || user.email)}!</p>
+                                    <div class="d-flex gap-md mt-md">
+                                        <a href="groups.html" class="btn btn-primary">Мои группы</a>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                    }
+                } catch (error) {
+                    console.error('Error loading user:', error);
+                }
+            }
+        });
+    </script>
+</body>
+</html>

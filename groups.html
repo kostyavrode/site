@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Группы - Audio Chat</title>
+    <link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+    <div class="page-container">
+        <nav class="navbar">
+            <div class="navbar-content">
+                <div class="navbar-brand">Audio Chat</div>
+                <ul class="navbar-nav">
+                    <li><a href="index.html">Главная</a></li>
+                    <li><a href="groups.html" class="active">Группы</a></li>
+                    <li id="auth-nav">
+                        <a href="login.html">Вход</a>
+                    </li>
+                </ul>
+            </div>
+        </nav>
+
+        <main class="content">
+            <div class="container">
+                <div class="d-flex" style="justify-content: space-between; align-items: center; margin-bottom: var(--spacing-lg);">
+                    <h1>Группы</h1>
+                    <button class="btn btn-primary" id="createGroupBtn">Создать группу</button>
+                </div>
+
+                <!-- Поиск -->
+                <div class="card mb-md">
+                    <div class="card-body">
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <input 
+                                type="text" 
+                                id="searchInput" 
+                                class="form-input" 
+                                placeholder="Поиск групп..."
+                                style="margin-bottom: 0;"
+                            >
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Мои группы -->
+                <div id="myGroupsSection">
+                    <h2>Мои группы</h2>
+                    <div id="myGroupsList" class="mb-lg">
+                        <p style="color: var(--text-secondary);">Загрузка...</p>
+                    </div>
+                </div>
+
+                <!-- Результаты поиска -->
+                <div id="searchResultsSection" class="hidden">
+                    <h2>Результаты поиска</h2>
+                    <div id="searchResultsList">
+                        <p style="color: var(--text-secondary);">Введите запрос для поиска</p>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Модальное окно создания группы -->
+    <div id="createGroupModal" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 1000;">
+        <div class="card" style="max-width: 500px; width: 90%; max-height: 90vh; overflow-y: auto;">
+            <div class="card-header">
+                <h3 class="card-title">Создать группу</h3>
+            </div>
+            <div class="card-body">
+                <form id="createGroupForm">
+                    <div class="form-group">
+                        <label class="form-label" for="groupName">Название</label>
+                        <input type="text" id="groupName" class="form-input" required>
+                        <div class="form-error" id="groupNameError"></div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="groupDescription">Описание (необязательно)</label>
+                        <textarea id="groupDescription" class="form-textarea" rows="3"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="groupPassword">Пароль (необязательно)</label>
+                        <input type="password" id="groupPassword" class="form-input">
+                        <div class="form-help">Если оставить пустым, группа будет публичной</div>
+                    </div>
+                    <div class="form-group">
+                        <button type="submit" class="btn btn-primary" style="width: 100%;">Создать</button>
+                        <button type="button" class="btn" style="width: 100%; margin-top: var(--spacing-sm);" onclick="document.getElementById('createGroupModal').classList.add('hidden')">Отмена</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/api.js"></script>
+    <script src="js/utils.js"></script>
+    <script src="js/auth.js"></script>
+    <script src="js/groups.js"></script>
+    <script>
+        let searchTimeout;
+
+        // Проверка авторизации
+        document.addEventListener('DOMContentLoaded', async () => {
+            const isAuth = await Auth.isAuthenticated();
+            if (!isAuth) {
+                window.location.href = 'login.html';
+                return;
+            }
+
+            // Обновление навигации
+            const user = await Auth.getCurrentUser();
+            if (user) {
+                const authNav = document.getElementById('auth-nav');
+                authNav.innerHTML = `
+                    <span style="color: var(--text-secondary); margin-right: var(--spacing-md);">
+                        ${user.nickName || user.email}
+                    </span>
+                    <a href="#" id="logout-link">Выход</a>
+                `;
+                document.getElementById('logout-link').onclick = async (e) => {
+                    e.preventDefault();
+                    await Auth.logout();
+                    window.location.href = 'index.html';
+                };
+            }
+
+            // Загрузка групп пользователя
+            loadUserGroups();
+
+            // Поиск
+            document.getElementById('searchInput').addEventListener('input', (e) => {
+                clearTimeout(searchTimeout);
+                const query = e.target.value.trim();
+                if (query.length > 0) {
+                    searchTimeout = setTimeout(() => searchGroups(query), 300);
+                } else {
+                    document.getElementById('searchResultsSection').classList.add('hidden');
+                    document.getElementById('myGroupsSection').classList.remove('hidden');
+                }
+            });
+        });
+
+        // Создание группы
+        document.getElementById('createGroupBtn').addEventListener('click', () => {
+            document.getElementById('createGroupModal').classList.remove('hidden');
+        });
+
+        document.getElementById('createGroupForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const name = document.getElementById('groupName').value.trim();
+            const description = document.getElementById('groupDescription').value.trim();
+            const password = document.getElementById('groupPassword').value.trim();
+
+            const submitBtn = e.target.querySelector('button[type="submit"]');
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Создание...';
+
+            try {
+                await Groups.createGroup(name, description || null, password || null);
+                document.getElementById('createGroupModal').classList.add('hidden');
+                document.getElementById('createGroupForm').reset();
+                loadUserGroups();
+            } catch (error) {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Создать';
+            }
+        });
+
+        // Загрузка групп пользователя
+        async function loadUserGroups() {
+            try {
+                const groups = await Groups.getUserGroups();
+                displayGroups(groups, 'myGroupsList');
+            } catch (error) {
+                document.getElementById('myGroupsList').innerHTML = '<p style="color: var(--error);">Ошибка при загрузке групп</p>';
+            }
+        }
+
+        // Поиск групп
+        async function searchGroups(query) {
+            try {
+                const results = await Groups.searchGroups(query);
+                const groups = Array.isArray(results) ? results : (results.groups || []);
+                displayGroups(groups, 'searchResultsList');
+                document.getElementById('searchResultsSection').classList.remove('hidden');
+                document.getElementById('myGroupsSection').classList.add('hidden');
+            } catch (error) {
+                document.getElementById('searchResultsList').innerHTML = '<p style="color: var(--error);">Ошибка при поиске</p>';
+            }
+        }
+
+        // Отображение групп
+        function displayGroups(groups, containerId) {
+            const container = document.getElementById(containerId);
+            if (!groups || groups.length === 0) {
+                container.innerHTML = '<p style="color: var(--text-secondary);">Группы не найдены</p>';
+                return;
+            }
+
+            container.innerHTML = groups.map(group => `
+                <div class="card">
+                    <div class="card-body">
+                        <div class="d-flex" style="justify-content: space-between; align-items: start;">
+                            <div style="flex: 1;">
+                                <h3 style="margin-bottom: var(--spacing-sm);">${Utils.escapeHtml(group.name)}</h3>
+                                ${group.description ? `<p style="color: var(--text-secondary); margin-bottom: var(--spacing-sm);">${Utils.escapeHtml(group.description)}</p>` : ''}
+                                <p style="color: var(--text-secondary); font-size: 12px;">
+                                    Участников: ${group.memberCount || 0} | 
+                                    ${group.hasPassword ? '🔒 Защищена паролем' : '🌐 Публичная'}
+                                </p>
+                            </div>
+                            <div class="d-flex gap-sm">
+                                <a href="group.html?id=${group.id}" class="btn btn-sm btn-primary">Открыть</a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+    </script>
+</body>
+</html>
