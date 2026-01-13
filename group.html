@@ -563,7 +563,7 @@
 
             container.innerHTML = members.map(member => `
                 <div style="padding: var(--spacing-sm); margin-bottom: var(--spacing-sm); background-color: var(--bg-secondary); border-radius: var(--border-radius);">
-                    <div style="font-weight: 600;">${Utils.escapeHtml(member.userId || 'Пользователь')}</div>
+                    <div style="font-weight: 600;">${Utils.escapeHtml(member.nickName || member.userId || 'Пользователь')}</div>
                     <div style="font-size: 12px; color: var(--text-secondary);">${member.role || 'Member'}</div>
                 </div>
             `).join('');

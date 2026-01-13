@@ -1,19 +1,14 @@
-// ============================================
-// Audio Module (Janus Gateway / WebRTC)
-// ============================================
-
-// Используем window.AudioModule чтобы избежать конфликта с нативным Audio
 const AudioModule = {
     janus: null,
     audioBridge: null,
     roomId: null,
-    channelId: null, // ID канала для пересоздания комнаты
+    channelId: null,
     localStream: null,
-    remoteAudio: null, // Элемент для воспроизведения удаленного аудио
+    remoteAudio: null,
     isMuted: false,
     participantsUpdateInterval: null,
-    offerCreated: false, // Флаг, что offer был создан
-    jsepProcessed: false, // Флаг, что JSEP уже обработан
+    offerCreated: false,
+    jsepProcessed: false
 
     // Инициализация Janus Gateway
     async init(roomId, channelId = null) {
