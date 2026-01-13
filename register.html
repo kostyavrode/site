@@ -27,20 +27,7 @@
                     <div class="card-body">
                         <form id="registerForm">
                             <div class="form-group">
-                                <label class="form-label" for="email">Email</label>
-                                <input 
-                                    type="email" 
-                                    id="email" 
-                                    name="email" 
-                                    class="form-input" 
-                                    required
-                                    autocomplete="email"
-                                >
-                                <div class="form-error" id="emailError"></div>
-                            </div>
-
-                            <div class="form-group">
-                                <label class="form-label" for="nickName">Имя пользователя</label>
+                                <label class="form-label" for="nickName">Никнейм</label>
                                 <input 
                                     type="text" 
                                     id="nickName" 
@@ -48,7 +35,11 @@
                                     class="form-input" 
                                     required
                                     autocomplete="username"
+                                    autofocus
+                                    minlength="1"
+                                    maxlength="30"
                                 >
+                                <div class="form-help">1-30 символов</div>
                                 <div class="form-error" id="nickNameError"></div>
                             </div>
 
@@ -81,6 +72,19 @@
                             </div>
 
                             <div class="form-group">
+                                <label class="form-label" for="email">Email (необязательно)</label>
+                                <input 
+                                    type="email" 
+                                    id="email" 
+                                    name="email" 
+                                    class="form-input" 
+                                    autocomplete="email"
+                                >
+                                <div class="form-help">Для восстановления пароля</div>
+                                <div class="form-error" id="emailError"></div>
+                            </div>
+
+                            <div class="form-group">
                                 <button type="submit" class="btn btn-primary" style="width: 100%;">
                                     Зарегистрироваться
                                 </button>
@@ -105,31 +109,27 @@
         document.getElementById('registerForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             
-            // Очистка предыдущих ошибок
             document.querySelectorAll('.form-error').forEach(el => {
                 el.textContent = '';
             });
 
-            const email = document.getElementById('email').value.trim();
             const nickName = document.getElementById('nickName').value.trim();
             const password = document.getElementById('password').value;
             const confirmPassword = document.getElementById('confirmPassword').value;
+            const email = document.getElementById('email').value.trim() || null;
 
-            // Валидация
             let hasError = false;
 
-            if (!email) {
-                document.getElementById('emailError').textContent = 'Email обязателен';
-                hasError = true;
-            }
-
             if (!nickName) {
-                document.getElementById('nickNameError').textContent = 'Имя пользователя обязательно';
+                document.getElementById('nickNameError').textContent = 'Никнейм обязателен';
+                hasError = true;
+            } else if (nickName.length > 30) {
+                document.getElementById('nickNameError').textContent = 'Максимум 30 символов';
                 hasError = true;
             }
 
             if (password.length < 6) {
-                document.getElementById('passwordError').textContent = 'Пароль должен содержать минимум 6 символов';
+                document.getElementById('passwordError').textContent = 'Минимум 6 символов';
                 hasError = true;
             }
 
@@ -140,13 +140,12 @@
 
             if (hasError) return;
 
-            // Отправка формы
             const submitButton = e.target.querySelector('button[type="submit"]');
             submitButton.disabled = true;
             submitButton.textContent = 'Регистрация...';
 
             try {
-                await Auth.register(email, password, nickName, confirmPassword);
+                await Auth.register(nickName, password, confirmPassword, email);
                 setTimeout(() => {
                     window.location.href = 'index.html';
                 }, 1000);

@@ -27,17 +27,17 @@
                     <div class="card-body">
                         <form id="loginForm">
                             <div class="form-group">
-                                <label class="form-label" for="email">Email</label>
+                                <label class="form-label" for="nickName">Никнейм</label>
                                 <input 
-                                    type="email" 
-                                    id="email" 
-                                    name="email" 
+                                    type="text" 
+                                    id="nickName" 
+                                    name="nickName" 
                                     class="form-input" 
                                     required
-                                    autocomplete="email"
+                                    autocomplete="username"
                                     autofocus
                                 >
-                                <div class="form-error" id="emailError"></div>
+                                <div class="form-error" id="nickNameError"></div>
                             </div>
 
                             <div class="form-group">
@@ -90,19 +90,17 @@
         document.getElementById('loginForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             
-            // Очистка предыдущих ошибок
             document.querySelectorAll('.form-error').forEach(el => {
                 el.textContent = '';
             });
 
-            const email = document.getElementById('email').value.trim();
+            const nickName = document.getElementById('nickName').value.trim();
             const password = document.getElementById('password').value;
 
-            // Валидация
             let hasError = false;
 
-            if (!email) {
-                document.getElementById('emailError').textContent = 'Email обязателен';
+            if (!nickName) {
+                document.getElementById('nickNameError').textContent = 'Никнейм обязателен';
                 hasError = true;
             }
 
@@ -113,13 +111,12 @@
 
             if (hasError) return;
 
-            // Отправка формы
             const submitButton = e.target.querySelector('button[type="submit"]');
             submitButton.disabled = true;
             submitButton.textContent = 'Вход...';
 
             try {
-                await Auth.login(email, password);
+                await Auth.login(nickName, password);
                 setTimeout(() => {
                     window.location.href = 'index.html';
                 }, 1000);

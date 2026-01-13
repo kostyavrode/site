@@ -1,18 +1,10 @@
-// ============================================
-// Authentication Module
-// ============================================
-
 const Auth = {
-    // Регистрация
-    async register(email, password, nickName, confirmPassword) {
+    async register(nickName, password, confirmPassword, email = null) {
         try {
-            const response = await API.post(`${API.baseUrls.auth}/api/Auth/register`, {
-                email,
-                password,
-                nickName,
-                confirmPassword
-            });
+            const data = { nickName, password, confirmPassword };
+            if (email) data.email = email;
             
+            const response = await API.post(`${API.baseUrls.auth}/api/Auth/register`, data);
             Utils.showSuccess('Регистрация успешна!');
             return response;
         } catch (error) {
@@ -21,14 +13,12 @@ const Auth = {
         }
     },
 
-    // Вход
-    async login(email, password) {
+    async login(nickName, password) {
         try {
             const response = await API.post(`${API.baseUrls.auth}/api/Auth/login`, {
-                email,
+                nickName,
                 password
             });
-            
             Utils.showSuccess('Вход выполнен успешно!');
             return response;
         } catch (error) {
