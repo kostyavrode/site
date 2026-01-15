@@ -12,8 +12,7 @@
             <div class="navbar-content">
                 <div class="navbar-brand">Audio Chat</div>
                 <ul class="navbar-nav">
-                    <li><a href="index.html">Главная</a></li>
-                    <li><a href="groups.html" class="active">Группы</a></li>
+                    <li><a href="groups.html" class="active">Мои группы</a></li>
                     <li id="auth-nav">
                         <a href="login.html">Вход</a>
                     </li>
@@ -121,7 +120,7 @@
                 document.getElementById('logout-link').onclick = async (e) => {
                     e.preventDefault();
                     await Auth.logout();
-                    window.location.href = 'index.html';
+                    window.location.href = 'groups.html';
                 };
             }
 

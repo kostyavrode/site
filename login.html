@@ -12,7 +12,6 @@
             <div class="navbar-content">
                 <div class="navbar-brand">Audio Chat</div>
                 <ul class="navbar-nav">
-                    <li><a href="index.html">Главная</a></li>
                     <li><a href="register.html">Регистрация</a></li>
                 </ul>
             </div>
@@ -79,7 +78,7 @@
         document.addEventListener('DOMContentLoaded', async () => {
             try {
                 if (await Auth.isAuthenticated()) {
-                    window.location.href = 'index.html';
+                    window.location.href = 'groups.html';
                 }
             } catch (error) {
                 // Игнорируем ошибки при проверке - пользователь просто не авторизован
@@ -118,7 +117,7 @@
             try {
                 await Auth.login(nickName, password);
                 setTimeout(() => {
-                    window.location.href = 'index.html';
+                    window.location.href = 'groups.html';
                 }, 1000);
             } catch (error) {
                 submitButton.disabled = false;
