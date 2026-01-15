@@ -85,9 +85,9 @@ const Chat = {
     },
 
     // Получить историю сообщений
-    async getMessages(limit = 50, offset = 0) {
+    async getMessages(pageSize = 50, page = 1) {
         try {
-            const params = new URLSearchParams({ limit: limit.toString(), offset: offset.toString() });
+            const params = new URLSearchParams({ page: page.toString(), pageSize: pageSize.toString() });
             return await API.get(`${API.baseUrls.chat}/api/Messages/${this.groupId}?${params}`);
         } catch (error) {
             Utils.showError(error.message || 'Ошибка при получении сообщений');
