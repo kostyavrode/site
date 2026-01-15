@@ -56,9 +56,18 @@ const API = {
         };
 
         try {
+            const isLoginRequest = url.includes('/api/Auth/login');
+            const isRegisterRequest = url.includes('/api/Auth/register');
+            const isRefreshRequest = url.includes('/api/Auth/refresh');
+            const shouldSkipRefresh = isLoginRequest || isRegisterRequest || isRefreshRequest;
+
             let response = await fetch(url, finalOptions);
             
             if (response.status === 401) {
+                if (shouldSkipRefresh) {
+                    throw new Error('Unauthorized');
+                }
+
                 // Пытаемся обновить токен
                 const refreshed = await this.tryRefreshToken();
                 
