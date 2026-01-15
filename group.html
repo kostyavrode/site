@@ -573,7 +573,7 @@
         // Загрузка сообщений
         async function loadMessages() {
             try {
-                const result = await Chat.getMessages(50, 0);
+                const result = await Chat.getMessages(50, 1);
                 const messages = result.messages || result;
                 displayMessages(messages);
             } catch (error) {
