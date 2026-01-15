@@ -228,7 +228,7 @@
     <div class="page-container">
         <nav class="navbar">
             <div class="navbar-content">
-                <div class="navbar-brand">Audio Chat</div>
+                <div class="navbar-brand">Audio Kostya</div>
                 <ul class="navbar-nav">
                     <li><a href="groups.html">Мои группы</a></li>
                     <li id="auth-nav">
@@ -574,7 +574,16 @@
         async function loadMessages() {
             try {
                 const result = await Chat.getMessages(50, 1);
-                const messages = result.messages || result;
+                console.log('Chat.getMessages result:', result);
+                // API возвращает { messages: [...], totalCount, page, pageSize, totalPages }
+                let messages = [];
+                if (Array.isArray(result)) {
+                    messages = result;
+                } else if (result && result.messages) {
+                    messages = result.messages;
+                } else if (result && result.Messages) {
+                    messages = result.Messages;
+                }
                 displayMessages(messages);
             } catch (error) {
                 console.error('Load messages error:', error);
