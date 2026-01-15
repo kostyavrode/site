@@ -33,7 +33,7 @@ const AudioModule = {
             throw new Error('Библиотека Janus не загружена. Проверьте подключение к интернету и обновите страницу.');
         }
         
-        const janusUrl = 'http://localhost:8088/janus';
+        const janusUrl = 'wss://audio-kostya.online/janus-ws';
         
         return new Promise((resolve, reject) => {
             try {
@@ -331,11 +331,11 @@ const AudioModule = {
             });
             
             // Проверяем разные варианты события joined
-            const isJoined = event.audiobridge === 'joined' || 
-                           (typeof event.audiobridge === 'string' && event.audiobridge.includes('joined')) ||
-                           (event.room && event.id && 'participants' in event);
+            const isOurJoin = event.audiobridge === 'joined' && event.id; 
+                           
+                           
             
-            if (isJoined || event.audiobridge === 'joined') {
+            if (isOurJoin) {
                 console.log('✅ УСЛОВИЕ JOINED СРАБОТАЛО! Присоединились к аудио комнате:', event.room);
                 const participants = event.participants || [];
                 console.log('👥 Участники в комнате (из joined):', participants.length, participants);
@@ -363,7 +363,7 @@ const AudioModule = {
                 }, 5000);
                 
                 // Создаем offer только если еще не создан (проверяем по наличию локального потока)
-                if (!this.localStream) {
+                if (!this.localStream && !this.offerCreated) {
                     // Запрашиваем доступ к микрофону перед созданием offer
                     console.log('🎤 Запрашиваем доступ к микрофону...');
                     this.requestMicrophoneAccess().then(() => {
@@ -391,7 +391,7 @@ const AudioModule = {
                         console.log('🔇 Создаем offer без микрофона (muted)...');
                         // Все равно создаем offer, но без микрофона
                         this.audioBridge.createOffer({
-                            media: { audio: false, video: false },
+                            media: { audioRecv: true, audioSend: false, video: false },
                             success: (jsep) => {
                                 console.log('✅ WebRTC offer создан (без микрофона), отправляем configure...');
                                 this.audioBridge.send({

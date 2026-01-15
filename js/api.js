@@ -5,10 +5,10 @@
 const API = {
     // Базовые URL сервисов
     baseUrls: {
-        auth: 'http://localhost:5001',
-        groups: 'http://localhost:5002',
-        chat: 'http://localhost:5003',
-        audio: 'http://localhost:5004'
+        auth: '',
+        groups: '',
+        chat: '',
+        audio: ''
     },
 
     // Получить токен из cookies
