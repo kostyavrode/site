@@ -70,7 +70,7 @@ const API = {
                         // Refresh не помог, токен недействителен
                         this.removeToken();
                         const currentPath = window.location.pathname;
-                        if (!currentPath.includes('login.html') && !currentPath.includes('register.html')) {
+                        if (!currentPath.includes('login.html') && !currentPath.includes('register.html') && !currentPath.includes('group.html')) {
                             window.location.href = 'login.html';
                         }
                         throw new Error('Unauthorized');
@@ -79,7 +79,7 @@ const API = {
                     // Refresh не удался
                     this.removeToken();
                     const currentPath = window.location.pathname;
-                    if (!currentPath.includes('login.html') && !currentPath.includes('register.html')) {
+                    if (!currentPath.includes('login.html') && !currentPath.includes('register.html') && !currentPath.includes('group.html')) {
                         window.location.href = 'login.html';
                     }
                     throw new Error('Unauthorized');
