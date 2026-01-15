@@ -11,6 +11,10 @@ const API = {
         audio: ''
     },
 
+    // Флаг, что refresh уже в процессе
+    _isRefreshing: false,
+    _refreshPromise: null,
+
     // Получить токен из cookies
     getToken() {
         const cookies = document.cookie.split(';');
@@ -52,16 +56,34 @@ const API = {
         };
 
         try {
-            const response = await fetch(url, finalOptions);
+            let response = await fetch(url, finalOptions);
             
             if (response.status === 401) {
-                this.removeToken();
-                // Не редиректить, если уже на странице логина, регистрации или группы
-                const currentPath = window.location.pathname;
-                if (!currentPath.includes('login.html') && !currentPath.includes('register.html') && !currentPath.includes('group.html')) {
-                    window.location.href = 'login.html';
+                // Пытаемся обновить токен
+                const refreshed = await this.tryRefreshToken();
+                
+                if (refreshed) {
+                    // Повторяем оригинальный запрос
+                    response = await fetch(url, finalOptions);
+                    
+                    if (response.status === 401) {
+                        // Refresh не помог, токен недействителен
+                        this.removeToken();
+                        const currentPath = window.location.pathname;
+                        if (!currentPath.includes('login.html') && !currentPath.includes('register.html')) {
+                            window.location.href = 'login.html';
+                        }
+                        throw new Error('Unauthorized');
+                    }
+                } else {
+                    // Refresh не удался
+                    this.removeToken();
+                    const currentPath = window.location.pathname;
+                    if (!currentPath.includes('login.html') && !currentPath.includes('register.html')) {
+                        window.location.href = 'login.html';
+                    }
+                    throw new Error('Unauthorized');
                 }
-                throw new Error('Unauthorized');
             }
             
             // Для 403 и 404 на странице группы не делаем редирект
@@ -112,5 +134,41 @@ const API = {
     // DELETE запрос
     async delete(url) {
         return this.request(url, { method: 'DELETE' });
+    },
+
+    // Попытка обновить токен
+    async tryRefreshToken() {
+        // Если уже идёт refresh, ждём результат
+        if (this._isRefreshing) {
+            return this._refreshPromise;
+        }
+
+        this._isRefreshing = true;
+        this._refreshPromise = (async () => {
+            try {
+                const response = await fetch(`${this.baseUrls.auth}/api/Auth/refresh`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({})
+                });
+                
+                if (response.ok) {
+                    console.log('Token refreshed successfully');
+                    return true;
+                }
+                
+                console.log('Token refresh failed:', response.status);
+                return false;
+            } catch (error) {
+                console.error('Token refresh error:', error);
+                return false;
+            } finally {
+                this._isRefreshing = false;
+                this._refreshPromise = null;
+            }
+        })();
+
+        return this._refreshPromise;
     }
 };
