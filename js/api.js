@@ -164,10 +164,21 @@ const API = {
                 
                 if (response.ok) {
                     console.log('Token refreshed successfully');
+                    // Небольшая задержка чтобы cookie успел обновиться
+                    await new Promise(resolve => setTimeout(resolve, 100));
                     return true;
                 }
                 
-                console.log('Token refresh failed:', response.status);
+                // Получаем детали ошибки
+                let errorMessage = `Status: ${response.status}`;
+                try {
+                    const errorData = await response.json();
+                    errorMessage = errorData.error || errorMessage;
+                } catch (e) {
+                    // Игнорируем ошибку парсинга JSON
+                }
+                
+                console.error('Token refresh failed:', errorMessage);
                 return false;
             } catch (error) {
                 console.error('Token refresh error:', error);

@@ -598,7 +598,10 @@
                 return;
             }
 
-            container.innerHTML = messages.map(msg => `
+            // Переворачиваем массив чтобы старые сообщения были сверху, новые снизу
+            const sortedMessages = [...messages].reverse();
+
+            container.innerHTML = sortedMessages.map(msg => `
                 <div class="message">
                     <div class="message-header">
                         <span class="message-author">${Utils.escapeHtml(msg.userNickName || 'Пользователь')}</span>
