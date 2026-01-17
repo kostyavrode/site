@@ -15,6 +15,9 @@ const API = {
     _isRefreshing: false,
     _refreshPromise: null,
 
+    // Интервал автоматического обновления токена
+    _refreshInterval: null,
+
     // Получить токен из cookies
     getToken() {
         const cookies = document.cookie.split(';');
@@ -190,5 +193,52 @@ const API = {
         })();
 
         return this._refreshPromise;
+    },
+
+    // Запустить автоматическое обновление токена каждые 29 минут
+    startAutoRefresh() {
+        // Останавливаем предыдущий интервал, если он есть
+        this.stopAutoRefresh();
+
+        // 29 минут = 29 * 60 * 1000 миллисекунд
+        const REFRESH_INTERVAL_MS = 29 * 60 * 1000;
+
+        console.log('Starting automatic token refresh every 29 minutes');
+        
+        this._refreshInterval = setInterval(async () => {
+            console.log('Auto-refreshing token...');
+            const refreshed = await this.tryRefreshToken();
+            if (!refreshed) {
+                console.warn('Auto-refresh failed, stopping automatic refresh');
+                this.stopAutoRefresh();
+            }
+        }, REFRESH_INTERVAL_MS);
+    },
+
+    // Остановить автоматическое обновление токена
+    stopAutoRefresh() {
+        if (this._refreshInterval !== null) {
+            clearInterval(this._refreshInterval);
+            this._refreshInterval = null;
+            console.log('Stopped automatic token refresh');
+        }
     }
 };
+
+// Отладочная функция: при нажатии клавиши ' (апостроф) обновить токен вручную
+document.addEventListener('keydown', async (event) => {
+    // Проверяем, что нажата клавиша ' (апостроф) и не в поле ввода
+    if (event.key === "'" && event.target.tagName !== 'INPUT' && event.target.tagName !== 'TEXTAREA') {
+        // Предотвращаем стандартное действие, если оно есть
+        event.preventDefault();
+        
+        console.log('[DEBUG] Manual token refresh triggered by pressing apostrophe key');
+        const refreshed = await API.tryRefreshToken();
+        
+        if (refreshed) {
+            console.log('[DEBUG] ✅ Token refreshed successfully!');
+        } else {
+            console.log('[DEBUG] ❌ Token refresh failed!');
+        }
+    }
+});

@@ -381,6 +381,9 @@
                 return;
             }
 
+            // Запускаем автоматическое обновление токена каждые 29 минут
+            API.startAutoRefresh();
+
             // Обновление навигации
             const user = await Auth.getCurrentUser();
             if (user) {
