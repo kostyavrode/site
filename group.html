@@ -802,36 +802,115 @@
             }
         };
         
+        // Хранилище регуляторов громкости для каждого пользователя
+        const participantVolumeControls = new Map();
+        
         // Отображение участников аудио канала
         function displayAudioParticipants(participants) {
-            const section = document.getElementById('audioParticipantsSection');
-            const container = document.getElementById('audioParticipantsList');
-            
-            if (!section || !container) return;
-            
             if (!currentAudioChannel) {
-                section.style.display = 'none';
+                // Скрываем все списки участников
+                document.querySelectorAll('.audio-participants-list').forEach(el => {
+                    el.style.display = 'none';
+                });
                 return;
             }
             
-            section.style.display = 'block';
+            // Находим контейнер для текущего канала
+            const container = document.getElementById(`audioParticipantsContainer-${currentAudioChannel}`);
+            const listContainer = document.getElementById(`audioParticipantsList-${currentAudioChannel}`);
+            
+            if (!container || !listContainer) return;
+            
+            listContainer.style.display = 'block';
             
             if (!participants || participants.length === 0) {
-                container.innerHTML = '<p style="color: var(--text-secondary);">Нет участников</p>';
+                container.innerHTML = '<p style="color: var(--text-secondary); font-size: 12px;">Нет участников</p>';
                 return;
             }
             
             container.innerHTML = participants.map(participant => {
                 const name = participant.display || participant.displayName || participant.name || 'Пользователь';
+                const participantId = participant.id || participant.userId || name;
                 const isYou = participant.id && currentUserId && participant.id.toString() === currentUserId.toString();
+                const volumeKey = `${currentAudioChannel}-${participantId}`;
+                
+                // Получаем сохраненную громкость или используем 100%
+                let savedVolume = 100;
+                try {
+                    const saved = localStorage.getItem(`volume-${volumeKey}`);
+                    if (saved !== null) {
+                        savedVolume = parseInt(saved, 10);
+                    }
+                } catch (e) {
+                    console.warn('Не удалось загрузить громкость:', e);
+                }
+                
                 return `
                     <div style="padding: var(--spacing-sm); margin-bottom: var(--spacing-sm); background-color: var(--bg-secondary); border-radius: var(--border-radius); ${isYou ? 'border-left: 3px solid var(--accent-green);' : ''}">
-                        <div style="font-weight: 600; ${isYou ? 'color: var(--accent-green);' : ''}">
-                            ${isYou ? '🎤 ' : '🔊 '}${Utils.escapeHtml(name)}${isYou ? ' (Вы)' : ''}
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--spacing-xs);">
+                            <div style="font-weight: 600; font-size: 13px; ${isYou ? 'color: var(--accent-green);' : ''}">
+                                ${isYou ? '🎤 ' : '🔊 '}${Utils.escapeHtml(name)}${isYou ? ' (Вы)' : ''}
+                            </div>
                         </div>
+                        ${!isYou ? `
+                            <div style="display: flex; align-items: center; gap: var(--spacing-xs);">
+                                <span style="font-size: 11px; color: var(--text-secondary); min-width: 30px;">🔊</span>
+                                <input type="range" 
+                                       id="volume-${volumeKey}" 
+                                       class="participant-volume-slider" 
+                                       min="0" 
+                                       max="100" 
+                                       value="${savedVolume}"
+                                       data-participant-id="${participantId}"
+                                       data-channel-id="${currentAudioChannel}"
+                                       style="flex: 1; height: 4px; cursor: pointer;"
+                                       title="Громкость: ${savedVolume}%">
+                                <span style="font-size: 11px; color: var(--text-secondary); min-width: 35px; text-align: right;">${savedVolume}%</span>
+                            </div>
+                        ` : ''}
                     </div>
                 `;
             }).join('');
+            
+            // Добавляем обработчики для регуляторов громкости
+            container.querySelectorAll('.participant-volume-slider').forEach(slider => {
+                const participantId = slider.dataset.participantId;
+                const channelId = slider.dataset.channelId;
+                const volumeKey = `volume-${channelId}-${participantId}`;
+                
+                slider.addEventListener('input', (e) => {
+                    const volume = parseInt(e.target.value, 10);
+                    const volumePercent = volume / 100;
+                    
+                    // Обновляем отображение процента
+                    const percentSpan = e.target.parentElement.querySelector('span:last-child');
+                    if (percentSpan) {
+                        percentSpan.textContent = `${volume}%`;
+                    }
+                    
+                    // Сохраняем в localStorage
+                    try {
+                        localStorage.setItem(volumeKey, volume.toString());
+                    } catch (err) {
+                        console.warn('Не удалось сохранить громкость:', err);
+                    }
+                    
+                    // Применяем громкость к аудио элементу
+                    applyParticipantVolume(participantId, volumePercent);
+                });
+                
+                // Сохраняем ссылку на слайдер
+                participantVolumeControls.set(volumeKey, slider);
+            });
+        }
+        
+        // Применение громкости к участнику
+        function applyParticipantVolume(participantId, volume) {
+            const audioModule = getAudioModule();
+            if (!audioModule) return;
+            
+            // Используем метод модуля для установки громкости
+            audioModule.setParticipantVolume(participantId, volume);
         }
         
         window.onParticipantsUpdate = (participants) => {
@@ -954,6 +1033,13 @@
                         <div style="display: flex; gap: var(--spacing-sm); align-items: center;" class="audio-channel-controls">
                             <button class="btn btn-sm btn-primary join-audio-btn" data-channel-id="${channel.id}" data-janus-room="${channel.janusRoomId}">Подключиться</button>
                         </div>
+                        <!-- Список участников в канале -->
+                        <div id="audioParticipantsList-${channel.id}" class="audio-participants-list" style="display: none; margin-top: var(--spacing-md); padding-top: var(--spacing-md); border-top: 1px solid var(--border-color);">
+                            <div style="font-weight: 600; margin-bottom: var(--spacing-sm); font-size: 14px;">🎤 Участники в канале:</div>
+                            <div id="audioParticipantsContainer-${channel.id}" style="max-height: 200px; overflow-y: auto;">
+                                <p style="color: var(--text-secondary); font-size: 12px;">Загрузка...</p>
+                            </div>
+                        </div>
                     </div>
                 `).join('');
             
@@ -1020,11 +1106,10 @@
                 if (muteBtn) muteBtn.remove();
                 if (settingsBtn) settingsBtn.remove();
                 
-                // Скрываем секцию участников аудио канала
-                const audioParticipantsSection = document.getElementById('audioParticipantsSection');
-                if (audioParticipantsSection) {
-                    audioParticipantsSection.style.display = 'none';
-                }
+                // Скрываем список участников в карточке канала
+                document.querySelectorAll('.audio-participants-list').forEach(el => {
+                    el.style.display = 'none';
+                });
                 
                 // Скрываем индикатор аудио активности
                 const statusDiv = document.getElementById(`audioStatus-${channelId}`);

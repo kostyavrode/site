@@ -26,6 +26,11 @@ var AudioModule = {
     rnnoiseProcessor: null,
     rnnoiseSourceNode: null,
     rnnoiseDestinationNode: null,
+    
+    // Управление громкостью участников
+    participantVolumes: new Map(), // Map<participantId, volume>
+    gainNodes: new Map(), // Map<participantId, GainNode>
+    remoteAudioContext: null, // AudioContext для удаленного аудио
 
     async init(roomId, channelId = null, displayName = 'User') {
         console.log('🎯 Audio.init:', roomId, channelId, displayName);
@@ -202,7 +207,46 @@ var AudioModule = {
                         console.log('🔊 Создан audio элемент для воспроизведения');
                     }
                     
-                    this.remoteAudio.srcObject = stream;
+                    // Используем Web Audio API для управления громкостью, если доступно
+                    // Но только если не используется RNNoise (чтобы избежать конфликтов)
+                    if (!this.rnnoiseEnabled && window.AudioContext) {
+                        try {
+                            // Создаем отдельный AudioContext для удаленного аудио (если еще не создан)
+                            if (!this.remoteAudioContext || this.remoteAudioContext.state === 'closed') {
+                                this.remoteAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+                            }
+                            
+                            // Создаем источник из потока
+                            const source = this.remoteAudioContext.createMediaStreamSource(stream);
+                            const gainNode = this.remoteAudioContext.createGain();
+                            const destination = this.remoteAudioContext.createMediaStreamDestination();
+                            
+                            source.connect(gainNode);
+                            gainNode.connect(destination);
+                            
+                            // Устанавливаем начальную громкость
+                            gainNode.gain.value = 1.0;
+                            
+                            // Сохраняем gainNode для управления громкостью
+                            // Используем mid как идентификатор участника, если доступен
+                            const participantId = mid || track.id || 'default';
+                            this.gainNodes.set(participantId, gainNode);
+                            
+                            // Применяем сохраненную громкость если есть
+                            const savedVolume = this.participantVolumes.get(participantId);
+                            if (savedVolume !== undefined) {
+                                gainNode.gain.value = savedVolume;
+                            }
+                            
+                            this.remoteAudio.srcObject = destination.stream;
+                        } catch (error) {
+                            console.warn('⚠️ Не удалось использовать Web Audio API, используем обычный способ:', error);
+                            this.remoteAudio.srcObject = stream;
+                        }
+                    } else {
+                        this.remoteAudio.srcObject = stream;
+                    }
+                    
                     this.remoteAudio.play().then(() => {
                         console.log('✅ Удаленный аудио поток воспроизводится!');
                     }).catch((error) => {
@@ -860,13 +904,6 @@ var AudioModule = {
                 return false;
             }
             
-            // Проверяем наличие локального потока
-            if (!this.localStream || !this.localStream.getAudioTracks || this.localStream.getAudioTracks().length === 0) {
-                console.error('❌ Локальный поток не содержит аудио треков');
-                newStream.getTracks().forEach(track => track.stop());
-                return false;
-            }
-            
             const webrtcStuff = this.audioBridge.webrtcStuff;
             if (!webrtcStuff || !webrtcStuff.pc) {
                 console.error('❌ RTCPeerConnection недоступен');
@@ -874,16 +911,18 @@ var AudioModule = {
                 return false;
             }
             
-            const oldTrack = this.localStream.getAudioTracks()[0];
+            // Находим текущий активный трек из RTCPeerConnection
             const sender = webrtcStuff.pc.getSenders().find(s => 
                 s.track && s.track.kind === 'audio'
             );
             
-            if (!sender || !oldTrack) {
-                console.error('❌ Не найден RTCRtpSender или старый трек');
+            if (!sender || !sender.track) {
+                console.error('❌ Не найден RTCRtpSender или активный трек');
                 newStream.getTracks().forEach(track => track.stop());
                 return false;
             }
+            
+            const oldTrack = sender.track;
             
             try {
                 await sender.replaceTrack(newTrack);
@@ -918,6 +957,24 @@ var AudioModule = {
             }
         } catch (e) {
             console.warn('Не удалось загрузить настройку RNNoise:', e);
+        }
+    },
+    
+    // Установить громкость участника
+    setParticipantVolume(participantId, volume) {
+        // volume от 0 до 1
+        this.participantVolumes.set(participantId, volume);
+        
+        // Применяем к gainNode если есть
+        const gainNode = this.gainNodes.get(participantId);
+        if (gainNode) {
+            gainNode.gain.value = volume;
+            console.log(`🔊 Установлена громкость для участника ${participantId}: ${(volume * 100).toFixed(0)}%`);
+        } else {
+            // Если нет gainNode, применяем к общему remoteAudio
+            if (this.remoteAudio) {
+                this.remoteAudio.volume = volume;
+            }
         }
     },
 
@@ -967,6 +1024,18 @@ var AudioModule = {
         }
         this.audioContext = null;
         this.rnnoiseEnabled = false;
+        
+        // Очищаем управление громкостью
+        this.gainNodes.clear();
+        this.participantVolumes.clear();
+        if (this.remoteAudioContext && this.remoteAudioContext.state !== 'closed') {
+            try {
+                this.remoteAudioContext.close();
+            } catch (e) {
+                console.warn('Ошибка при закрытии remoteAudioContext:', e);
+            }
+        }
+        this.remoteAudioContext = null;
         
         if (this.audioBridge) {
             try {
