@@ -17,6 +17,14 @@ const AudioModule = {
         echoCancellation: true,
         autoGainControl: true
     },
+    
+    // RNNoise настройки
+    rnnoiseEnabled: false,
+    rnnoiseModule: null,
+    audioContext: null,
+    rnnoiseProcessor: null,
+    rnnoiseSourceNode: null,
+    rnnoiseDestinationNode: null,
 
     async init(roomId, channelId = null, displayName = 'User') {
         console.log('🎯 Audio.init:', roomId, channelId, displayName);
@@ -26,6 +34,8 @@ const AudioModule = {
         
         // Загружаем сохраненные настройки аудио
         this.loadAudioSettings();
+        // Загружаем настройку RNNoise
+        this.loadRNNoiseSetting();
         
         // Проверка, загружена ли библиотека adapter (WebRTC)
         // Adapter может быть доступен как window.adapter
@@ -684,6 +694,161 @@ const AudioModule = {
         }
     },
 
+    // Инициализация RNNoise
+    async initRNNoise(stream) {
+        // Проверяем наличие библиотеки (может быть window.webNoiseSuppressor или другой глобальный объект)
+        const noiseSuppressor = typeof webNoiseSuppressor !== 'undefined' ? webNoiseSuppressor :
+                                typeof window !== 'undefined' && window.webNoiseSuppressor ? window.webNoiseSuppressor :
+                                null;
+        
+        if (!noiseSuppressor) {
+            console.warn('⚠️ RNNoise библиотека не загружена. Убедитесь, что скрипт загружен.');
+            return null;
+        }
+        
+        try {
+            if (!this.audioContext) {
+                this.audioContext = new AudioContext({ sampleRate: 48000 });
+            }
+            
+            // Создаем источник из потока
+            const sourceNode = this.audioContext.createMediaStreamSource(stream);
+            
+            // Пытаемся создать RNNoise процессор
+            let processor;
+            if (typeof noiseSuppressor.createRnnoiseWorkletNode === 'function') {
+                processor = await noiseSuppressor.createRnnoiseWorkletNode(this.audioContext);
+            } else if (typeof noiseSuppressor.RnnoiseWorkletNode !== 'undefined') {
+                // Альтернативный способ
+                processor = new noiseSuppressor.RnnoiseWorkletNode(this.audioContext);
+            } else {
+                console.error('❌ Не найден метод создания RNNoise процессора');
+                return null;
+            }
+            
+            // Создаем назначение для обработанного потока
+            const destinationNode = this.audioContext.createMediaStreamDestination();
+            
+            // Подключаем цепочку: источник -> RNNoise -> назначение
+            sourceNode.connect(processor);
+            processor.connect(destinationNode);
+            
+            this.rnnoiseProcessor = processor;
+            this.rnnoiseSourceNode = sourceNode;
+            this.rnnoiseDestinationNode = destinationNode;
+            
+            console.log('✅ RNNoise инициализирован');
+            return destinationNode.stream;
+        } catch (error) {
+            console.error('❌ Ошибка инициализации RNNoise:', error);
+            console.error('Детали ошибки:', error.stack);
+            return null;
+        }
+    },
+    
+    // Включить/выключить RNNoise
+    async toggleRNNoise() {
+        if (!this.rnnoiseEnabled) {
+            // Включаем RNNoise
+            if (!this.localStream) {
+                console.warn('⚠️ Нет активного аудио потока для RNNoise');
+                return false;
+            }
+            
+            const processedStream = await this.initRNNoise(this.localStream);
+            if (processedStream) {
+                // Заменяем трек в RTCPeerConnection
+                const oldTrack = this.localStream.getAudioTracks()[0];
+                const newTrack = processedStream.getAudioTracks()[0];
+                
+                if (oldTrack && newTrack && this.audioBridge) {
+                    const webrtcStuff = this.audioBridge.webrtcStuff;
+                    if (webrtcStuff && webrtcStuff.pc) {
+                        const sender = webrtcStuff.pc.getSenders().find(s => 
+                            s.track && s.track.kind === 'audio' && s.track.id === oldTrack.id
+                        );
+                        
+                        if (sender) {
+                            await sender.replaceTrack(newTrack);
+                            this.localStream.removeTrack(oldTrack);
+                            this.localStream.addTrack(newTrack);
+                            oldTrack.stop();
+                            this.rnnoiseEnabled = true;
+                            console.log('✅ RNNoise включен');
+                            
+                            // Сохраняем настройку
+                            try {
+                                localStorage.setItem('rnnoiseEnabled', 'true');
+                            } catch (e) {
+                                console.warn('Не удалось сохранить настройку RNNoise:', e);
+                            }
+                            
+                            return true;
+                        }
+                    }
+                }
+            }
+            return false;
+        } else {
+            // Выключаем RNNoise - пересоздаем поток без обработки
+            if (this.rnnoiseProcessor) {
+                this.rnnoiseProcessor.disconnect();
+                if (this.rnnoiseSourceNode) {
+                    this.rnnoiseSourceNode.disconnect();
+                }
+                this.rnnoiseProcessor = null;
+                this.rnnoiseSourceNode = null;
+                this.rnnoiseDestinationNode = null;
+            }
+            
+            // Пересоздаем поток без RNNoise
+            const constraints = this.getAudioConstraints();
+            const newStream = await navigator.mediaDevices.getUserMedia(constraints);
+            const newTrack = newStream.getAudioTracks()[0];
+            
+            if (newTrack && this.audioBridge) {
+                const webrtcStuff = this.audioBridge.webrtcStuff;
+                if (webrtcStuff && webrtcStuff.pc) {
+                    const oldTrack = this.localStream.getAudioTracks()[0];
+                    const sender = webrtcStuff.pc.getSenders().find(s => 
+                        s.track && s.track.kind === 'audio'
+                    );
+                    
+                    if (sender && oldTrack) {
+                        await sender.replaceTrack(newTrack);
+                        this.localStream.removeTrack(oldTrack);
+                        this.localStream.addTrack(newTrack);
+                        oldTrack.stop();
+                        this.rnnoiseEnabled = false;
+                        console.log('✅ RNNoise выключен');
+                        
+                        // Сохраняем настройку
+                        try {
+                            localStorage.setItem('rnnoiseEnabled', 'false');
+                        } catch (e) {
+                            console.warn('Не удалось сохранить настройку RNNoise:', e);
+                        }
+                        
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+    },
+    
+    // Загрузить настройку RNNoise из localStorage
+    loadRNNoiseSetting() {
+        try {
+            const saved = localStorage.getItem('rnnoiseEnabled');
+            if (saved !== null) {
+                this.rnnoiseEnabled = saved === 'true';
+            }
+        } catch (e) {
+            console.warn('Не удалось загрузить настройку RNNoise:', e);
+        }
+    },
+
     // Переключить микрофон (mute/unmute)
     toggleMute() {
         this.isMuted = !this.isMuted;
@@ -702,6 +867,34 @@ const AudioModule = {
             clearInterval(this.participantsUpdateInterval);
             this.participantsUpdateInterval = null;
         }
+        
+        // Очищаем RNNoise ресурсы
+        if (this.rnnoiseProcessor) {
+            try {
+                this.rnnoiseProcessor.disconnect();
+            } catch (e) {
+                console.warn('Ошибка при отключении RNNoise процессора:', e);
+            }
+            this.rnnoiseProcessor = null;
+        }
+        if (this.rnnoiseSourceNode) {
+            try {
+                this.rnnoiseSourceNode.disconnect();
+            } catch (e) {
+                console.warn('Ошибка при отключении RNNoise источника:', e);
+            }
+            this.rnnoiseSourceNode = null;
+        }
+        this.rnnoiseDestinationNode = null;
+        if (this.audioContext && this.audioContext.state !== 'closed') {
+            try {
+                await this.audioContext.close();
+            } catch (e) {
+                console.warn('Ошибка при закрытии AudioContext:', e);
+            }
+        }
+        this.audioContext = null;
+        this.rnnoiseEnabled = false;
         
         if (this.audioBridge) {
             try {
