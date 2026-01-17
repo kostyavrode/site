@@ -777,60 +777,58 @@ var AudioModule = {
             const oldTrack = this.localStream.getAudioTracks()[0];
             const newTrack = processedStream.getAudioTracks()[0];
             
-                if (!oldTrack || !newTrack) {
-                    console.error('❌ Не найдены треки для замены:', { oldTrack: !!oldTrack, newTrack: !!newTrack });
-                    if (processedStream) {
-                        processedStream.getTracks().forEach(track => track.stop());
-                    }
-                    return false;
-                }
-                
-                if (!this.audioBridge) {
-                    console.error('❌ audioBridge недоступен');
+            if (!oldTrack || !newTrack) {
+                console.error('❌ Не найдены треки для замены:', { oldTrack: !!oldTrack, newTrack: !!newTrack });
+                if (processedStream) {
                     processedStream.getTracks().forEach(track => track.stop());
-                    return false;
                 }
-                
-                const webrtcStuff = this.audioBridge.webrtcStuff;
-                if (!webrtcStuff || !webrtcStuff.pc) {
-                    console.error('❌ RTCPeerConnection недоступен');
-                    processedStream.getTracks().forEach(track => track.stop());
-                    return false;
-                }
-                
-                const sender = webrtcStuff.pc.getSenders().find(s => 
-                    s.track && s.track.kind === 'audio' && s.track.id === oldTrack.id
-                );
-                
-                if (!sender) {
-                    console.error('❌ Не найден RTCRtpSender для замены трека');
-                    processedStream.getTracks().forEach(track => track.stop());
-                    return false;
-                }
-                
-                try {
-                    await sender.replaceTrack(newTrack);
-                    this.localStream.removeTrack(oldTrack);
-                    this.localStream.addTrack(newTrack);
-                    oldTrack.stop();
-                    this.rnnoiseEnabled = true;
-                    console.log('✅ RNNoise включен');
-                    
-                    // Сохраняем настройку
-                    try {
-                        localStorage.setItem('rnnoiseEnabled', 'true');
-                    } catch (e) {
-                        console.warn('Не удалось сохранить настройку RNNoise:', e);
-                    }
-                    
-                    return true;
-                } catch (error) {
-                    console.error('❌ Ошибка при замене трека:', error);
-                    processedStream.getTracks().forEach(track => track.stop());
-                    return false;
-                }
+                return false;
             }
-            return false;
+            
+            if (!this.audioBridge) {
+                console.error('❌ audioBridge недоступен');
+                processedStream.getTracks().forEach(track => track.stop());
+                return false;
+            }
+            
+            const webrtcStuff = this.audioBridge.webrtcStuff;
+            if (!webrtcStuff || !webrtcStuff.pc) {
+                console.error('❌ RTCPeerConnection недоступен');
+                processedStream.getTracks().forEach(track => track.stop());
+                return false;
+            }
+            
+            const sender = webrtcStuff.pc.getSenders().find(s => 
+                s.track && s.track.kind === 'audio' && s.track.id === oldTrack.id
+            );
+            
+            if (!sender) {
+                console.error('❌ Не найден RTCRtpSender для замены трека');
+                processedStream.getTracks().forEach(track => track.stop());
+                return false;
+            }
+            
+            try {
+                await sender.replaceTrack(newTrack);
+                this.localStream.removeTrack(oldTrack);
+                this.localStream.addTrack(newTrack);
+                oldTrack.stop();
+                this.rnnoiseEnabled = true;
+                console.log('✅ RNNoise включен');
+                
+                // Сохраняем настройку
+                try {
+                    localStorage.setItem('rnnoiseEnabled', 'true');
+                } catch (e) {
+                    console.warn('Не удалось сохранить настройку RNNoise:', e);
+                }
+                
+                return true;
+            } catch (error) {
+                console.error('❌ Ошибка при замене трека:', error);
+                processedStream.getTracks().forEach(track => track.stop());
+                return false;
+            }
         } else {
             // Выключаем RNNoise - пересоздаем поток без обработки
             if (this.rnnoiseProcessor) {
@@ -870,32 +868,44 @@ var AudioModule = {
             }
             
             const webrtcStuff = this.audioBridge.webrtcStuff;
-            if (webrtcStuff && webrtcStuff.pc) {
-                const oldTrack = this.localStream.getAudioTracks()[0];
-                    const sender = webrtcStuff.pc.getSenders().find(s => 
-                        s.track && s.track.kind === 'audio'
-                    );
-                    
-                    if (sender && oldTrack) {
-                        await sender.replaceTrack(newTrack);
-                        this.localStream.removeTrack(oldTrack);
-                        this.localStream.addTrack(newTrack);
-                        oldTrack.stop();
-                        this.rnnoiseEnabled = false;
-                        console.log('✅ RNNoise выключен');
-                        
-                        // Сохраняем настройку
-                        try {
-                            localStorage.setItem('rnnoiseEnabled', 'false');
-                        } catch (e) {
-                            console.warn('Не удалось сохранить настройку RNNoise:', e);
-                        }
-                        
-                        return true;
-                    }
-                }
+            if (!webrtcStuff || !webrtcStuff.pc) {
+                console.error('❌ RTCPeerConnection недоступен');
+                newStream.getTracks().forEach(track => track.stop());
+                return false;
             }
-            return false;
+            
+            const oldTrack = this.localStream.getAudioTracks()[0];
+            const sender = webrtcStuff.pc.getSenders().find(s => 
+                s.track && s.track.kind === 'audio'
+            );
+            
+            if (!sender || !oldTrack) {
+                console.error('❌ Не найден RTCRtpSender или старый трек');
+                newStream.getTracks().forEach(track => track.stop());
+                return false;
+            }
+            
+            try {
+                await sender.replaceTrack(newTrack);
+                this.localStream.removeTrack(oldTrack);
+                this.localStream.addTrack(newTrack);
+                oldTrack.stop();
+                this.rnnoiseEnabled = false;
+                console.log('✅ RNNoise выключен');
+                
+                // Сохраняем настройку
+                try {
+                    localStorage.setItem('rnnoiseEnabled', 'false');
+                } catch (e) {
+                    console.warn('Не удалось сохранить настройку RNNoise:', e);
+                }
+                
+                return true;
+            } catch (error) {
+                console.error('❌ Ошибка при замене трека:', error);
+                newStream.getTracks().forEach(track => track.stop());
+                return false;
+            }
         }
     },
     
@@ -997,8 +1007,17 @@ var AudioModule = {
 
 // Экспортируем в window для глобального доступа
 // НЕ перезаписываем встроенный Audio (HTML5 Audio API)
-if (typeof window !== 'undefined') {
-    window.AudioModule = AudioModule;
-    // НЕ перезаписываем window.Audio, так как это встроенный класс браузера
-    console.log('✅ AudioModule экспортирован в window.AudioModule');
-}
+(function() {
+    try {
+        if (typeof window !== 'undefined') {
+            window.AudioModule = AudioModule;
+            // НЕ перезаписываем window.Audio, так как это встроенный класс браузера
+            console.log('✅ AudioModule экспортирован в window.AudioModule');
+            console.log('✅ AudioModule методы:', Object.keys(AudioModule).slice(0, 10));
+        } else {
+            console.error('❌ window не определен, не могу экспортировать AudioModule');
+        }
+    } catch (error) {
+        console.error('❌ Ошибка при экспорте AudioModule в window:', error);
+    }
+})();
