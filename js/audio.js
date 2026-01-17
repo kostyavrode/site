@@ -10,12 +10,22 @@ const AudioModule = {
     participantsUpdateInterval: null,
     offerCreated: false,
     jsepProcessed: false,
+    
+    // Настройки аудио
+    audioSettings: {
+        noiseSuppression: true,
+        echoCancellation: true,
+        autoGainControl: true
+    },
 
     async init(roomId, channelId = null, displayName = 'User') {
         console.log('🎯 Audio.init:', roomId, channelId, displayName);
         this.roomId = roomId;
         this.channelId = channelId;
         this.displayName = displayName;
+        
+        // Загружаем сохраненные настройки аудио
+        this.loadAudioSettings();
         
         // Проверка, загружена ли библиотека adapter (WebRTC)
         // Adapter может быть доступен как window.adapter
@@ -237,17 +247,139 @@ const AudioModule = {
         });
     },
 
-    // Запрос доступа к микрофону
+    // Получить настройки аудио constraints
+    getAudioConstraints() {
+        return {
+            audio: {
+                noiseSuppression: this.audioSettings.noiseSuppression,
+                echoCancellation: this.audioSettings.echoCancellation,
+                autoGainControl: this.audioSettings.autoGainControl
+            },
+            video: false
+        };
+    },
+
+    // Обновить настройки аудио
+    updateAudioSettings(settings) {
+        const oldSettings = { ...this.audioSettings };
+        this.audioSettings = { ...this.audioSettings, ...settings };
+        
+        // Сохраняем в localStorage
+        try {
+            localStorage.setItem('audioSettings', JSON.stringify(this.audioSettings));
+        } catch (e) {
+            console.warn('Не удалось сохранить настройки в localStorage:', e);
+        }
+        
+        console.log('🔧 Настройки аудио обновлены:', {
+            старые: oldSettings,
+            новые: this.audioSettings
+        });
+        
+        return this.audioSettings;
+    },
+
+    // Загрузить настройки из localStorage
+    loadAudioSettings() {
+        try {
+            const saved = localStorage.getItem('audioSettings');
+            if (saved) {
+                const parsed = JSON.parse(saved);
+                this.audioSettings = { ...this.audioSettings, ...parsed };
+                console.log('📥 Настройки аудио загружены из localStorage:', this.audioSettings);
+            }
+        } catch (e) {
+            console.warn('Не удалось загрузить настройки из localStorage:', e);
+        }
+        return this.audioSettings;
+    },
+
+    // Запрос доступа к микрофону с настройками
     async requestMicrophoneAccess() {
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-            console.log('🎤 Разрешение на микрофон получено');
+            const constraints = this.getAudioConstraints();
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            console.log('🎤 Разрешение на микрофон получено с настройками:', this.audioSettings);
             // Останавливаем временный поток, он будет создан Janus
             stream.getTracks().forEach(track => track.stop());
             return stream;
         } catch (error) {
             console.error('❌ Ошибка доступа к микрофону:', error);
             throw error;
+        }
+    },
+    
+    // Пересоздать аудио трек с новыми настройками (во время разговора)
+    async replaceAudioTrack() {
+        if (!this.audioBridge || !this.localStream) {
+            console.warn('⚠️ Невозможно заменить трек: нет активного соединения');
+            return false;
+        }
+        
+        try {
+            console.log('🔄 Пересоздаем аудио трек с настройками:', this.audioSettings);
+            
+            // Получаем текущий аудио трек
+            const oldTrack = this.localStream.getAudioTracks()[0];
+            if (!oldTrack) {
+                console.warn('⚠️ Не найден старый аудио трек');
+                return false;
+            }
+            
+            // Создаем новый поток с новыми настройками
+            const constraints = this.getAudioConstraints();
+            const newStream = await navigator.mediaDevices.getUserMedia(constraints);
+            const newTrack = newStream.getAudioTracks()[0];
+            
+            if (!newTrack) {
+                console.error('❌ Не удалось получить новый аудио трек');
+                newStream.getTracks().forEach(track => track.stop());
+                return false;
+            }
+            
+            // Получаем RTCPeerConnection из Janus
+            const webrtcStuff = this.audioBridge.webrtcStuff;
+            if (!webrtcStuff || !webrtcStuff.pc) {
+                console.error('❌ RTCPeerConnection не найден');
+                newStream.getTracks().forEach(track => track.stop());
+                return false;
+            }
+            
+            const pc = webrtcStuff.pc;
+            
+            // Находим sender для аудио трека
+            const sender = pc.getSenders().find(s => {
+                return s.track && s.track.kind === 'audio' && s.track.id === oldTrack.id;
+            });
+            
+            if (!sender) {
+                console.error('❌ Не найден RTCRtpSender для замены трека');
+                newStream.getTracks().forEach(track => track.stop());
+                return false;
+            }
+            
+            // Заменяем трек
+            await sender.replaceTrack(newTrack);
+            console.log('✅ Аудио трек заменен успешно');
+            
+            // Обновляем локальный поток
+            oldTrack.stop();
+            this.localStream.removeTrack(oldTrack);
+            this.localStream.addTrack(newTrack);
+            
+            // Обновляем локальный поток в Janus (если нужно)
+            if (webrtcStuff.localStream) {
+                webrtcStuff.localStream.removeTrack(oldTrack);
+                webrtcStuff.localStream.addTrack(newTrack);
+            }
+            
+            // Останавливаем временный поток (оставляем только трек)
+            newStream.getVideoTracks().forEach(track => track.stop());
+            
+            return true;
+        } catch (error) {
+            console.error('❌ Ошибка при замене аудио трека:', error);
+            return false;
         }
     },
 
@@ -368,8 +500,9 @@ const AudioModule = {
                     console.log('🎤 Запрашиваем доступ к микрофону...');
                     this.requestMicrophoneAccess().then(() => {
                         console.log('✅ Доступ к микрофону получен, создаем WebRTC offer...');
+                        const audioConstraints = this.getAudioConstraints();
                         this.audioBridge.createOffer({
-                            media: { audio: true, video: false },
+                            media: audioConstraints,
                         success: (jsepOffer) => {
                             console.log('✅ WebRTC offer создан, отправляем configure...');
                             this.offerCreated = true; // Устанавливаем флаг, что offer создан

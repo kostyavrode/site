@@ -222,6 +222,37 @@
                 display: none;
             }
         }
+        
+        /* Мобильные устройства */
+        @media (max-width: 768px) {
+            .group-layout {
+                grid-template-columns: 1fr;
+            }
+            .sidebar {
+                display: none;
+            }
+            .audio-channels {
+                display: none;
+            }
+            #mobileAudioBtn {
+                display: inline-block;
+            }
+        }
+        
+        @media (min-width: 769px) {
+            #mobileAudioBtn {
+                display: none;
+            }
+        }
+        
+        /* Модальное окно аудиоканалов - скрыто по умолчанию */
+        .audio-channels-modal {
+            display: none;
+        }
+        
+        .audio-channels-modal.active {
+            display: flex;
+        }
     </style>
 </head>
 <body>
@@ -247,6 +278,7 @@
                     </div>
                     <div class="d-flex gap-sm">
                         <button class="btn btn-sm" id="joinGroupBtn" style="display: none;">Присоединиться</button>
+                        <button class="btn btn-sm btn-primary" id="mobileAudioBtn" style="display: none;">🎤 Аудио</button>
                         <a href="groups.html" class="btn btn-sm">Назад к группам</a>
                     </div>
                 </div>
@@ -320,6 +352,70 @@
                         <button type="button" class="btn" style="width: 100%; margin-top: var(--spacing-sm);" onclick="document.getElementById('joinGroupModal').classList.add('hidden')">Отмена</button>
                     </div>
                 </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Модальное окно аудио каналов (для мобильных) -->
+    <div id="audioChannelsModal" class="audio-channels-modal" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.9); z-index: 1001; flex-direction: column;">
+        <div style="padding: var(--spacing-md); border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; background: var(--bg-secondary);">
+            <h2 style="margin: 0;">Аудио каналы</h2>
+            <button class="btn btn-sm" onclick="document.getElementById('audioChannelsModal').classList.remove('active')">✕ Закрыть</button>
+        </div>
+        <div style="flex: 1; overflow-y: auto; padding: var(--spacing-md);" id="mobileAudioChannelsList">
+            <p style="color: var(--text-secondary);">Загрузка...</p>
+        </div>
+    </div>
+
+    <!-- Модальное окно настроек аудио -->
+    <div id="audioSettingsModal" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 1002;">
+        <div class="card" style="max-width: 450px; width: 90%;">
+            <div class="card-header">
+                <h3 class="card-title">⚙️ Настройки аудио</h3>
+            </div>
+            <div class="card-body">
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: var(--spacing-sm);">
+                        <span>
+                            <strong>Шумоподавление</strong>
+                            <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">
+                                Убирает фоновые шумы (вентилятор, клавиатура и т.д.)
+                            </div>
+                        </span>
+                        <input type="checkbox" id="noiseSuppression" class="form-checkbox" checked style="width: 20px; height: 20px;">
+                    </label>
+                </div>
+                
+                <div class="form-group" style="margin-top: var(--spacing-md);">
+                    <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: var(--spacing-sm);">
+                        <span>
+                            <strong>Эхоподавление</strong>
+                            <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">
+                                Убирает эхо от колонок (включите при использовании колонок)
+                            </div>
+                        </span>
+                        <input type="checkbox" id="echoCancellation" class="form-checkbox" checked style="width: 20px; height: 20px;">
+                    </label>
+                </div>
+                
+                <div class="form-group" style="margin-top: var(--spacing-md);">
+                    <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: var(--spacing-sm);">
+                        <span>
+                            <strong>Автоматическая регулировка громкости</strong>
+                            <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">
+                                Автоматически выравнивает громкость вашего голоса
+                            </div>
+                        </span>
+                        <input type="checkbox" id="autoGainControl" class="form-checkbox" checked style="width: 20px; height: 20px;">
+                    </label>
+                </div>
+                
+                <div class="form-group" style="margin-top: var(--spacing-lg);">
+                    <button type="button" id="applyAudioSettingsBtn" class="btn btn-primary" style="width: 100%;">Применить настройки</button>
+                    <button type="button" class="btn" style="width: 100%; margin-top: var(--spacing-sm);" onclick="document.getElementById('audioSettingsModal').classList.add('hidden')">Отмена</button>
+                </div>
+                
+                <div id="audioSettingsStatus" style="margin-top: var(--spacing-md); padding: var(--spacing-sm); border-radius: var(--border-radius); display: none;"></div>
             </div>
         </div>
     </div>
@@ -509,6 +605,14 @@
 
                 // Загрузка аудио каналов
                 await loadAudioChannels();
+                
+                // Обработчик кнопки мобильных аудиоканалов
+                const mobileAudioBtn = document.getElementById('mobileAudioBtn');
+                if (mobileAudioBtn) {
+                    mobileAudioBtn.onclick = () => {
+                        document.getElementById('audioChannelsModal').classList.add('active');
+                    };
+                }
             } catch (error) {
                 console.error('Load group error:', error);
                 
@@ -741,33 +845,64 @@
         // Отображение аудио каналов
         function displayAudioChannels(channels) {
             const container = document.getElementById('audioChannelsList');
-            if (!channels || channels.length === 0) {
-                container.innerHTML = '<p style="color: var(--text-secondary);">Нет аудио каналов</p>';
-                return;
-            }
-
-            container.innerHTML = channels.map(channel => `
-                <div class="audio-channel" data-channel-id="${channel.id}" data-janus-room="${channel.janusRoomId}">
-                    <div style="font-weight: 600; margin-bottom: var(--spacing-sm);">${Utils.escapeHtml(channel.name)}</div>
-                    ${channel.description ? `<div style="font-size: 12px; color: var(--text-secondary); margin-bottom: var(--spacing-sm);">${Utils.escapeHtml(channel.description)}</div>` : ''}
-                    <div id="channelParticipants-${channel.id}" class="channel-participants" style="font-size: 12px; color: var(--text-secondary); margin-bottom: var(--spacing-sm);"></div>
-                    <div style="display: flex; gap: var(--spacing-sm); align-items: center;">
-                        <button class="btn btn-sm btn-primary join-audio-btn" data-channel-id="${channel.id}" data-janus-room="${channel.janusRoomId}">Подключиться</button>
+            const mobileContainer = document.getElementById('mobileAudioChannelsList');
+            
+            const channelHtml = !channels || channels.length === 0 
+                ? '<p style="color: var(--text-secondary);">Нет аудио каналов</p>'
+                : channels.map(channel => `
+                    <div class="audio-channel" data-channel-id="${channel.id}" data-janus-room="${channel.janusRoomId}">
+                        <div style="font-weight: 600; margin-bottom: var(--spacing-sm);">${Utils.escapeHtml(channel.name)}</div>
+                        ${channel.description ? `<div style="font-size: 12px; color: var(--text-secondary); margin-bottom: var(--spacing-sm);">${Utils.escapeHtml(channel.description)}</div>` : ''}
+                        <div id="channelParticipants-${channel.id}" class="channel-participants" style="font-size: 12px; color: var(--text-secondary); margin-bottom: var(--spacing-sm);"></div>
+                        <div style="display: flex; gap: var(--spacing-sm); align-items: center;" class="audio-channel-controls">
+                            <button class="btn btn-sm btn-primary join-audio-btn" data-channel-id="${channel.id}" data-janus-room="${channel.janusRoomId}">Подключиться</button>
+                        </div>
                     </div>
-                </div>
-            `).join('');
+                `).join('');
+            
+            if (container) {
+                container.innerHTML = channelHtml;
+            }
+            
+            // Также заполняем мобильное модальное окно
+            if (mobileContainer) {
+                mobileContainer.innerHTML = channelHtml;
+            }
 
             // Загружаем участников для каждого канала
             channels.forEach(channel => loadChannelParticipants(channel.id));
 
-            // Обработчики подключения к каналам
-            container.querySelectorAll('.join-audio-btn').forEach(btn => {
-                btn.addEventListener('click', async () => {
-                    const channelId = btn.dataset.channelId;
-                    const janusRoomId = parseInt(btn.dataset.janusRoom);
-                    await connectToAudioChannel(channelId, janusRoomId, btn);
+            // Обработчики подключения к каналам (для десктопа)
+            if (container) {
+                container.querySelectorAll('.join-audio-btn').forEach(btn => {
+                    btn.addEventListener('click', async () => {
+                        const channelId = btn.dataset.channelId;
+                        const janusRoomId = parseInt(btn.dataset.janusRoom);
+                        await connectToAudioChannel(channelId, janusRoomId, btn);
+                    });
                 });
-            });
+            }
+            
+            // Обработчики подключения к каналам (для мобильного)
+            if (mobileContainer) {
+                mobileContainer.querySelectorAll('.join-audio-btn').forEach(btn => {
+                    btn.addEventListener('click', async () => {
+                        const channelId = btn.dataset.channelId;
+                        const janusRoomId = parseInt(btn.dataset.janusRoom);
+                        // Закрываем модальное окно после подключения
+                        document.getElementById('audioChannelsModal').classList.remove('active');
+                        await connectToAudioChannel(channelId, janusRoomId, btn);
+                        // Обновляем кнопки в мобильном контейнере тоже
+                        const desktopBtn = container?.querySelector(`[data-channel-id="${channelId}"]`);
+                        if (desktopBtn) {
+                            desktopBtn.textContent = currentAudioChannel === channelId ? 'Отключиться' : 'Подключиться';
+                            if (currentAudioChannel === channelId) {
+                                desktopBtn.closest('.audio-channel')?.classList.add('active');
+                            }
+                        }
+                    });
+                });
+            }
         }
 
         // Подключение к аудио каналу
@@ -780,6 +915,13 @@
                 currentAudioChannel = null;
                 button.textContent = 'Подключиться';
                 button.closest('.audio-channel').classList.remove('active');
+                
+                // Убираем кнопку настроек
+                const channelCard = button.closest('.audio-channel');
+                const settingsBtn = channelCard?.querySelector('.audio-settings-btn');
+                if (settingsBtn) {
+                    settingsBtn.remove();
+                }
                 
                 // Скрываем индикатор аудио активности
                 const statusDiv = document.getElementById(`audioStatus-${channelId}`);
@@ -824,6 +966,21 @@
                 button.textContent = 'Отключиться';
                 button.disabled = false; // Активируем кнопку после успешного подключения
                 button.closest('.audio-channel').classList.add('active');
+                
+                // Добавляем кнопку настроек, если её нет
+                const channelCard = button.closest('.audio-channel');
+                const controlsContainer = channelCard?.querySelector('.audio-channel-controls');
+                if (controlsContainer && !controlsContainer.querySelector('.audio-settings-btn')) {
+                    const settingsBtn = document.createElement('button');
+                    settingsBtn.className = 'btn btn-sm audio-settings-btn';
+                    settingsBtn.title = 'Настройки аудио';
+                    settingsBtn.textContent = '⚙️';
+                    settingsBtn.onclick = () => {
+                        loadAudioSettingsToForm();
+                        document.getElementById('audioSettingsModal').classList.remove('hidden');
+                    };
+                    controlsContainer.appendChild(settingsBtn);
+                }
                 
                 // Показываем индикатор аудио активности
                 const statusDiv = document.getElementById(`audioStatus-${channelId}`);
@@ -894,6 +1051,89 @@
                 Utils.showError(error.message || 'Ошибка при создании аудио канала');
             }
         });
+
+        // Загрузка текущих настроек аудио в форму
+        function loadAudioSettingsToForm() {
+            const audioModule = getAudioModule();
+            if (!audioModule) return;
+            
+            const settings = audioModule.audioSettings || {
+                noiseSuppression: true,
+                echoCancellation: true,
+                autoGainControl: true
+            };
+            
+            document.getElementById('noiseSuppression').checked = settings.noiseSuppression !== false;
+            document.getElementById('echoCancellation').checked = settings.echoCancellation !== false;
+            document.getElementById('autoGainControl').checked = settings.autoGainControl !== false;
+        }
+
+        // Применение настроек аудио
+        async function applyAudioSettings() {
+            const audioModule = getAudioModule();
+            if (!audioModule) {
+                Utils.showError('Аудио модуль не загружен');
+                return;
+            }
+            
+            const statusDiv = document.getElementById('audioSettingsStatus');
+            statusDiv.style.display = 'block';
+            statusDiv.innerHTML = '<p style="color: var(--accent-blue);">⏳ Применение настроек...</p>';
+            
+            const newSettings = {
+                noiseSuppression: document.getElementById('noiseSuppression').checked,
+                echoCancellation: document.getElementById('echoCancellation').checked,
+                autoGainControl: document.getElementById('autoGainControl').checked
+            };
+            
+            // Обновляем настройки
+            audioModule.updateAudioSettings(newSettings);
+            
+            // Если пользователь подключен к каналу, пересоздаем трек
+            if (currentAudioChannel && audioModule.localStream) {
+                try {
+                    const success = await audioModule.replaceAudioTrack();
+                    if (success) {
+                        statusDiv.innerHTML = '<p style="color: var(--success);">✅ Настройки применены! Аудио трек обновлен.</p>';
+                        setTimeout(() => {
+                            document.getElementById('audioSettingsModal').classList.add('hidden');
+                            statusDiv.style.display = 'none';
+                        }, 1500);
+                    } else {
+                        statusDiv.innerHTML = '<p style="color: var(--warning);">⚠️ Настройки сохранены, но не удалось обновить трек. Переподключитесь к каналу.</p>';
+                    }
+                } catch (error) {
+                    console.error('Ошибка при применении настроек:', error);
+                    statusDiv.innerHTML = '<p style="color: var(--error);">❌ Ошибка при применении настроек. Попробуйте переподключиться к каналу.</p>';
+                }
+            } else {
+                // Настройки сохранены, применятся при следующем подключении
+                statusDiv.innerHTML = '<p style="color: var(--success);">✅ Настройки сохранены! Будут применены при подключении к каналу.</p>';
+                setTimeout(() => {
+                    document.getElementById('audioSettingsModal').classList.add('hidden');
+                    statusDiv.style.display = 'none';
+                }, 1500);
+            }
+        }
+
+        // Открытие настроек аудио
+        function openAudioSettings() {
+            loadAudioSettingsToForm();
+            document.getElementById('audioSettingsModal').classList.remove('hidden');
+        }
+
+        // Обработчик кнопки настроек аудио
+        document.addEventListener('click', (e) => {
+            if (e.target.id === 'audioSettingsBtn' || e.target.closest('#audioSettingsBtn')) {
+                openAudioSettings();
+            }
+        });
+
+        // Обработчик кнопки "Применить настройки"
+        document.getElementById('applyAudioSettingsBtn').addEventListener('click', async () => {
+            await applyAudioSettings();
+        });
+
 
         // Очистка при закрытии страницы
         window.addEventListener('beforeunload', async () => {
