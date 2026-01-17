@@ -996,3 +996,10 @@ const AudioModule = {
 
 // Экспортируем как Audio для обратной совместимости
 const Audio = AudioModule;
+
+// Также экспортируем в window для глобального доступа
+if (typeof window !== 'undefined') {
+    window.AudioModule = AudioModule;
+    window.Audio = Audio;
+    console.log('✅ AudioModule экспортирован в window');
+}

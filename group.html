@@ -482,17 +482,35 @@
         
         // Функция для получения Audio модуля
         function getAudioModule() {
-            if (typeof AudioModule !== 'undefined' && typeof AudioModule.disconnect === 'function') {
+            // Проверяем разные варианты имени модуля
+            if (typeof AudioModule !== 'undefined' && AudioModule && typeof AudioModule.disconnect === 'function') {
                 return AudioModule;
             }
-            if (typeof Audio !== 'undefined' && typeof Audio.disconnect === 'function') {
+            if (typeof Audio !== 'undefined' && Audio && typeof Audio.disconnect === 'function') {
                 return Audio;
             }
+            if (typeof window !== 'undefined') {
+                if (window.AudioModule && typeof window.AudioModule.disconnect === 'function') {
+                    return window.AudioModule;
+                }
+                if (window.Audio && typeof window.Audio.disconnect === 'function') {
+                    return window.Audio;
+                }
+            }
+            console.error('❌ AudioModule не найден. Проверьте загрузку audio.js');
             return null;
         }
 
         // Инициализация страницы
         document.addEventListener('DOMContentLoaded', async () => {
+            // Проверка загрузки AudioModule
+            if (typeof AudioModule === 'undefined' && typeof Audio === 'undefined') {
+                console.error('❌ AudioModule не загружен! Проверьте загрузку audio.js');
+                Utils.showError('Ошибка загрузки аудио модуля. Обновите страницу.');
+            } else {
+                console.log('✅ AudioModule загружен:', typeof AudioModule !== 'undefined' ? 'AudioModule' : 'Audio');
+            }
+            
             // Проверка авторизации
             const isAuth = await Auth.isAuthenticated();
             if (!isAuth) {
@@ -1019,7 +1037,16 @@
                 // Проверяем, что Audio модуль загружен
                 const audioModule = getAudioModule();
                 if (!audioModule) {
-                    throw new Error('Audio модуль не загружен. Обновите страницу.');
+                    console.error('❌ AudioModule не найден. Доступные модули:', {
+                        AudioModule: typeof AudioModule,
+                        Audio: typeof Audio,
+                        windowAudioModule: typeof window !== 'undefined' ? typeof window.AudioModule : 'window undefined',
+                        windowAudio: typeof window !== 'undefined' ? typeof window.Audio : 'window undefined'
+                    });
+                    Utils.showError('Audio модуль не загружен. Обновите страницу (F5).');
+                    button.disabled = false;
+                    button.textContent = 'Подключиться';
+                    return;
                 }
                 
                 // Отключаемся от предыдущего канала, если подключены
