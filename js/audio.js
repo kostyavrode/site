@@ -207,45 +207,9 @@ var AudioModule = {
                         console.log('🔊 Создан audio элемент для воспроизведения');
                     }
                     
-                    // Используем Web Audio API для управления громкостью, если доступно
-                    // Но только если не используется RNNoise (чтобы избежать конфликтов)
-                    if (!this.rnnoiseEnabled && window.AudioContext) {
-                        try {
-                            // Создаем отдельный AudioContext для удаленного аудио (если еще не создан)
-                            if (!this.remoteAudioContext || this.remoteAudioContext.state === 'closed') {
-                                this.remoteAudioContext = new (window.AudioContext || window.webkitAudioContext)();
-                            }
-                            
-                            // Создаем источник из потока
-                            const source = this.remoteAudioContext.createMediaStreamSource(stream);
-                            const gainNode = this.remoteAudioContext.createGain();
-                            const destination = this.remoteAudioContext.createMediaStreamDestination();
-                            
-                            source.connect(gainNode);
-                            gainNode.connect(destination);
-                            
-                            // Устанавливаем начальную громкость
-                            gainNode.gain.value = 1.0;
-                            
-                            // Сохраняем gainNode для управления громкостью
-                            // Используем mid как идентификатор участника, если доступен
-                            const participantId = mid || track.id || 'default';
-                            this.gainNodes.set(participantId, gainNode);
-                            
-                            // Применяем сохраненную громкость если есть
-                            const savedVolume = this.participantVolumes.get(participantId);
-                            if (savedVolume !== undefined) {
-                                gainNode.gain.value = savedVolume;
-                            }
-                            
-                            this.remoteAudio.srcObject = destination.stream;
-                        } catch (error) {
-                            console.warn('⚠️ Не удалось использовать Web Audio API, используем обычный способ:', error);
-                            this.remoteAudio.srcObject = stream;
-                        }
-                    } else {
-                        this.remoteAudio.srcObject = stream;
-                    }
+                    // Временно отключено Web Audio API для удаленного аудио
+                    // Используем простой способ для избежания конфликтов с микрофоном
+                    this.remoteAudio.srcObject = stream;
                     
                     this.remoteAudio.play().then(() => {
                         console.log('✅ Удаленный аудио поток воспроизводится!');
@@ -948,16 +912,10 @@ var AudioModule = {
         }
     },
     
-    // Загрузить настройку RNNoise из localStorage
+    // Загрузить настройку RNNoise из localStorage (временно отключено)
     loadRNNoiseSetting() {
-        try {
-            const saved = localStorage.getItem('rnnoiseEnabled');
-            if (saved !== null) {
-                this.rnnoiseEnabled = saved === 'true';
-            }
-        } catch (e) {
-            console.warn('Не удалось загрузить настройку RNNoise:', e);
-        }
+        // RNNoise временно отключен
+        this.rnnoiseEnabled = false;
     },
     
     // Установить громкость участника
@@ -965,16 +923,11 @@ var AudioModule = {
         // volume от 0 до 1
         this.participantVolumes.set(participantId, volume);
         
-        // Применяем к gainNode если есть
-        const gainNode = this.gainNodes.get(participantId);
-        if (gainNode) {
-            gainNode.gain.value = volume;
+        // Временно используем простой способ - применяем к общему remoteAudio
+        // В будущем можно вернуть Web Audio API для индивидуального управления
+        if (this.remoteAudio) {
+            this.remoteAudio.volume = volume;
             console.log(`🔊 Установлена громкость для участника ${participantId}: ${(volume * 100).toFixed(0)}%`);
-        } else {
-            // Если нет gainNode, применяем к общему remoteAudio
-            if (this.remoteAudio) {
-                this.remoteAudio.volume = volume;
-            }
         }
     },
 

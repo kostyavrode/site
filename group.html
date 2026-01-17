@@ -418,18 +418,6 @@
                     </label>
                 </div>
                 
-                <div class="form-group" style="margin-top: var(--spacing-lg); border-top: 1px solid var(--border-color); padding-top: var(--spacing-md);">
-                    <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: var(--spacing-sm);">
-                        <span>
-                            <strong>🚫 RNNoise (Продвинутое шумоподавление)</strong>
-                            <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">
-                                Использует нейронную сеть для эффективного удаления фоновых шумов. Требует больше ресурсов процессора.
-                            </div>
-                        </span>
-                        <input type="checkbox" id="rnnoiseEnabled" class="form-checkbox" style="width: 20px; height: 20px;">
-                    </label>
-                </div>
-                
                 <div class="form-group" style="margin-top: var(--spacing-lg);">
                     <button type="button" id="applyAudioSettingsBtn" class="btn btn-primary" style="width: 100%;">Применить настройки</button>
                     <button type="button" class="btn" style="width: 100%; margin-top: var(--spacing-sm);" onclick="document.getElementById('audioSettingsModal').classList.add('hidden')">Отмена</button>
@@ -1230,18 +1218,6 @@
                             updateMuteButton(muteBtn, audioModule.isMuted);
                         }
                         
-                        // Применяем RNNoise если он был включен
-                        if (audioModule.rnnoiseEnabled) {
-                            setTimeout(async () => {
-                                try {
-                                    await audioModule.toggleRNNoise();
-                                    console.log('✅ RNNoise применен после подключения');
-                                } catch (error) {
-                                    console.error('Ошибка при применении RNNoise:', error);
-                                }
-                            }, 1000);
-                        }
-                        
                         // Запрашиваем список участников
                         audioModule.requestParticipantsList();
                     }
@@ -1332,7 +1308,6 @@
             document.getElementById('noiseSuppression').checked = settings.noiseSuppression !== false;
             document.getElementById('echoCancellation').checked = settings.echoCancellation !== false;
             document.getElementById('autoGainControl').checked = settings.autoGainControl !== false;
-            document.getElementById('rnnoiseEnabled').checked = audioModule.rnnoiseEnabled === true;
         }
 
         // Применение настроек аудио
@@ -1353,32 +1328,15 @@
                 autoGainControl: document.getElementById('autoGainControl').checked
             };
             
-            const rnnoiseEnabled = document.getElementById('rnnoiseEnabled').checked;
-            const rnnoiseChanged = rnnoiseEnabled !== audioModule.rnnoiseEnabled;
-            
             // Обновляем настройки
             audioModule.updateAudioSettings(newSettings);
             
             // Если пользователь подключен к каналу, применяем изменения
             if (currentAudioChannel && audioModule.localStream) {
                 try {
-                    // Если изменилось состояние RNNoise, применяем его отдельно
-                    if (rnnoiseChanged) {
-                        statusDiv.innerHTML = '<p style="color: var(--accent-blue);">⏳ Переключение RNNoise...</p>';
-                        const rnnoiseSuccess = await audioModule.toggleRNNoise();
-                        if (!rnnoiseSuccess) {
-                            statusDiv.innerHTML = '<p style="color: var(--warning);">⚠️ Не удалось переключить RNNoise. Настройки сохранены.</p>';
-                            setTimeout(() => {
-                                document.getElementById('audioSettingsModal').classList.add('hidden');
-                                statusDiv.style.display = 'none';
-                            }, 2000);
-                            return;
-                        }
-                    }
-                    
-                    // Применяем остальные настройки
+                    // Применяем настройки
                     const success = await audioModule.replaceAudioTrack();
-                    if (success || rnnoiseChanged) {
+                    if (success) {
                         statusDiv.innerHTML = '<p style="color: var(--success);">✅ Настройки применены! Аудио трек обновлен.</p>';
                         setTimeout(() => {
                             document.getElementById('audioSettingsModal').classList.add('hidden');
@@ -1393,12 +1351,6 @@
                 }
             } else {
                 // Настройки сохранены, применятся при следующем подключении
-                audioModule.rnnoiseEnabled = rnnoiseEnabled;
-                try {
-                    localStorage.setItem('rnnoiseEnabled', rnnoiseEnabled ? 'true' : 'false');
-                } catch (e) {
-                    console.warn('Не удалось сохранить настройку RNNoise:', e);
-                }
                 statusDiv.innerHTML = '<p style="color: var(--success);">✅ Настройки сохранены! Будут применены при подключении к каналу.</p>';
                 setTimeout(() => {
                     document.getElementById('audioSettingsModal').classList.add('hidden');
