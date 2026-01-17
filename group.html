@@ -916,12 +916,12 @@
                 button.textContent = 'Подключиться';
                 button.closest('.audio-channel').classList.remove('active');
                 
-                // Убираем кнопку настроек
+                // Убираем кнопки управления (mute и настройки)
                 const channelCard = button.closest('.audio-channel');
+                const muteBtn = channelCard?.querySelector('.audio-mute-btn');
                 const settingsBtn = channelCard?.querySelector('.audio-settings-btn');
-                if (settingsBtn) {
-                    settingsBtn.remove();
-                }
+                if (muteBtn) muteBtn.remove();
+                if (settingsBtn) settingsBtn.remove();
                 
                 // Скрываем индикатор аудио активности
                 const statusDiv = document.getElementById(`audioStatus-${channelId}`);
@@ -967,19 +967,49 @@
                 button.disabled = false; // Активируем кнопку после успешного подключения
                 button.closest('.audio-channel').classList.add('active');
                 
-                // Добавляем кнопку настроек, если её нет
+                // Добавляем кнопки управления (настройки и mute), если их нет
                 const channelCard = button.closest('.audio-channel');
                 const controlsContainer = channelCard?.querySelector('.audio-channel-controls');
-                if (controlsContainer && !controlsContainer.querySelector('.audio-settings-btn')) {
-                    const settingsBtn = document.createElement('button');
-                    settingsBtn.className = 'btn btn-sm audio-settings-btn';
-                    settingsBtn.title = 'Настройки аудио';
-                    settingsBtn.textContent = '⚙️';
-                    settingsBtn.onclick = () => {
-                        loadAudioSettingsToForm();
-                        document.getElementById('audioSettingsModal').classList.remove('hidden');
-                    };
-                    controlsContainer.appendChild(settingsBtn);
+                if (controlsContainer) {
+                    // Кнопка MUTE
+                    if (!controlsContainer.querySelector('.audio-mute-btn')) {
+                        const muteBtn = document.createElement('button');
+                        muteBtn.className = 'btn btn-sm audio-mute-btn';
+                        muteBtn.title = 'Отключить микрофон';
+                        muteBtn.innerHTML = '🎤';
+                        muteBtn.onclick = async () => {
+                            const audioModule = getAudioModule();
+                            if (audioModule) {
+                                const isMuted = audioModule.toggleMute();
+                                // Обновляем все кнопки mute для этого канала (и в десктопе, и в мобильном)
+                                document.querySelectorAll(`.audio-channel[data-channel-id="${channelId}"] .audio-mute-btn`).forEach(btn => {
+                                    updateMuteButton(btn, isMuted);
+                                });
+                                // Показываем уведомление
+                                Utils.showSuccess(isMuted ? '🔇 Микрофон отключен' : '🎤 Микрофон включен');
+                            }
+                        };
+                        controlsContainer.appendChild(muteBtn);
+                        
+                        // Инициализируем состояние кнопки
+                        const audioModule = getAudioModule();
+                        if (audioModule) {
+                            updateMuteButton(muteBtn, audioModule.isMuted);
+                        }
+                    }
+                    
+                    // Кнопка настроек
+                    if (!controlsContainer.querySelector('.audio-settings-btn')) {
+                        const settingsBtn = document.createElement('button');
+                        settingsBtn.className = 'btn btn-sm audio-settings-btn';
+                        settingsBtn.title = 'Настройки аудио';
+                        settingsBtn.textContent = '⚙️';
+                        settingsBtn.onclick = () => {
+                            loadAudioSettingsToForm();
+                            document.getElementById('audioSettingsModal').classList.remove('hidden');
+                        };
+                        controlsContainer.appendChild(settingsBtn);
+                    }
                 }
                 
                 // Показываем индикатор аудио активности
@@ -993,6 +1023,16 @@
                     console.log('✅ Аудио подключение установлено для канала', channelId);
                     button.disabled = false;
                     button.textContent = 'Отключиться';
+                    
+                    // Обновляем состояние кнопки MUTE после подключения
+                    const audioModule = getAudioModule();
+                    if (audioModule) {
+                        const channelCard = button.closest('.audio-channel');
+                        const muteBtn = channelCard?.querySelector('.audio-mute-btn');
+                        if (muteBtn) {
+                            updateMuteButton(muteBtn, audioModule.isMuted);
+                        }
+                    }
                 };
                 
                 // Устанавливаем обработчик ошибок для этого канала
@@ -1051,6 +1091,20 @@
                 Utils.showError(error.message || 'Ошибка при создании аудио канала');
             }
         });
+
+        // Обновление состояния кнопки MUTE
+        function updateMuteButton(button, isMuted) {
+            if (!button) return;
+            if (isMuted) {
+                button.innerHTML = '🔇';
+                button.title = 'Включить микрофон';
+                button.style.opacity = '0.6';
+            } else {
+                button.innerHTML = '🎤';
+                button.title = 'Отключить микрофон';
+                button.style.opacity = '1';
+            }
+        }
 
         // Загрузка текущих настроек аудио в форму
         function loadAudioSettingsToForm() {
@@ -1134,6 +1188,25 @@
             await applyAudioSettings();
         });
 
+
+        // Горячая клавиша для MUTE (клавиша M)
+        document.addEventListener('keydown', async (e) => {
+            // Проверяем, что фокус не в поле ввода и нажата клавиша M
+            if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA' && 
+                e.key.toLowerCase() === 'm' && currentAudioChannel) {
+                e.preventDefault();
+                const audioModule = getAudioModule();
+                if (audioModule && audioModule.audioBridge) {
+                    const isMuted = audioModule.toggleMute();
+                    // Обновляем все кнопки MUTE для текущего канала
+                    document.querySelectorAll(`.audio-channel[data-channel-id="${currentAudioChannel}"] .audio-mute-btn`).forEach(btn => {
+                        updateMuteButton(btn, isMuted);
+                    });
+                    // Показываем уведомление
+                    Utils.showSuccess(isMuted ? '🔇 Микрофон отключен' : '🎤 Микрофон включен');
+                }
+            }
+        });
 
         // Очистка при закрытии страницы
         window.addEventListener('beforeunload', async () => {
