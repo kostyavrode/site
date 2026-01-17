@@ -473,7 +473,18 @@
     <script src="js/auth.js"></script>
     <script src="js/groups.js"></script>
     <script src="js/chat.js"></script>
-    <script src="js/audio.js"></script>
+    <script src="js/audio.js" onerror="console.error('❌ Ошибка загрузки audio.js'); alert('Ошибка загрузки audio.js. Обновите страницу.');"></script>
+    <script>
+        // Проверка загрузки AudioModule после загрузки скрипта
+        (function() {
+            if (typeof AudioModule === 'undefined' && typeof window !== 'undefined' && typeof window.AudioModule === 'undefined') {
+                console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: audio.js не загрузился!');
+                console.error('Проверьте консоль на наличие ошибок в audio.js');
+            } else {
+                console.log('✅ audio.js загружен успешно, AudioModule:', typeof AudioModule !== 'undefined' ? 'есть' : (typeof window !== 'undefined' && window.AudioModule ? 'window.AudioModule' : 'не найден'));
+            }
+        })();
+    </script>
     <script>
         let currentGroupId = null;
         let currentUserId = null;
@@ -482,22 +493,26 @@
         
         // Функция для получения Audio модуля
         function getAudioModule() {
-            // Проверяем разные варианты имени модуля
+            // Проверяем AudioModule (основное имя)
             if (typeof AudioModule !== 'undefined' && AudioModule && typeof AudioModule.disconnect === 'function') {
                 return AudioModule;
             }
-            if (typeof Audio !== 'undefined' && Audio && typeof Audio.disconnect === 'function') {
-                return Audio;
+            
+            // Проверяем window.AudioModule
+            if (typeof window !== 'undefined' && window.AudioModule && typeof window.AudioModule.disconnect === 'function') {
+                return window.AudioModule;
             }
-            if (typeof window !== 'undefined') {
-                if (window.AudioModule && typeof window.AudioModule.disconnect === 'function') {
-                    return window.AudioModule;
-                }
-                if (window.Audio && typeof window.Audio.disconnect === 'function') {
-                    return window.Audio;
-                }
-            }
+            
+            // НЕ проверяем Audio, так как это встроенный HTML5 Audio API браузера
+            // который перекрывает наш модуль
+            
             console.error('❌ AudioModule не найден. Проверьте загрузку audio.js');
+            console.error('Доступные модули:', {
+                AudioModule: typeof AudioModule,
+                windowAudioModule: typeof window !== 'undefined' ? typeof window.AudioModule : 'window undefined',
+                // Audio - это встроенный класс браузера, не наш модуль
+                Audio: typeof Audio
+            });
             return null;
         }
 

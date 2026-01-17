@@ -1,4 +1,5 @@
-const AudioModule = {
+// Создаем модуль с явным именем, чтобы избежать конфликтов
+var AudioModule = {
     janus: null,
     audioBridge: null,
     roomId: null,
@@ -994,12 +995,10 @@ const AudioModule = {
     }
 };
 
-// Экспортируем как Audio для обратной совместимости
-const Audio = AudioModule;
-
-// Также экспортируем в window для глобального доступа
+// Экспортируем в window для глобального доступа
+// НЕ перезаписываем встроенный Audio (HTML5 Audio API)
 if (typeof window !== 'undefined') {
     window.AudioModule = AudioModule;
-    window.Audio = Audio;
-    console.log('✅ AudioModule экспортирован в window');
+    // НЕ перезаписываем window.Audio, так как это встроенный класс браузера
+    console.log('✅ AudioModule экспортирован в window.AudioModule');
 }
