@@ -378,22 +378,28 @@ var AudioModule = {
     },
 
     // Запросить список участников (VideoRoom)
+    // ВАЖНО: 'list' возвращает список КОМНАТ, а не publishers!
+    // Для получения списка участников нужно использовать 'listparticipants'
     requestParticipantsList() {
+        this.requestParticipantsListCorrect();
+    },
+    
+    requestParticipantsListCorrect() {
         if (this.audioBridge && this.roomId) {
-            console.log('📋 Запрашиваем список publishers для комнаты', this.roomId, '...');
+            console.log('📋 Запрашиваем список participants для комнаты', this.roomId, '...');
             this.audioBridge.send({
                 message: { 
-                    request: 'list',
+                    request: 'listparticipants',
                     room: this.roomId
                 },
                 success: (result) => {
-                    console.log('✅ Ответ на list запрос (success callback):', JSON.stringify(result, null, 2));
+                    console.log('✅ Ответ на listparticipants запрос (success callback):', JSON.stringify(result, null, 2));
                     if (result) {
-                        this.handleListResponse(result);
+                        this.handleParticipantsListResponse(result);
                     }
                 },
                 error: (error) => {
-                    console.error('❌ Ошибка при запросе списка publishers:', error);
+                    console.error('❌ Ошибка при запросе списка participants:', error);
                 }
             });
         } else {
@@ -401,10 +407,10 @@ var AudioModule = {
         }
     },
     
-    handleListResponse(event) {
-        console.log('📋 Обработка ответа на list:', event);
+    handleParticipantsListResponse(event) {
+        console.log('📋 Обработка ответа на listparticipants:', event);
         
-        let publishers = event.publishers || event.list;
+        let publishers = event.participants || event.publishers || event.list;
         
         // Если publishers это объект с массивом, извлекаем массив
         if (publishers && typeof publishers === 'object' && !Array.isArray(publishers)) {
@@ -412,6 +418,8 @@ var AudioModule = {
                 publishers = publishers.list;
             } else if (publishers.publishers && Array.isArray(publishers.publishers)) {
                 publishers = publishers.publishers;
+            } else if (publishers.participants && Array.isArray(publishers.participants)) {
+                publishers = publishers.participants;
             } else {
                 // Пытаемся найти массив в объекте
                 const keys = Object.keys(publishers);
@@ -454,7 +462,7 @@ var AudioModule = {
             window.onParticipantsUpdate(participants, this.participantId);
             console.log('✅ onParticipantsUpdate вызван');
         } else {
-            console.warn('⚠️ window.onParticipantsUpdate не определен при обработке list');
+            console.warn('⚠️ window.onParticipantsUpdate не определен при обработке listparticipants');
         }
     },
 
@@ -613,9 +621,9 @@ var AudioModule = {
                     clearInterval(this.participantsUpdateInterval);
                 }
                 this.participantsUpdateInterval = setInterval(() => {
-                    console.log('🔄 Периодический запрос списка publishers...');
-                    this.requestParticipantsList();
-                }, 1000);
+                    console.log('🔄 Периодический запрос списка participants...');
+                    this.requestParticipantsListCorrect();
+                }, 2000);
                 
                 // Публикуем свой поток (VideoRoom)
                 if (!this.localStream && !this.offerCreated) {
@@ -1278,6 +1286,7 @@ var AudioModule = {
     subscribeToPublisher(publisher) {
         const publisherId = publisher.id || publisher;
         if (!publisherId || publisherId === this.participantId) {
+            console.log(`⏭️ Пропускаем подписку на publisher ${publisherId} (это я или пустой ID)`);
             return;
         }
         
@@ -1286,7 +1295,8 @@ var AudioModule = {
             return;
         }
         
-        console.log(`📡 Подписываемся на publisher ${publisherId}...`);
+        const displayName = publisher.display || publisher.displayName || `User ${publisherId}`;
+        console.log(`📡 Подписываемся на publisher ${publisherId} (${displayName})...`);
         
         this.janus.attach({
             plugin: 'janus.plugin.videoroom',
@@ -1295,36 +1305,90 @@ var AudioModule = {
                 this.subscriberHandles.set(publisherId, subscriberHandle);
                 
                 subscriberHandle.on('message', (msg, jsep) => {
-                    console.log(`📨 Сообщение от subscriber handle для ${publisherId}:`, msg, jsep);
+                    console.log(`📨 Сообщение от subscriber handle для ${publisherId}:`, JSON.stringify(msg, null, 2), jsep ? 'JSEP есть' : 'JSEP нет');
                     
-                    if (msg && msg.videoroom === 'joined' && jsep) {
-                        console.log(`✅ Успешно присоединились как subscriber к publisher ${publisherId}`);
-                        subscriberHandle.createOffer({
-                            media: { audio: true, video: false },
-                            success: (offerJsep) => {
-                                console.log(`✅ Offer создан для подписки на ${publisherId}`);
-                                subscriberHandle.send({
-                                    message: { request: 'start' },
-                                    jsep: offerJsep
+                    // Обработка события через plugindata
+                    let event = null;
+                    if (msg.plugindata && msg.plugindata.data) {
+                        event = msg.plugindata.data;
+                    } else if (msg.videoroom) {
+                        event = msg;
+                    }
+                    
+                    if (event) {
+                        if (event.videoroom === 'joined' || event.joined) {
+                            console.log(`✅ Успешно присоединились как subscriber к publisher ${publisherId}`);
+                            
+                            // Если есть JSEP в ответе - это offer от сервера
+                            if (jsep && jsep.type === 'offer') {
+                                console.log(`📡 Получен JSEP offer для subscriber ${publisherId}, создаем answer...`);
+                                subscriberHandle.createAnswer({
+                                    jsep: jsep,
+                                    media: { audio: true, video: false },
+                                    success: (answerJsep) => {
+                                        console.log(`✅ Answer создан для subscriber ${publisherId}`);
+                                        subscriberHandle.send({
+                                            message: { request: 'start' },
+                                            jsep: answerJsep
+                                        });
+                                    },
+                                    error: (error) => {
+                                        console.error(`❌ Ошибка создания answer для subscriber ${publisherId}:`, error);
+                                    }
                                 });
-                            },
-                            error: (error) => {
-                                console.error(`❌ Ошибка создания offer для ${publisherId}:`, error);
+                            } else {
+                                // Если нет JSEP в ответе, создаем offer
+                                console.log(`📡 JSEP нет в ответе, создаем offer для subscriber ${publisherId}...`);
+                                subscriberHandle.createOffer({
+                                    media: { audio: true, video: false },
+                                    success: (offerJsep) => {
+                                        console.log(`✅ Offer создан для подписки на ${publisherId}`);
+                                        subscriberHandle.send({
+                                            message: { request: 'start' },
+                                            jsep: offerJsep
+                                        });
+                                    },
+                                    error: (error) => {
+                                        console.error(`❌ Ошибка создания offer для subscriber ${publisherId}:`, error);
+                                    }
+                                });
                             }
-                        });
-                    } else if (msg && msg.videoroom === 'event') {
-                        if (msg.error_code) {
-                            console.error(`❌ Ошибка subscriber для ${publisherId}:`, msg.error_code, msg.error);
+                        } else if (event.videoroom === 'event') {
+                            if (event.error_code) {
+                                console.error(`❌ Ошибка subscriber для ${publisherId}:`, event.error_code, event.error);
+                            } else if (event.starting) {
+                                console.log(`✅ Аудио поток от publisher ${publisherId} начался`);
+                            } else if (event.stopped) {
+                                console.log(`⏹️ Аудио поток от publisher ${publisherId} остановлен`);
+                            }
                         }
                     }
                     
+                    // Обработка JSEP answer отдельно
                     if (jsep && jsep.type === 'answer') {
-                        console.log(`📡 Получен JSEP answer для subscriber ${publisherId}`);
+                        console.log(`📡 Получен JSEP answer для subscriber ${publisherId}, устанавливаем remote description...`);
+                        subscriberHandle.handleRemoteJsep({
+                            jsep: jsep,
+                            success: () => {
+                                console.log(`✅ Remote JSEP установлен для subscriber ${publisherId}`);
+                            },
+                            error: (error) => {
+                                console.error(`❌ Ошибка установки remote JSEP для subscriber ${publisherId}:`, error);
+                            }
+                        });
                     }
                 });
                 
                 subscriberHandle.on('remotetrack', (track, mid, on) => {
-                    console.log(`🔊 Удаленный трек от publisher ${publisherId}:`, { kind: track.kind, mid: mid, on: on, id: track.id, enabled: track.enabled, muted: track.muted });
+                    console.log(`🔊 Удаленный трек от publisher ${publisherId}:`, { 
+                        kind: track.kind, 
+                        mid: mid, 
+                        on: on, 
+                        id: track.id, 
+                        enabled: track.enabled, 
+                        muted: track.muted,
+                        readyState: track.readyState
+                    });
                     if (track.kind === 'audio' && on) {
                         console.log(`🔊 Получен аудио трек от publisher ${publisherId}, создаем MediaStream...`);
                         const stream = new MediaStream([track]);
@@ -1344,12 +1408,19 @@ var AudioModule = {
                     }
                 });
                 
+                // Отправляем join запрос
                 subscriberHandle.send({
                     message: {
                         request: 'join',
                         room: this.roomId,
                         ptype: 'subscriber',
                         feed: publisherId
+                    },
+                    success: (result) => {
+                        console.log(`✅ Join запрос отправлен для subscriber ${publisherId}:`, result);
+                    },
+                    error: (error) => {
+                        console.error(`❌ Ошибка отправки join запроса для subscriber ${publisherId}:`, error);
                     }
                 });
             },
