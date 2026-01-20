@@ -5,6 +5,7 @@ var AudioModule = {
     roomId: null,
     channelId: null,
     displayName: 'User',
+    participantId: null,
     localStream: null,
     remoteAudio: null,
     isMuted: false,
@@ -488,13 +489,15 @@ var AudioModule = {
             
             if (isOurJoin) {
                 console.log('✅ УСЛОВИЕ JOINED СРАБОТАЛО! Присоединились к аудио комнате:', event.room);
+                this.participantId = event.id;
+                console.log('✅ Сохранен participantId:', this.participantId);
                 const participants = event.participants || [];
                 console.log('👥 Участники в комнате (из joined):', participants.length, participants);
                 
                 // Обновляем счетчик участников (даже если пустой массив)
                 console.log('📊 Обновляем счетчик участников через onParticipantsUpdate...');
                 if (window.onParticipantsUpdate) {
-                    window.onParticipantsUpdate(participants);
+                    window.onParticipantsUpdate(participants, this.participantId);
                     console.log('✅ onParticipantsUpdate вызван с', participants.length, 'участниками');
                 } else {
                     console.warn('⚠️ window.onParticipantsUpdate не определен!');
@@ -626,25 +629,24 @@ var AudioModule = {
                     return;
                 }
                 
-                // Обработка различных событий
-                if (event.participants) {
-                    const participants = Array.isArray(event.participants) ? event.participants : [];
-                    console.log('👥 Обновление списка участников (из event):', participants.length, 'участников', participants);
-                    if (window.onParticipantsUpdate) {
-                        window.onParticipantsUpdate(participants);
-                    }
-                }
-                
                 // Обработка ответа на listparticipants
                 if (event.list) {
                     const participants = Array.isArray(event.list) ? event.list : [];
                     console.log('📋 Список участников (из list):', participants.length, 'участников', participants);
                     console.log('🔍 Вызываем onParticipantsUpdate с', participants.length, 'участниками');
                     if (window.onParticipantsUpdate) {
-                        window.onParticipantsUpdate(participants);
+                        window.onParticipantsUpdate(participants, this.participantId);
                         console.log('✅ onParticipantsUpdate вызван');
                     } else {
                         console.warn('⚠️ window.onParticipantsUpdate не определен при обработке list');
+                    }
+                }
+                
+                if (event.participants) {
+                    const participants = Array.isArray(event.participants) ? event.participants : [];
+                    console.log('👥 Обновление списка участников (из event):', participants.length, 'участников', participants);
+                    if (window.onParticipantsUpdate) {
+                        window.onParticipantsUpdate(participants, this.participantId);
                     }
                 }
                 
@@ -918,16 +920,29 @@ var AudioModule = {
         this.rnnoiseEnabled = false;
     },
     
-    // Установить громкость участника
-    setParticipantVolume(participantId, volume) {
-        // volume от 0 до 1
+    async setParticipantVolume(participantId, volume) {
+        if (!this.channelId) {
+            console.warn('⚠️ channelId не установлен, не могу установить громкость');
+            return;
+        }
+        
+        const participantIdNum = typeof participantId === 'string' ? parseInt(participantId, 10) : participantId;
+        if (isNaN(participantIdNum)) {
+            console.error('❌ Неверный participantId:', participantId);
+            return;
+        }
+        
+        const volumePercent = Math.round(volume * 100);
         this.participantVolumes.set(participantId, volume);
         
-        // Временно используем простой способ - применяем к общему remoteAudio
-        // В будущем можно вернуть Web Audio API для индивидуального управления
-        if (this.remoteAudio) {
-            this.remoteAudio.volume = volume;
-            console.log(`🔊 Установлена громкость для участника ${participantId}: ${(volume * 100).toFixed(0)}%`);
+        try {
+            await API.post(
+                `${API.baseUrls.audio}/api/audio/AudioChannels/${this.channelId}/participants/${participantIdNum}/volume`,
+                { volume: volumePercent }
+            );
+            console.log(`✅ Громкость участника ${participantIdNum} установлена на ${volumePercent}%`);
+        } catch (error) {
+            console.error(`❌ Ошибка при установке громкости для участника ${participantIdNum}:`, error);
         }
     },
 
@@ -949,6 +964,8 @@ var AudioModule = {
             clearInterval(this.participantsUpdateInterval);
             this.participantsUpdateInterval = null;
         }
+        
+        this.participantId = null;
         
         // Очищаем RNNoise ресурсы
         if (this.rnnoiseProcessor) {

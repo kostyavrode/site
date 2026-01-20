@@ -478,6 +478,7 @@
         let currentUserId = null;
         let currentNickName = 'User';
         let currentAudioChannel = null;
+        let currentParticipantId = null;
         
         // Функция для получения Audio модуля
         function getAudioModule() {
@@ -819,7 +820,7 @@
             container.innerHTML = participants.map(participant => {
                 const name = participant.display || participant.displayName || participant.name || 'Пользователь';
                 const participantId = participant.id || participant.userId || name;
-                const isYou = participant.id && currentUserId && participant.id.toString() === currentUserId.toString();
+                const isYou = participant.id && currentParticipantId && participant.id.toString() === currentParticipantId.toString();
                 const volumeKey = `${currentAudioChannel}-${participantId}`;
                 
                 // Получаем сохраненную громкость или используем 100%
@@ -866,7 +867,7 @@
                 const channelId = slider.dataset.channelId;
                 const volumeKey = `volume-${channelId}-${participantId}`;
                 
-                slider.addEventListener('input', (e) => {
+                slider.addEventListener('input', async (e) => {
                     const volume = parseInt(e.target.value, 10);
                     const volumePercent = volume / 100;
                     
@@ -883,8 +884,8 @@
                         console.warn('Не удалось сохранить громкость:', err);
                     }
                     
-                    // Применяем громкость к аудио элементу
-                    applyParticipantVolume(participantId, volumePercent);
+                    // Отправляем запрос на сервер для установки громкости
+                    await applyParticipantVolume(participantId, volumePercent);
                 });
                 
                 // Сохраняем ссылку на слайдер
@@ -893,17 +894,21 @@
         }
         
         // Применение громкости к участнику
-        function applyParticipantVolume(participantId, volume) {
+        async function applyParticipantVolume(participantId, volume) {
             const audioModule = getAudioModule();
             if (!audioModule) return;
             
-            // Используем метод модуля для установки громкости
-            audioModule.setParticipantVolume(participantId, volume);
+            await audioModule.setParticipantVolume(participantId, volume);
         }
         
-        window.onParticipantsUpdate = (participants) => {
+        window.onParticipantsUpdate = (participants, participantId) => {
             console.log('🔄 Обновление UI участников:', participants);
             console.log('🔍 currentAudioChannel:', currentAudioChannel);
+            console.log('🔍 participantId:', participantId);
+            
+            if (participantId !== undefined && participantId !== null) {
+                currentParticipantId = participantId;
+            }
             
             // Обновляем счетчик в карточке канала
             if (currentAudioChannel) {
@@ -1084,6 +1089,7 @@
                     await audioModule.disconnect();
                 }
                 currentAudioChannel = null;
+                currentParticipantId = null;
                 button.textContent = 'Подключиться';
                 button.closest('.audio-channel').classList.remove('active');
                 
