@@ -652,7 +652,21 @@ var AudioModule = {
                                 return; // Не отключаемся, ждем переподключения
                             } catch (recreateError) {
                                 console.error('❌ Не удалось пересоздать комнату:', recreateError);
-                                const errorMsg = `Комната ${this.roomId} не существует в Janus Gateway. Не удалось автоматически пересоздать комнату. Обратитесь к администратору группы.`;
+                                
+                                // Проверяем, является ли ошибка ошибкой авторизации
+                                const isAuthError = recreateError && (
+                                    recreateError.message && recreateError.message.includes('Unauthorized') ||
+                                    recreateError.message && recreateError.message.includes('401') ||
+                                    recreateError.toString && recreateError.toString().includes('401')
+                                );
+                                
+                                let errorMsg;
+                                if (isAuthError) {
+                                    errorMsg = `Не удалось пересоздать комнату: требуется авторизация. Пожалуйста, войдите в систему заново.`;
+                                } else {
+                                    errorMsg = `Комната ${this.roomId} не существует в Janus Gateway. Не удалось автоматически пересоздать комнату. Обратитесь к администратору группы.`;
+                                }
+                                
                                 if (window.onAudioError) {
                                     window.onAudioError(errorMsg);
                                 }
