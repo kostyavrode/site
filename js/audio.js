@@ -495,8 +495,19 @@ var AudioModule = {
                 console.log('👥 Участники в комнате (из joined):', participants.length, participants);
                 
                 // Регистрируем подключение на сервере сразу после получения participantId
-                if (this.channelId && window.registerAudioConnection) {
-                    window.registerAudioConnection(this.channelId, this.participantId);
+                if (this.channelId && this.participantId) {
+                    console.log('📝 Регистрируем подключение:', { channelId: this.channelId, participantId: this.participantId });
+                    if (window.registerAudioConnection) {
+                        window.registerAudioConnection(this.channelId, this.participantId);
+                    } else {
+                        console.warn('⚠️ window.registerAudioConnection не определена!');
+                    }
+                } else {
+                    console.warn('⚠️ Не могу зарегистрировать подключение:', { 
+                        channelId: this.channelId, 
+                        participantId: this.participantId,
+                        hasRegisterFunction: !!window.registerAudioConnection
+                    });
                 }
                 
                 // Обновляем счетчик участников (даже если пустой массив)
