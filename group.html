@@ -644,6 +644,20 @@
                 // Загрузка участников
                 displayMembers(members);
 
+                // Инициализация baseUrls если еще не инициализированы
+                if (!API.baseUrls.auth || !API.baseUrls.groups || !API.baseUrls.chat || !API.baseUrls.audio || !API.baseUrls.notification) {
+                    const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
+                    const host = window.location.hostname;
+                    const port = window.location.port ? `:${window.location.port}` : '';
+                    const baseUrl = `${protocol}//${host}${port}`;
+                    
+                    API.baseUrls.auth = API.baseUrls.auth || `${baseUrl.replace(/:\d+$/, '')}:5001`;
+                    API.baseUrls.groups = API.baseUrls.groups || `${baseUrl.replace(/:\d+$/, '')}:5002`;
+                    API.baseUrls.chat = API.baseUrls.chat || `${baseUrl.replace(/:\d+$/, '')}:5003`;
+                    API.baseUrls.audio = API.baseUrls.audio || `${baseUrl.replace(/:\d+$/, '')}:5004`;
+                    API.baseUrls.notification = API.baseUrls.notification || `${baseUrl.replace(/:\d+$/, '')}:5005`;
+                }
+
                 // Инициализация чата
                 await Chat.init(currentGroupId);
                 await loadMessages();
@@ -917,6 +931,8 @@
             await audioModule.setParticipantVolume(participantId, volume);
         }
         
+        const participantsMap = new Map();
+
         window.onParticipantsUpdate = (participants, participantId) => {
             console.log('🔄 Обновление UI участников:', participants);
             console.log('🔍 currentAudioChannel:', currentAudioChannel);
@@ -947,23 +963,73 @@
                     console.warn('⚠️ Участники в списке:', participants.map(p => ({ id: p.id, display: p.display || p.displayName })));
                 }
             }
+
+            if (participants && Array.isArray(participants)) {
+                participantsMap.clear();
+                participants.forEach(p => {
+                    const id = p.id || p.participantId;
+                    if (id) {
+                        participantsMap.set(id.toString(), p);
+                    }
+                });
+            }
             
-                // Обновляем счетчик в карточке канала
+            // Обновляем счетчик в карточке канала
             if (currentAudioChannel) {
                 const countEl = document.getElementById(`participantsCount-${currentAudioChannel}`);
                 if (countEl) {
-                    const count = Array.isArray(participants) ? participants.length : 0;
+                    const count = Array.isArray(participants) ? participants.length : participantsMap.size;
                     countEl.textContent = `${count} участников`;
                     console.log(`📊 Обновлен счетчик для канала ${currentAudioChannel}: ${count} участников`);
                 }
                 
                 // Обновляем список участников в sidebar
-                displayAudioParticipants(participants);
+                const participantsArray = Array.from(participantsMap.values());
+                displayAudioParticipants(participantsArray);
             } else {
                 console.warn('⚠️ currentAudioChannel не установлен, не могу обновить счетчик');
                 const section = document.getElementById('audioParticipantsSection');
                 if (section) {
                     section.style.display = 'none';
+                }
+            }
+        };
+
+        window.onAudioParticipantJoined = (data) => {
+            console.log('🔊 Участник подключился к аудио каналу:', data);
+            
+            if (data.channelId === currentAudioChannel) {
+                const participant = {
+                    id: data.participantId,
+                    display: data.displayName,
+                    displayName: data.displayName,
+                    userId: data.userId
+                };
+                
+                participantsMap.set(data.participantId.toString(), participant);
+                
+                const participantsArray = Array.from(participantsMap.values());
+                displayAudioParticipants(participantsArray);
+                
+                const countEl = document.getElementById(`participantsCount-${currentAudioChannel}`);
+                if (countEl) {
+                    countEl.textContent = `${participantsArray.length} участников`;
+                }
+            }
+        };
+
+        window.onAudioParticipantLeft = (data) => {
+            console.log('🔇 Участник отключился от аудио канала:', data);
+            
+            if (data.channelId === currentAudioChannel) {
+                participantsMap.delete(data.participantId.toString());
+                
+                const participantsArray = Array.from(participantsMap.values());
+                displayAudioParticipants(participantsArray);
+                
+                const countEl = document.getElementById(`participantsCount-${currentAudioChannel}`);
+                if (countEl) {
+                    countEl.textContent = `${participantsArray.length} участников`;
                 }
             }
         };
@@ -1246,7 +1312,46 @@
                 }
                 
                 // Обработчик успешного подключения
-                window.onAudioConnected = () => {
+                // Глобальная функция для регистрации подключения (вызывается из audio.js)
+                window.registerAudioConnection = async (channelId, participantId) => {
+                    if (!channelId || !participantId) {
+                        console.warn('⚠️ Не могу зарегистрировать подключение: отсутствуют channelId или participantId');
+                        return;
+                    }
+                    
+                    try {
+                        await API.post(
+                            `${API.baseUrls.audio}/api/audio/AudioChannels/${channelId}/participants/joined`,
+                            {
+                                participantId: participantId,
+                                displayName: currentNickName
+                            }
+                        );
+                        console.log('✅ Подключение к аудио каналу зарегистрировано на сервере');
+                    } catch (error) {
+                        console.error('❌ Ошибка при регистрации подключения:', error);
+                    }
+                };
+                
+                // Глобальная функция для регистрации отключения (вызывается из audio.js)
+                window.registerAudioDisconnection = async (channelId, participantId) => {
+                    if (!channelId || !participantId) {
+                        console.warn('⚠️ Не могу зарегистрировать отключение: отсутствуют channelId или participantId');
+                        return;
+                    }
+                    
+                    try {
+                        await API.post(
+                            `${API.baseUrls.audio}/api/audio/AudioChannels/${channelId}/participants/${participantId}/left`,
+                            {}
+                        );
+                        console.log('✅ Отключение от аудио канала зарегистрировано на сервере');
+                    } catch (error) {
+                        console.error('❌ Ошибка при регистрации отключения:', error);
+                    }
+                };
+                
+                window.onAudioConnected = async () => {
                     console.log('✅ Аудио подключение установлено для канала', channelId);
                     button.disabled = false;
                     button.textContent = 'Отключиться';
@@ -1260,7 +1365,12 @@
                             updateMuteButton(muteBtn, audioModule.isMuted);
                         }
                         
-                        // Запрашиваем список участников
+                        // Если participantId уже получен, регистрируем подключение
+                        if (audioModule.participantId) {
+                            await window.registerAudioConnection(channelId, audioModule.participantId);
+                        }
+                        
+                        // Запрашиваем начальный список участников
                         audioModule.requestParticipantsList();
                     }
                 };

@@ -8,7 +8,8 @@ const API = {
         auth: '',
         groups: '',
         chat: '',
-        audio: ''
+        audio: '',
+        notification: ''
     },
 
     // Флаг, что refresh уже в процессе

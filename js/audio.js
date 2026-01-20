@@ -494,6 +494,11 @@ var AudioModule = {
                 const participants = event.participants || [];
                 console.log('👥 Участники в комнате (из joined):', participants.length, participants);
                 
+                // Регистрируем подключение на сервере сразу после получения participantId
+                if (this.channelId && window.registerAudioConnection) {
+                    window.registerAudioConnection(this.channelId, this.participantId);
+                }
+                
                 // Обновляем счетчик участников (даже если пустой массив)
                 console.log('📊 Обновляем счетчик участников через onParticipantsUpdate...');
                 if (window.onParticipantsUpdate) {
@@ -961,6 +966,11 @@ var AudioModule = {
 
     // Отключиться
     async disconnect() {
+        // Регистрируем отключение на сервере перед очисткой
+        if (this.channelId && this.participantId && window.registerAudioDisconnection) {
+            await window.registerAudioDisconnection(this.channelId, this.participantId);
+        }
+        
         // Останавливаем периодический запрос участников
         if (this.participantsUpdateInterval) {
             clearInterval(this.participantsUpdateInterval);

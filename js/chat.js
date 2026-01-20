@@ -10,7 +10,7 @@ const Chat = {
     async init(groupId) {
         this.groupId = groupId;
         
-        const signalRUrl = `${API.baseUrls.chat}/hubs/chat`;
+        const signalRUrl = `${API.baseUrls.notification}/hubs/notification`;
         
         this.connection = new signalR.HubConnectionBuilder()
             .withUrl(signalRUrl, {
@@ -24,6 +24,20 @@ const Chat = {
         this.connection.on('ReceiveMessage', (message) => {
             if (window.onReceiveMessage) {
                 window.onReceiveMessage(message);
+            }
+        });
+
+        // Обработка уведомлений о подключении участника к аудио каналу
+        this.connection.on('AudioParticipantJoined', (data) => {
+            if (window.onAudioParticipantJoined) {
+                window.onAudioParticipantJoined(data);
+            }
+        });
+
+        // Обработка уведомлений об отключении участника от аудио канала
+        this.connection.on('AudioParticipantLeft', (data) => {
+            if (window.onAudioParticipantLeft) {
+                window.onAudioParticipantLeft(data);
             }
         });
 
