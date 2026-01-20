@@ -456,10 +456,14 @@ var AudioModule = {
             // Стандартная структура: msg.plugindata.data
             event = msg.plugindata.data;
             console.log('✅ event извлечен из msg.plugindata.data');
-        } else if (msg.videoroom || (msg.plugindata && msg.plugindata.plugin === 'janus.plugin.videoroom')) {
-            // VideoRoom прямая структура или через plugindata
-            event = msg.videoroom ? msg : (msg.plugindata ? msg.plugindata.data : msg);
-            console.log('✅ event извлечен для VideoRoom');
+        } else if (msg.plugindata && msg.plugindata.data && msg.plugindata.plugin === 'janus.plugin.videoroom') {
+            // VideoRoom через plugindata
+            event = msg.plugindata.data;
+            console.log('✅ event извлечен из msg.plugindata.data (VideoRoom)');
+        } else if (msg.videoroom) {
+            // VideoRoom прямая структура
+            event = msg;
+            console.log('✅ event извлечен напрямую из msg (VideoRoom)');
         } else if (msg.audiobridge) {
             // AudioBridge прямая структура (для обратной совместимости)
             event = msg;
@@ -544,7 +548,7 @@ var AudioModule = {
                 this.participantsUpdateInterval = setInterval(() => {
                     console.log('🔄 Периодический запрос списка publishers...');
                     this.requestParticipantsList();
-                }, 2000);
+                }, 1000);
                 
                 // Публикуем свой поток (VideoRoom)
                 if (!this.localStream && !this.offerCreated) {
@@ -721,13 +725,28 @@ var AudioModule = {
                 }
                 
                 // Обработка ответа на list (VideoRoom использует publishers)
-                if (event.list || event.publishers) {
-                    const publishers = event.publishers || event.list || [];
+                if (event.list !== undefined || event.publishers !== undefined) {
+                    let publishers = event.publishers || event.list;
+                    
+                    // Если publishers это объект с массивом, извлекаем массив
+                    if (publishers && typeof publishers === 'object' && !Array.isArray(publishers)) {
+                        if (publishers.list && Array.isArray(publishers.list)) {
+                            publishers = publishers.list;
+                        } else if (publishers.publishers && Array.isArray(publishers.publishers)) {
+                            publishers = publishers.publishers;
+                        }
+                    }
+                    
                     const participants = Array.isArray(publishers) ? publishers : [];
                     console.log('📋 Список publishers (VideoRoom):', participants.length, 'участников', participants);
+                    console.log('📋 Детали publishers:', JSON.stringify(participants, null, 2));
                     
                     if (!this.participantId && participants.length > 0) {
-                        const self = participants.find(p => (p.display || p.displayName || '').trim() === this.displayName.trim());
+                        const self = participants.find(p => {
+                            const pDisplay = (p.display || p.displayName || '').trim();
+                            const myDisplay = this.displayName.trim();
+                            return pDisplay === myDisplay;
+                        });
                         if (self && self.id) {
                             this.participantId = self.id;
                             console.log('✅ Найден свой participantId из списка:', this.participantId);
@@ -735,6 +754,7 @@ var AudioModule = {
                     }
                     
                     // Подписываемся на всех publishers (кроме себя)
+                    console.log(`🔍 Подписываемся на publishers. Мой ID: ${this.participantId}, Всего: ${participants.length}`);
                     this.subscribeToPublishers(participants);
                     
                     // Инициализируем Web Audio API микшер если еще не инициализирован
@@ -1079,7 +1099,14 @@ var AudioModule = {
     },
     
     addParticipantStream(participantId, stream) {
+        console.log(`🔊 addParticipantStream вызван для участника ${participantId}`, { 
+            hasStream: !!stream, 
+            audioTracks: stream ? stream.getAudioTracks().length : 0,
+            videoTracks: stream ? stream.getVideoTracks().length : 0
+        });
+        
         if (!this.remoteAudioContext || this.remoteAudioContext.state === 'closed') {
+            console.log('🔊 Инициализируем Web Audio API микшер...');
             this.initWebAudioMixer();
         }
         
@@ -1095,12 +1122,16 @@ var AudioModule = {
         }
         
         console.log(`🔊 Добавляем поток участника ${participantId}, треков: ${audioTracks.length}`);
+        audioTracks.forEach(track => {
+            console.log(`🔊 Трек:`, { id: track.id, kind: track.kind, enabled: track.enabled, muted: track.muted, readyState: track.readyState });
+        });
         
         try {
             if (this.participantSources.has(participantId)) {
                 const oldSource = this.participantSources.get(participantId);
                 try {
                     oldSource.disconnect();
+                    console.log(`🔊 Удален старый источник для участника ${participantId}`);
                 } catch (e) {
                     console.warn(`⚠️ Ошибка при отключении старого источника для ${participantId}:`, e);
                 }
@@ -1120,14 +1151,30 @@ var AudioModule = {
             this.gainNodes.set(participantId, gainNode);
             
             console.log(`✅ Добавлен поток участника ${participantId} в микшер, громкость: ${(volume * 100).toFixed(0)}%`);
+            console.log(`🔊 Состояние микшера:`, {
+                audioContextState: this.remoteAudioContext.state,
+                hasMasterGain: !!this.masterGainNode,
+                hasMixerDestination: !!this.mixerDestination,
+                connectedSources: this.participantSources.size
+            });
             
-            if (this.remoteAudio && this.remoteAudio.paused) {
-                this.remoteAudio.play().catch(error => {
-                    console.error('❌ Ошибка воспроизведения после добавления потока:', error);
-                });
+            if (this.remoteAudio) {
+                if (this.remoteAudio.paused) {
+                    console.log('🔊 Аудио элемент приостановлен, пытаемся воспроизвести...');
+                    this.remoteAudio.play().then(() => {
+                        console.log('✅ Аудио элемент воспроизводится после добавления потока');
+                    }).catch(error => {
+                        console.error('❌ Ошибка воспроизведения после добавления потока:', error);
+                    });
+                } else {
+                    console.log('✅ Аудио элемент уже воспроизводится');
+                }
+            } else {
+                console.warn('⚠️ remoteAudio элемент не найден!');
             }
         } catch (error) {
             console.error(`❌ Ошибка добавления потока участника ${participantId}:`, error);
+            console.error('❌ Детали ошибки:', error.stack);
         }
     },
     
@@ -1210,14 +1257,23 @@ var AudioModule = {
                 });
                 
                 subscriberHandle.on('remotetrack', (track, mid, on) => {
-                    console.log(`🔊 Удаленный трек от publisher ${publisherId}:`, { kind: track.kind, mid: mid, on: on, id: track.id });
+                    console.log(`🔊 Удаленный трек от publisher ${publisherId}:`, { kind: track.kind, mid: mid, on: on, id: track.id, enabled: track.enabled, muted: track.muted });
                     if (track.kind === 'audio' && on) {
-                        console.log(`🔊 Получен аудио трек от publisher ${publisherId}, добавляем в микшер...`);
+                        console.log(`🔊 Получен аудио трек от publisher ${publisherId}, создаем MediaStream...`);
                         const stream = new MediaStream([track]);
+                        console.log(`🔊 MediaStream создан для publisher ${publisherId}, треков: ${stream.getAudioTracks().length}`);
                         this.addParticipantStream(publisherId, stream);
                     } else if (!on) {
                         console.log(`🔇 Аудио трек от publisher ${publisherId} остановлен`);
                         this.removeParticipantStream(publisherId);
+                    }
+                });
+                
+                subscriberHandle.on('remotestream', (stream) => {
+                    console.log(`🔊 [Legacy] Удаленный поток от publisher ${publisherId}:`, stream);
+                    if (stream && stream.getAudioTracks().length > 0) {
+                        console.log(`🔊 Получен аудио поток от publisher ${publisherId}, добавляем в микшер...`);
+                        this.addParticipantStream(publisherId, stream);
                     }
                 });
                 
