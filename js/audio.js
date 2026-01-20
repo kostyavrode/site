@@ -393,7 +393,7 @@ var AudioModule = {
     },
 
     // Присоединиться к комнате (VideoRoom)
-    joinRoom() {
+    async joinRoom() {
         if (!this.audioBridge) {
             console.error('❌ audioBridge не инициализирован, не могу присоединиться к комнате');
             return;
@@ -402,6 +402,27 @@ var AudioModule = {
             console.error('❌ roomId не установлен, не могу присоединиться к комнате');
             return;
         }
+        
+        // Проверяем существование комнаты перед подключением
+        if (this.channelId) {
+            try {
+                console.log('🔍 Проверяем существование комнаты для канала:', this.channelId);
+                const channelInfo = await API.get(`${API.baseUrls.audio}/api/audio/AudioChannels/${this.channelId}`);
+                if (!channelInfo || !channelInfo.janusRoomId) {
+                    console.warn('⚠️ Комната не существует, пытаемся пересоздать...');
+                    await API.post(`${API.baseUrls.audio}/api/audio/AudioChannels/${this.channelId}/recreate-room`);
+                    console.log('✅ Комната пересоздана, обновляем roomId...');
+                    const updatedChannel = await API.get(`${API.baseUrls.audio}/api/audio/AudioChannels/${this.channelId}`);
+                    if (updatedChannel && updatedChannel.janusRoomId) {
+                        this.roomId = updatedChannel.janusRoomId;
+                        console.log('✅ roomId обновлен:', this.roomId);
+                    }
+                }
+            } catch (error) {
+                console.warn('⚠️ Не удалось проверить/пересоздать комнату, продолжаем подключение:', error);
+            }
+        }
+        
         console.log('🚪 Отправляем запрос на присоединение к VideoRoom:', this.roomId);
         const joinRequest = {
             request: 'join',
@@ -435,16 +456,22 @@ var AudioModule = {
             // Стандартная структура: msg.plugindata.data
             event = msg.plugindata.data;
             console.log('✅ event извлечен из msg.plugindata.data');
-        } else if (msg.videoroom) {
-            // VideoRoom прямая структура
-            event = msg;
-            console.log('✅ event извлечен напрямую из msg (VideoRoom прямая структура)');
+        } else if (msg.videoroom || (msg.plugindata && msg.plugindata.plugin === 'janus.plugin.videoroom')) {
+            // VideoRoom прямая структура или через plugindata
+            event = msg.videoroom ? msg : (msg.plugindata ? msg.plugindata.data : msg);
+            console.log('✅ event извлечен для VideoRoom');
         } else if (msg.audiobridge) {
             // AudioBridge прямая структура (для обратной совместимости)
             event = msg;
             console.log('⚠️ event извлечен из AudioBridge (старая структура). Возможно, комната не была пересоздана в VideoRoom.');
         } else {
-            console.warn('⚠️ Не удалось извлечь event из сообщения');
+            // Пытаемся использовать msg напрямую, если он содержит нужные поля
+            if (msg.list || msg.publishers || msg.error_code || msg.videoroom === 'joined' || msg.videoroom === 'event') {
+                event = msg;
+                console.log('✅ event извлечен напрямую из msg (прямая структура)');
+            } else {
+                console.warn('⚠️ Не удалось извлечь event из сообщения:', msg);
+            }
         }
         
         console.log('🔍 event извлечен:', event);
@@ -1013,7 +1040,7 @@ var AudioModule = {
     },
     
     initWebAudioMixer() {
-        if (this.remoteAudioContext) {
+        if (this.remoteAudioContext && this.remoteAudioContext.state !== 'closed') {
             return;
         }
         
@@ -1028,13 +1055,22 @@ var AudioModule = {
                 this.remoteAudio = document.createElement('audio');
                 this.remoteAudio.id = 'remoteAudio';
                 this.remoteAudio.autoplay = true;
+                this.remoteAudio.playsInline = true;
                 document.body.appendChild(this.remoteAudio);
             }
             
             this.remoteAudio.srcObject = this.mixerDestination.stream;
-            this.remoteAudio.play().catch(error => {
-                console.error('❌ Ошибка воспроизведения микшированного потока:', error);
-            });
+            
+            // Пытаемся воспроизвести с обработкой ошибок
+            const playPromise = this.remoteAudio.play();
+            if (playPromise !== undefined) {
+                playPromise.then(() => {
+                    console.log('✅ Микшированный аудио поток воспроизводится');
+                }).catch(error => {
+                    console.error('❌ Ошибка воспроизведения микшированного потока:', error);
+                    console.log('⚠️ Аудио заблокировано браузером. Нужен клик пользователя.');
+                });
+            }
             
             console.log('✅ Web Audio API микшер инициализирован');
         } catch (error) {
@@ -1043,16 +1079,33 @@ var AudioModule = {
     },
     
     addParticipantStream(participantId, stream) {
-        if (!this.remoteAudioContext) {
+        if (!this.remoteAudioContext || this.remoteAudioContext.state === 'closed') {
             this.initWebAudioMixer();
         }
         
-        if (!this.remoteAudioContext) {
-            console.error('❌ AudioContext не инициализирован');
+        if (!this.remoteAudioContext || this.remoteAudioContext.state === 'closed') {
+            console.error('❌ AudioContext не инициализирован или закрыт');
             return;
         }
         
+        const audioTracks = stream.getAudioTracks();
+        if (audioTracks.length === 0) {
+            console.warn(`⚠️ Поток участника ${participantId} не содержит аудио треков`);
+            return;
+        }
+        
+        console.log(`🔊 Добавляем поток участника ${participantId}, треков: ${audioTracks.length}`);
+        
         try {
+            if (this.participantSources.has(participantId)) {
+                const oldSource = this.participantSources.get(participantId);
+                try {
+                    oldSource.disconnect();
+                } catch (e) {
+                    console.warn(`⚠️ Ошибка при отключении старого источника для ${participantId}:`, e);
+                }
+            }
+            
             const source = this.remoteAudioContext.createMediaStreamSource(stream);
             const gainNode = this.remoteAudioContext.createGain();
             
@@ -1066,7 +1119,13 @@ var AudioModule = {
             this.participantSources.set(participantId, source);
             this.gainNodes.set(participantId, gainNode);
             
-            console.log(`✅ Добавлен поток участника ${participantId} в микшер`);
+            console.log(`✅ Добавлен поток участника ${participantId} в микшер, громкость: ${(volume * 100).toFixed(0)}%`);
+            
+            if (this.remoteAudio && this.remoteAudio.paused) {
+                this.remoteAudio.play().catch(error => {
+                    console.error('❌ Ошибка воспроизведения после добавления потока:', error);
+                });
+            }
         } catch (error) {
             console.error(`❌ Ошибка добавления потока участника ${participantId}:`, error);
         }
@@ -1121,54 +1180,53 @@ var AudioModule = {
                 console.log(`✅ Subscriber handle создан для publisher ${publisherId}`);
                 this.subscriberHandles.set(publisherId, subscriberHandle);
                 
+                subscriberHandle.on('message', (msg, jsep) => {
+                    console.log(`📨 Сообщение от subscriber handle для ${publisherId}:`, msg, jsep);
+                    
+                    if (msg && msg.videoroom === 'joined' && jsep) {
+                        console.log(`✅ Успешно присоединились как subscriber к publisher ${publisherId}`);
+                        subscriberHandle.createOffer({
+                            media: { audio: true, video: false },
+                            success: (offerJsep) => {
+                                console.log(`✅ Offer создан для подписки на ${publisherId}`);
+                                subscriberHandle.send({
+                                    message: { request: 'start' },
+                                    jsep: offerJsep
+                                });
+                            },
+                            error: (error) => {
+                                console.error(`❌ Ошибка создания offer для ${publisherId}:`, error);
+                            }
+                        });
+                    } else if (msg && msg.videoroom === 'event') {
+                        if (msg.error_code) {
+                            console.error(`❌ Ошибка subscriber для ${publisherId}:`, msg.error_code, msg.error);
+                        }
+                    }
+                    
+                    if (jsep && jsep.type === 'answer') {
+                        console.log(`📡 Получен JSEP answer для subscriber ${publisherId}`);
+                    }
+                });
+                
+                subscriberHandle.on('remotetrack', (track, mid, on) => {
+                    console.log(`🔊 Удаленный трек от publisher ${publisherId}:`, { kind: track.kind, mid: mid, on: on, id: track.id });
+                    if (track.kind === 'audio' && on) {
+                        console.log(`🔊 Получен аудио трек от publisher ${publisherId}, добавляем в микшер...`);
+                        const stream = new MediaStream([track]);
+                        this.addParticipantStream(publisherId, stream);
+                    } else if (!on) {
+                        console.log(`🔇 Аудио трек от publisher ${publisherId} остановлен`);
+                        this.removeParticipantStream(publisherId);
+                    }
+                });
+                
                 subscriberHandle.send({
                     message: {
                         request: 'join',
                         room: this.roomId,
                         ptype: 'subscriber',
                         feed: publisherId
-                    },
-                    success: (result) => {
-                        console.log(`✅ Успешно присоединились как subscriber к publisher ${publisherId}:`, result);
-                    },
-                    error: (error) => {
-                        console.error(`❌ Ошибка присоединения как subscriber к publisher ${publisherId}:`, error);
-                    }
-                });
-                
-                subscriberHandle.createOffer({
-                    media: { audio: true, video: false },
-                    success: (jsep) => {
-                        console.log(`✅ Offer создан для подписки на ${publisherId}`);
-                        subscriberHandle.send({
-                            message: { request: 'start' },
-                            jsep: jsep
-                        });
-                    },
-                    error: (error) => {
-                        console.error(`❌ Ошибка создания offer для ${publisherId}:`, error);
-                    }
-                });
-                
-                subscriberHandle.on('message', (msg, jsep) => {
-                    console.log(`📨 Сообщение от subscriber handle для ${publisherId}:`, msg, jsep);
-                    if (msg && msg.videoroom === 'event') {
-                        if (msg.error_code) {
-                            console.error(`❌ Ошибка subscriber для ${publisherId}:`, msg.error_code, msg.error);
-                        } else if (msg.attached) {
-                            console.log(`✅ Subscriber handle прикреплен для ${publisherId}`);
-                        }
-                    }
-                });
-                
-                subscriberHandle.on('remotetrack', (track, mid, on) => {
-                    if (track.kind === 'audio' && on) {
-                        console.log(`🔊 Получен аудио трек от publisher ${publisherId}`);
-                        const stream = new MediaStream([track]);
-                        this.addParticipantStream(publisherId, stream);
-                    } else if (!on) {
-                        console.log(`🔇 Аудио трек от publisher ${publisherId} остановлен`);
-                        this.removeParticipantStream(publisherId);
                     }
                 });
             },
