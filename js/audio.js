@@ -208,15 +208,12 @@ var AudioModule = {
                         console.log('🔊 Создан audio элемент для воспроизведения');
                     }
                     
-                    // Временно отключено Web Audio API для удаленного аудио
-                    // Используем простой способ для избежания конфликтов с микрофоном
                     this.remoteAudio.srcObject = stream;
                     
                     this.remoteAudio.play().then(() => {
                         console.log('✅ Удаленный аудио поток воспроизводится!');
                     }).catch((error) => {
                         console.error('❌ Ошибка воспроизведения:', error);
-                        // Пробуем воспроизвести после клика пользователя
                         console.log('⚠️ Аудио заблокировано браузером. Нужен клик пользователя.');
                     });
                     
@@ -953,12 +950,14 @@ var AudioModule = {
         const volumePercent = Math.round(volume * 100);
         this.participantVolumes.set(participantId, volume);
         
+        console.log(`📤 Отправка запроса на изменение громкости: ChannelId=${this.channelId}, ParticipantId=${participantIdNum}, Volume=${volumePercent}%`);
+        
         try {
-            await API.post(
+            const response = await API.post(
                 `${API.baseUrls.audio}/api/audio/AudioChannels/${this.channelId}/participants/${participantIdNum}/volume`,
                 { volume: volumePercent }
             );
-            console.log(`✅ Громкость участника ${participantIdNum} установлена на ${volumePercent}%`);
+            console.log(`✅ Громкость участника ${participantIdNum} установлена на ${volumePercent}% через Janus Gateway`, response);
         } catch (error) {
             console.error(`❌ Ошибка при установке громкости для участника ${participantIdNum}:`, error);
         }
