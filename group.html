@@ -861,13 +861,27 @@
                 `;
             }).join('');
             
+            // Очищаем старые обработчики для этого канала из Map
+            const keysToDelete = [];
+            participantVolumeControls.forEach((value, key) => {
+                if (key.startsWith(`volume-${currentAudioChannel}-`)) {
+                    keysToDelete.push(key);
+                }
+            });
+            keysToDelete.forEach(key => participantVolumeControls.delete(key));
+            
             // Добавляем обработчики для регуляторов громкости
             container.querySelectorAll('.participant-volume-slider').forEach(slider => {
                 const participantId = slider.dataset.participantId;
                 const channelId = slider.dataset.channelId;
                 const volumeKey = `volume-${channelId}-${participantId}`;
                 
-                slider.addEventListener('input', async (e) => {
+                // Проверяем, не добавлен ли уже обработчик
+                if (participantVolumeControls.has(volumeKey)) {
+                    return;
+                }
+                
+                const handler = async (e) => {
                     const volume = parseInt(e.target.value, 10);
                     const volumePercent = volume / 100;
                     
@@ -886,7 +900,9 @@
                     
                     // Отправляем запрос на сервер для установки громкости
                     await applyParticipantVolume(participantId, volumePercent);
-                });
+                };
+                
+                slider.addEventListener('input', handler);
                 
                 // Сохраняем ссылку на слайдер
                 participantVolumeControls.set(volumeKey, slider);
@@ -932,16 +948,13 @@
                 }
             }
             
-            // Обновляем счетчик в карточке канала
+                // Обновляем счетчик в карточке канала
             if (currentAudioChannel) {
                 const countEl = document.getElementById(`participantsCount-${currentAudioChannel}`);
-                console.log('🔍 countEl найден:', countEl ? 'ДА' : 'НЕТ', 'для канала', currentAudioChannel);
                 if (countEl) {
                     const count = Array.isArray(participants) ? participants.length : 0;
                     countEl.textContent = `${count} участников`;
                     console.log(`📊 Обновлен счетчик для канала ${currentAudioChannel}: ${count} участников`);
-                } else {
-                    console.error('❌ Элемент participantsCount не найден для канала', currentAudioChannel);
                 }
                 
                 // Обновляем список участников в sidebar
@@ -1045,6 +1058,7 @@
                         <div style="font-weight: 600; margin-bottom: var(--spacing-sm);">${Utils.escapeHtml(channel.name)}</div>
                         ${channel.description ? `<div style="font-size: 12px; color: var(--text-secondary); margin-bottom: var(--spacing-sm);">${Utils.escapeHtml(channel.description)}</div>` : ''}
                         <div id="channelParticipants-${channel.id}" class="channel-participants" style="font-size: 12px; color: var(--text-secondary); margin-bottom: var(--spacing-sm);"></div>
+                        <div id="participantsCount-${channel.id}" style="font-size: 12px; color: var(--text-secondary); margin-bottom: var(--spacing-sm);">0 участников</div>
                         <div style="display: flex; gap: var(--spacing-sm); align-items: center;" class="audio-channel-controls">
                             <button class="btn btn-sm btn-primary join-audio-btn" data-channel-id="${channel.id}" data-janus-room="${channel.janusRoomId}">Подключиться</button>
                         </div>
