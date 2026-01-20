@@ -387,8 +387,8 @@ var AudioModule = {
                     room: this.roomId
                 },
                 success: (result) => {
-                    console.log('✅ Ответ на list запрос (success callback):', result);
-                    if (result && result.list !== undefined) {
+                    console.log('✅ Ответ на list запрос (success callback):', JSON.stringify(result, null, 2));
+                    if (result) {
                         this.handleListResponse(result);
                     }
                 },
