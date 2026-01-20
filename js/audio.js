@@ -32,6 +32,11 @@ var AudioModule = {
     participantVolumes: new Map(), // Map<participantId, volume>
     gainNodes: new Map(), // Map<participantId, GainNode>
     remoteAudioContext: null, // AudioContext для удаленного аудио
+    participantStreams: new Map(), // Map<participantId, MediaStream> - отдельные потоки участников
+    participantSources: new Map(), // Map<participantId, MediaStreamAudioSourceNode>
+    subscriberHandles: new Map(), // Map<participantId, pluginHandle> - handles для подписки на publishers
+    masterGainNode: null, // Главный GainNode для микширования
+    mixerDestination: null, // Destination для микшированного потока
 
     async init(roomId, channelId = null, displayName = 'User') {
         console.log('🎯 Audio.init:', roomId, channelId, displayName);
@@ -126,13 +131,13 @@ var AudioModule = {
         });
     },
 
-    // Присоединиться к AudioBridge плагину
+    // Присоединиться к VideoRoom плагину
     attachAudioBridge() {
-        console.log('🔌 Присоединяемся к AudioBridge плагину...');
+        console.log('🔌 Присоединяемся к VideoRoom плагину...');
         this.janus.attach({
-            plugin: 'janus.plugin.audiobridge',
+            plugin: 'janus.plugin.videoroom',
             success: (pluginHandle) => {
-                console.log('✅ AudioBridge плагин успешно подключен, handle:', pluginHandle);
+                console.log('✅ VideoRoom плагин успешно подключен, handle:', pluginHandle);
                 this.audioBridge = pluginHandle;
                 console.log('🚪 Вызываем joinRoom()...');
                 this.joinRoom();
@@ -189,40 +194,10 @@ var AudioModule = {
                     console.log('✅ Локальный аудио трек отправляется на сервер!');
                 }
             },
-            // Новый API Janus.js - onremotetrack вместо onremotestream
+            // Новый API Janus.js - onremotetrack (для VideoRoom publisher handle не используется)
             onremotetrack: (track, mid, on) => {
-                console.log('🔊 Удаленный трек получен:', { kind: track.kind, mid: mid, on: on, id: track.id });
-                
-                if (track.kind === 'audio' && on) {
-                    console.log('🔊 Получен аудио трек от AudioBridge!');
-                    
-                    // Создаем MediaStream из трека
-                    const stream = new MediaStream([track]);
-                    
-                    // Сохраняем ссылку на удаленный аудио элемент
-                    if (!this.remoteAudio) {
-                        this.remoteAudio = document.createElement('audio');
-                        this.remoteAudio.id = 'remoteAudio';
-                        this.remoteAudio.autoplay = true;
-                        document.body.appendChild(this.remoteAudio);
-                        console.log('🔊 Создан audio элемент для воспроизведения');
-                    }
-                    
-                    this.remoteAudio.srcObject = stream;
-                    
-                    this.remoteAudio.play().then(() => {
-                        console.log('✅ Удаленный аудио поток воспроизводится!');
-                    }).catch((error) => {
-                        console.error('❌ Ошибка воспроизведения:', error);
-                        console.log('⚠️ Аудио заблокировано браузером. Нужен клик пользователя.');
-                    });
-                    
-                    if (window.onRemoteStream) {
-                        window.onRemoteStream(stream);
-                    }
-                } else if (!on && this.remoteAudio) {
-                    console.log('🔇 Удаленный трек остановлен');
-                }
+                console.log('🔊 Удаленный трек получен на publisher handle:', { kind: track.kind, mid: mid, on: on, id: track.id });
+                // В VideoRoom publisher handle используется только для публикации, не для получения
             },
             // Старый API для совместимости
             onremotestream: (stream) => {
@@ -400,13 +375,13 @@ var AudioModule = {
         }
     },
 
-    // Запросить список участников
+    // Запросить список участников (VideoRoom)
     requestParticipantsList() {
         if (this.audioBridge && this.roomId) {
-            console.log('📋 Запрашиваем список участников для комнаты', this.roomId, '...');
+            console.log('📋 Запрашиваем список publishers для комнаты', this.roomId, '...');
             this.audioBridge.send({
                 message: { 
-                    request: 'listparticipants',
+                    request: 'list',
                     room: this.roomId
                 }
             });
@@ -415,7 +390,7 @@ var AudioModule = {
         }
     },
 
-    // Присоединиться к комнате
+    // Присоединиться к комнате (VideoRoom)
     joinRoom() {
         if (!this.audioBridge) {
             console.error('❌ audioBridge не инициализирован, не могу присоединиться к комнате');
@@ -425,16 +400,17 @@ var AudioModule = {
             console.error('❌ roomId не установлен, не могу присоединиться к комнате');
             return;
         }
-        console.log('🚪 Отправляем запрос на присоединение к комнате:', this.roomId);
+        console.log('🚪 Отправляем запрос на присоединение к VideoRoom:', this.roomId);
         const joinRequest = {
             request: 'join',
             room: this.roomId,
+            ptype: 'publisher',
             display: this.displayName
         };
-        console.log('📤 Отправляем join запрос:', joinRequest);
+        console.log('📤 Отправляем join запрос (publisher):', joinRequest);
         try {
             this.audioBridge.send({ message: joinRequest });
-            console.log('✅ Join запрос отправлен успешно');
+            console.log('✅ Join запрос (publisher) отправлен успешно');
         } catch (error) {
             console.error('❌ Ошибка при отправке join запроса:', error);
         }
@@ -469,18 +445,18 @@ var AudioModule = {
         
         if (event) {
             console.log('📦 Данные события:', event);
-            console.log('🔍 Проверка audiobridge:', {
+            console.log('🔍 Проверка события VideoRoom:', {
+                videoroom: event.videoroom,
                 audiobridge: event.audiobridge,
-                audiobridge_type: typeof event.audiobridge,
-                is_joined: event.audiobridge === 'joined',
-                is_joined_strict: event.audiobridge === 'joined',
+                has_publishers: 'publishers' in event,
                 has_participants: 'participants' in event,
+                publishers_count: event.publishers ? event.publishers.length : 'N/A',
                 participants_count: event.participants ? event.participants.length : 'N/A',
                 event_keys: Object.keys(event)
             });
             
-            // Проверяем разные варианты события joined
-            const isOurJoin = event.audiobridge === 'joined' && event.id; 
+            // Проверяем разные варианты события joined (VideoRoom)
+            const isOurJoin = (event.videoroom === 'joined' || event.audiobridge === 'joined') && event.id; 
                            
                            
             
@@ -507,6 +483,14 @@ var AudioModule = {
                     });
                 }
                 
+                // Подписываемся на всех publishers (кроме себя)
+                this.subscribeToPublishers(participants);
+                
+                // Инициализируем Web Audio API микшер
+                if (!this.remoteAudioContext) {
+                    this.initWebAudioMixer();
+                }
+                
                 // Обновляем счетчик участников (даже если пустой массив)
                 console.log('📊 Обновляем счетчик участников через onParticipantsUpdate...');
                 if (window.onParticipantsUpdate) {
@@ -517,56 +501,61 @@ var AudioModule = {
                 }
                 
                 // Явно запрашиваем список участников
-                console.log('📋 Запрашиваем список участников...');
+                console.log('📋 Запрашиваем список publishers...');
                 this.requestParticipantsList();
                 
-                // Устанавливаем периодический запрос списка участников (каждые 5 секунд)
+                // Устанавливаем периодический запрос списка участников
                 if (this.participantsUpdateInterval) {
                     clearInterval(this.participantsUpdateInterval);
                 }
                 this.participantsUpdateInterval = setInterval(() => {
-                    console.log('🔄 Периодический запрос списка участников...');
+                    console.log('🔄 Периодический запрос списка publishers...');
                     this.requestParticipantsList();
                 }, 2000);
                 
-                // Создаем offer только если еще не создан (проверяем по наличию локального потока)
+                // Публикуем свой поток (VideoRoom)
                 if (!this.localStream && !this.offerCreated) {
-                    // Запрашиваем доступ к микрофону перед созданием offer
-                    console.log('🎤 Запрашиваем доступ к микрофону...');
+                    console.log('🎤 Запрашиваем доступ к микрофону для публикации...');
                     this.requestMicrophoneAccess().then(() => {
-                        console.log('✅ Доступ к микрофону получен, создаем WebRTC offer...');
+                        console.log('✅ Доступ к микрофону получен, публикуем поток...');
                         const audioConstraints = this.getAudioConstraints();
                         this.audioBridge.createOffer({
-                            media: audioConstraints,
-                        success: (jsepOffer) => {
-                            console.log('✅ WebRTC offer создан, отправляем configure...');
-                            this.offerCreated = true; // Устанавливаем флаг, что offer создан
-                            
-                            // Отправляем configure с JSEP offer
-                            // Janus ответит с JSEP answer
-                            this.audioBridge.send({
-                                message: { request: 'configure', muted: this.isMuted },
-                                jsep: jsepOffer
-                            });
-                            console.log('📤 Configure отправлен (muted:', this.isMuted, ')');
-                        },
+                            media: { ...audioConstraints, video: false },
+                            success: (jsepOffer) => {
+                                console.log('✅ WebRTC offer создан, публикуем поток...');
+                                this.offerCreated = true;
+                                
+                                // Публикуем поток в VideoRoom
+                                this.audioBridge.send({
+                                    message: { 
+                                        request: 'publish',
+                                        audio: true,
+                                        video: false
+                                    },
+                                    jsep: jsepOffer
+                                });
+                                console.log('📤 Publish запрос отправлен');
+                            },
                             error: (error) => {
                                 console.error('❌ Create offer error:', error);
                             }
                         });
                     }).catch((error) => {
                         console.error('❌ Microphone access denied:', error);
-                        console.log('🔇 Создаем offer без микрофона (muted)...');
-                        // Все равно создаем offer, но без микрофона
+                        console.log('🔇 Публикуем без микрофона...');
                         this.audioBridge.createOffer({
-                            media: { audioRecv: true, audioSend: false, video: false },
+                            media: { audio: false, video: false },
                             success: (jsep) => {
-                                console.log('✅ WebRTC offer создан (без микрофона), отправляем configure...');
+                                console.log('✅ WebRTC offer создан (без микрофона), публикуем...');
                                 this.audioBridge.send({
-                                    message: { request: 'configure', muted: true },
+                                    message: { 
+                                        request: 'publish',
+                                        audio: false,
+                                        video: false
+                                    },
                                     jsep: jsep
                                 });
-                                console.log('📤 Configure отправлен (muted: true)');
+                                console.log('📤 Publish запрос отправлен (без микрофона)');
                             },
                             error: (error) => {
                                 console.error('❌ Create offer (muted) error:', error);
@@ -574,9 +563,9 @@ var AudioModule = {
                         });
                     });
                 } else {
-                    console.log('ℹ️ Локальный поток уже существует, пропускаем создание offer');
+                    console.log('ℹ️ Локальный поток уже существует, пропускаем публикацию');
                 }
-            } else if (event.audiobridge === 'event') {
+            } else if (event.videoroom === 'event' || event.audiobridge === 'event') {
                 // Обработка ошибок
                 if (event.error_code) {
                     console.error('❌ Ошибка от Janus:', event.error_code, event.error);
@@ -593,10 +582,10 @@ var AudioModule = {
                     // Проверяем ошибку "No such room" - может быть как строка, так и число
                     const errorCode = typeof event.error_code === 'number' ? event.error_code : parseInt(event.error_code);
                     const errorMessage = event.error ? String(event.error) : '';
-                    const isNoSuchRoom = errorCode === 485 && errorMessage.includes('No such room');
+                    const isNoSuchRoom = errorCode === 485 && (errorMessage.includes('No such room') || errorMessage.includes('does not exist'));
                     
                     if (isNoSuchRoom) {
-                        console.error('❌ Комната не существует в Janus. Пытаемся пересоздать...');
+                        console.warn('⚠️ Комната не существует в VideoRoom (возможно, старая комната AudioBridge). Пытаемся пересоздать...');
                         console.log('🔍 channelId доступен:', this.channelId ? 'ДА' : 'НЕТ');
                         
                         // Пытаемся автоматически пересоздать комнату, если есть channelId
@@ -604,7 +593,7 @@ var AudioModule = {
                             try {
                                 console.log('🔄 Вызываем API для пересоздания комнаты для канала:', this.channelId);
                                 const response = await API.post(`${API.baseUrls.audio}/api/audio/AudioChannels/${this.channelId}/recreate-room`);
-                                console.log('✅ Комната успешно пересоздана! Пытаемся подключиться снова...');
+                                console.log('✅ Комната успешно пересоздана в VideoRoom! Пытаемся подключиться снова...');
                                 
                                 // Небольшая задержка перед повторным подключением
                                 setTimeout(() => {
@@ -625,7 +614,7 @@ var AudioModule = {
                         }
                         
                         // Если channelId нет, показываем ошибку
-                        const errorMsg = `Комната ${this.roomId} не существует в Janus Gateway. Возможно, Janus был перезапущен. Попробуйте пересоздать аудио канал или обратитесь к администратору группы.`;
+                        const errorMsg = `Комната ${this.roomId} не существует в Janus Gateway. Возможно, Janus был перезапущен или комната была создана в старой версии. Попробуйте пересоздать аудио канал или обратитесь к администратору группы.`;
                         console.error('❌', errorMsg);
                         if (window.onAudioError) {
                             window.onAudioError(errorMsg);
@@ -652,6 +641,15 @@ var AudioModule = {
                         if (self && self.id) {
                             this.participantId = self.id;
                             console.log('✅ Найден свой participantId из списка:', this.participantId);
+                        }
+                    }
+                    
+                    // Инициализируем Web Audio API микшер если еще не инициализирован
+                    if (!this.remoteAudioContext && this.remoteAudio && this.remoteAudio.srcObject) {
+                        const stream = this.remoteAudio.srcObject;
+                        if (stream instanceof MediaStream) {
+                            this.initWebAudioMixer();
+                            this.addParticipantStream('mixed', stream);
                         }
                     }
                     
@@ -935,6 +933,170 @@ var AudioModule = {
         this.rnnoiseEnabled = false;
     },
     
+    initWebAudioMixer() {
+        if (this.remoteAudioContext) {
+            return;
+        }
+        
+        try {
+            this.remoteAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+            this.masterGainNode = this.remoteAudioContext.createGain();
+            this.masterGainNode.gain.value = 1.0;
+            this.mixerDestination = this.remoteAudioContext.createMediaStreamDestination();
+            this.masterGainNode.connect(this.mixerDestination);
+            
+            if (!this.remoteAudio) {
+                this.remoteAudio = document.createElement('audio');
+                this.remoteAudio.id = 'remoteAudio';
+                this.remoteAudio.autoplay = true;
+                document.body.appendChild(this.remoteAudio);
+            }
+            
+            this.remoteAudio.srcObject = this.mixerDestination.stream;
+            this.remoteAudio.play().catch(error => {
+                console.error('❌ Ошибка воспроизведения микшированного потока:', error);
+            });
+            
+            console.log('✅ Web Audio API микшер инициализирован');
+        } catch (error) {
+            console.error('❌ Ошибка инициализации Web Audio API микшера:', error);
+        }
+    },
+    
+    addParticipantStream(participantId, stream) {
+        if (!this.remoteAudioContext) {
+            this.initWebAudioMixer();
+        }
+        
+        if (!this.remoteAudioContext) {
+            console.error('❌ AudioContext не инициализирован');
+            return;
+        }
+        
+        try {
+            const source = this.remoteAudioContext.createMediaStreamSource(stream);
+            const gainNode = this.remoteAudioContext.createGain();
+            
+            const volume = this.participantVolumes.get(participantId) || 1.0;
+            gainNode.gain.value = volume;
+            
+            source.connect(gainNode);
+            gainNode.connect(this.masterGainNode);
+            
+            this.participantStreams.set(participantId, stream);
+            this.participantSources.set(participantId, source);
+            this.gainNodes.set(participantId, gainNode);
+            
+            console.log(`✅ Добавлен поток участника ${participantId} в микшер`);
+        } catch (error) {
+            console.error(`❌ Ошибка добавления потока участника ${participantId}:`, error);
+        }
+    },
+    
+    removeParticipantStream(participantId) {
+        const source = this.participantSources.get(participantId);
+        const gainNode = this.gainNodes.get(participantId);
+        
+        if (source) {
+            source.disconnect();
+            this.participantSources.delete(participantId);
+        }
+        
+        if (gainNode) {
+            gainNode.disconnect();
+            this.gainNodes.delete(participantId);
+        }
+        
+        this.participantStreams.delete(participantId);
+        console.log(`✅ Удален поток участника ${participantId} из микшера`);
+    },
+    
+    subscribeToPublishers(publishers) {
+        if (!publishers || !Array.isArray(publishers)) {
+            return;
+        }
+        
+        publishers.forEach(publisher => {
+            if (publisher.id && publisher.id !== this.participantId) {
+                this.subscribeToPublisher(publisher);
+            }
+        });
+    },
+    
+    subscribeToPublisher(publisher) {
+        const publisherId = publisher.id || publisher;
+        if (!publisherId || publisherId === this.participantId) {
+            return;
+        }
+        
+        if (this.subscriberHandles.has(publisherId)) {
+            console.log(`ℹ️ Уже подписан на publisher ${publisherId}`);
+            return;
+        }
+        
+        console.log(`📡 Подписываемся на publisher ${publisherId}...`);
+        
+        this.janus.attach({
+            plugin: 'janus.plugin.videoroom',
+            success: (subscriberHandle) => {
+                console.log(`✅ Subscriber handle создан для publisher ${publisherId}`);
+                this.subscriberHandles.set(publisherId, subscriberHandle);
+                
+                subscriberHandle.send({
+                    message: {
+                        request: 'join',
+                        room: this.roomId,
+                        ptype: 'subscriber',
+                        feed: publisherId
+                    }
+                });
+                
+                subscriberHandle.createOffer({
+                    media: { audio: true, video: false },
+                    success: (jsep) => {
+                        console.log(`✅ Offer создан для подписки на ${publisherId}`);
+                        subscriberHandle.send({
+                            message: { request: 'start' },
+                            jsep: jsep
+                        });
+                    },
+                    error: (error) => {
+                        console.error(`❌ Ошибка создания offer для ${publisherId}:`, error);
+                    }
+                });
+                
+                subscriberHandle.on('remotetrack', (track, mid, on) => {
+                    if (track.kind === 'audio' && on) {
+                        console.log(`🔊 Получен аудио трек от publisher ${publisherId}`);
+                        const stream = new MediaStream([track]);
+                        this.addParticipantStream(publisherId, stream);
+                    } else if (!on) {
+                        console.log(`🔇 Аудио трек от publisher ${publisherId} остановлен`);
+                        this.removeParticipantStream(publisherId);
+                    }
+                });
+            },
+            error: (error) => {
+                console.error(`❌ Ошибка создания subscriber handle для ${publisherId}:`, error);
+            }
+        });
+    },
+    
+    unsubscribeFromPublisher(publisherId) {
+        const handle = this.subscriberHandles.get(publisherId);
+        if (handle) {
+            try {
+                handle.send({ message: { request: 'leave' } });
+                handle.detach();
+            } catch (error) {
+                console.error(`❌ Ошибка отписки от publisher ${publisherId}:`, error);
+            }
+            this.subscriberHandles.delete(publisherId);
+        }
+        this.removeParticipantStream(publisherId);
+        console.log(`✅ Отписались от publisher ${publisherId}`);
+    },
+    
     async setParticipantVolume(participantId, volume) {
         if (!this.channelId) {
             console.warn('⚠️ channelId не установлен, не могу установить громкость');
@@ -947,19 +1109,14 @@ var AudioModule = {
             return;
         }
         
-        const volumePercent = Math.round(volume * 100);
         this.participantVolumes.set(participantId, volume);
         
-        console.log(`📤 Отправка запроса на изменение громкости: ChannelId=${this.channelId}, ParticipantId=${participantIdNum}, Volume=${volumePercent}%`);
-        
-        try {
-            const response = await API.post(
-                `${API.baseUrls.audio}/api/audio/AudioChannels/${this.channelId}/participants/${participantIdNum}/volume`,
-                { volume: volumePercent }
-            );
-            console.log(`✅ Громкость участника ${participantIdNum} установлена на ${volumePercent}% через Janus Gateway`, response);
-        } catch (error) {
-            console.error(`❌ Ошибка при установке громкости для участника ${participantIdNum}:`, error);
+        const gainNode = this.gainNodes.get(participantId);
+        if (gainNode) {
+            gainNode.gain.value = volume;
+            console.log(`✅ Громкость участника ${participantId} установлена на ${(volume * 100).toFixed(0)}% через Web Audio API`);
+        } else {
+            console.warn(`⚠️ GainNode для участника ${participantId} не найден`);
         }
     },
 
@@ -1018,8 +1175,21 @@ var AudioModule = {
         this.rnnoiseEnabled = false;
         
         // Очищаем управление громкостью
+        this.subscriberHandles.forEach((handle, participantId) => {
+            this.unsubscribeFromPublisher(participantId);
+        });
+        this.subscriberHandles.clear();
+        
+        this.participantStreams.forEach((stream, participantId) => {
+            this.removeParticipantStream(participantId);
+        });
+        this.participantStreams.clear();
+        this.participantSources.clear();
         this.gainNodes.clear();
         this.participantVolumes.clear();
+        this.masterGainNode = null;
+        this.mixerDestination = null;
+        
         if (this.remoteAudioContext && this.remoteAudioContext.state !== 'closed') {
             try {
                 this.remoteAudioContext.close();
