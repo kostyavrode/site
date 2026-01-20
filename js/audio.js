@@ -679,10 +679,11 @@ var AudioModule = {
                     return;
                 }
                 
-                // Обработка ответа на listparticipants
-                if (event.list) {
-                    const participants = Array.isArray(event.list) ? event.list : [];
-                    console.log('📋 Список участников (из list):', participants.length, 'участников', participants);
+                // Обработка ответа на list (VideoRoom использует publishers)
+                if (event.list || event.publishers) {
+                    const publishers = event.publishers || event.list || [];
+                    const participants = Array.isArray(publishers) ? publishers : [];
+                    console.log('📋 Список publishers (VideoRoom):', participants.length, 'участников', participants);
                     
                     if (!this.participantId && participants.length > 0) {
                         const self = participants.find(p => (p.display || p.displayName || '').trim() === this.displayName.trim());
@@ -692,13 +693,12 @@ var AudioModule = {
                         }
                     }
                     
+                    // Подписываемся на всех publishers (кроме себя)
+                    this.subscribeToPublishers(participants);
+                    
                     // Инициализируем Web Audio API микшер если еще не инициализирован
-                    if (!this.remoteAudioContext && this.remoteAudio && this.remoteAudio.srcObject) {
-                        const stream = this.remoteAudio.srcObject;
-                        if (stream instanceof MediaStream) {
-                            this.initWebAudioMixer();
-                            this.addParticipantStream('mixed', stream);
-                        }
+                    if (!this.remoteAudioContext) {
+                        this.initWebAudioMixer();
                     }
                     
                     console.log('🔍 Вызываем onParticipantsUpdate с', participants.length, 'участниками');
@@ -710,6 +710,23 @@ var AudioModule = {
                     }
                 }
                 
+                // Обработка нового publisher (VideoRoom)
+                if (event.publisher) {
+                    const publisher = event.publisher;
+                    console.log('📢 Новый publisher присоединился:', publisher);
+                    if (publisher.id && publisher.id !== this.participantId) {
+                        this.subscribeToPublisher(publisher);
+                    }
+                }
+                
+                // Обработка отключения publisher (VideoRoom)
+                if (event.unpublished) {
+                    const publisherId = typeof event.unpublished === 'object' ? event.unpublished.id : event.unpublished;
+                    console.log('📢 Publisher отключился:', publisherId);
+                    if (publisherId) {
+                        this.unsubscribeFromPublisher(publisherId);
+                    }
+                }
                 
                 // Логируем другие события для отладки
                 if (event.talking) {
@@ -1096,6 +1113,12 @@ var AudioModule = {
                         room: this.roomId,
                         ptype: 'subscriber',
                         feed: publisherId
+                    },
+                    success: (result) => {
+                        console.log(`✅ Успешно присоединились как subscriber к publisher ${publisherId}:`, result);
+                    },
+                    error: (error) => {
+                        console.error(`❌ Ошибка присоединения как subscriber к publisher ${publisherId}:`, error);
                     }
                 });
                 
@@ -1110,6 +1133,17 @@ var AudioModule = {
                     },
                     error: (error) => {
                         console.error(`❌ Ошибка создания offer для ${publisherId}:`, error);
+                    }
+                });
+                
+                subscriberHandle.on('message', (msg, jsep) => {
+                    console.log(`📨 Сообщение от subscriber handle для ${publisherId}:`, msg, jsep);
+                    if (msg && msg.videoroom === 'event') {
+                        if (msg.error_code) {
+                            console.error(`❌ Ошибка subscriber для ${publisherId}:`, msg.error_code, msg.error);
+                        } else if (msg.attached) {
+                            console.log(`✅ Subscriber handle прикреплен для ${publisherId}`);
+                        }
                     }
                 });
                 
