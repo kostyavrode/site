@@ -514,7 +514,7 @@ var AudioModule = {
                 this.participantsUpdateInterval = setInterval(() => {
                     console.log('🔄 Периодический запрос списка участников...');
                     this.requestParticipantsList();
-                }, 5000);
+                }, 2000);
                 
                 // Создаем offer только если еще не создан (проверяем по наличию локального потока)
                 if (!this.localStream && !this.offerCreated) {
@@ -651,22 +651,6 @@ var AudioModule = {
                     }
                 }
                 
-                if (event.participants) {
-                    const participants = Array.isArray(event.participants) ? event.participants : [];
-                    console.log('👥 Обновление списка участников (из event):', participants.length, 'участников', participants);
-                    
-                    if (!this.participantId && participants.length > 0) {
-                        const self = participants.find(p => (p.display || p.displayName || '').trim() === this.displayName.trim());
-                        if (self && self.id) {
-                            this.participantId = self.id;
-                            console.log('✅ Найден свой participantId из списка участников:', this.participantId);
-                        }
-                    }
-                    
-                    if (window.onParticipantsUpdate) {
-                        window.onParticipantsUpdate(participants, this.participantId);
-                    }
-                }
                 
                 // Логируем другие события для отладки
                 if (event.talking) {
