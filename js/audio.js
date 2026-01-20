@@ -385,10 +385,76 @@ var AudioModule = {
                 message: { 
                     request: 'list',
                     room: this.roomId
+                },
+                success: (result) => {
+                    console.log('✅ Ответ на list запрос (success callback):', result);
+                    if (result && result.list !== undefined) {
+                        this.handleListResponse(result);
+                    }
+                },
+                error: (error) => {
+                    console.error('❌ Ошибка при запросе списка publishers:', error);
                 }
             });
         } else {
             console.warn('⚠️ audioBridge или roomId не доступен, не могу запросить список участников');
+        }
+    },
+    
+    handleListResponse(event) {
+        console.log('📋 Обработка ответа на list:', event);
+        
+        let publishers = event.publishers || event.list;
+        
+        // Если publishers это объект с массивом, извлекаем массив
+        if (publishers && typeof publishers === 'object' && !Array.isArray(publishers)) {
+            if (publishers.list && Array.isArray(publishers.list)) {
+                publishers = publishers.list;
+            } else if (publishers.publishers && Array.isArray(publishers.publishers)) {
+                publishers = publishers.publishers;
+            } else {
+                // Пытаемся найти массив в объекте
+                const keys = Object.keys(publishers);
+                for (const key of keys) {
+                    if (Array.isArray(publishers[key])) {
+                        publishers = publishers[key];
+                        break;
+                    }
+                }
+            }
+        }
+        
+        const participants = Array.isArray(publishers) ? publishers : [];
+        console.log('📋 Список publishers (VideoRoom):', participants.length, 'участников', participants);
+        console.log('📋 Детали publishers:', JSON.stringify(participants, null, 2));
+        
+        if (!this.participantId && participants.length > 0) {
+            const self = participants.find(p => {
+                const pDisplay = (p.display || p.displayName || '').trim();
+                const myDisplay = this.displayName.trim();
+                return pDisplay === myDisplay;
+            });
+            if (self && self.id) {
+                this.participantId = self.id;
+                console.log('✅ Найден свой participantId из списка:', this.participantId);
+            }
+        }
+        
+        // Подписываемся на всех publishers (кроме себя)
+        console.log(`🔍 Подписываемся на publishers. Мой ID: ${this.participantId}, Всего: ${participants.length}`);
+        this.subscribeToPublishers(participants);
+        
+        // Инициализируем Web Audio API микшер если еще не инициализирован
+        if (!this.remoteAudioContext) {
+            this.initWebAudioMixer();
+        }
+        
+        console.log('🔍 Вызываем onParticipantsUpdate с', participants.length, 'участниками');
+        if (window.onParticipantsUpdate) {
+            window.onParticipantsUpdate(participants, this.participantId);
+            console.log('✅ onParticipantsUpdate вызван');
+        } else {
+            console.warn('⚠️ window.onParticipantsUpdate не определен при обработке list');
         }
     },
 
@@ -441,13 +507,14 @@ var AudioModule = {
 
     // Обработка сообщений от Janus
     async handleMessage(msg, jsep) {
-        console.log('📨 Получено сообщение от Janus:', msg);
+        console.log('📨 Получено сообщение от Janus:', JSON.stringify(msg, null, 2));
         console.log('🔍 Структура msg:', {
             has_plugindata: 'plugindata' in msg,
             plugindata: msg.plugindata,
             jsep: jsep ? 'есть' : 'нет',
             msg_keys: Object.keys(msg),
-            has_audiobridge: 'audiobridge' in msg
+            has_audiobridge: 'audiobridge' in msg,
+            has_videoroom: 'videoroom' in msg
         });
         
         // Пытаемся извлечь event из разных структур
