@@ -37,6 +37,8 @@ var AudioModule = {
     subscriberHandles: new Map(), // Map<participantId, pluginHandle> - handles для подписки на publishers
     masterGainNode: null, // Главный GainNode для микширования
     mixerDestination: null, // Destination для микшированного потока
+    recreateRoomAttempts: 0, // Счетчик попыток пересоздания комнаты
+    maxRecreateAttempts: 3, // Максимальное количество попыток пересоздания
 
     async init(roomId, channelId = null, displayName = 'User') {
         console.log('🎯 Audio.init:', roomId, channelId, displayName);
@@ -433,10 +435,14 @@ var AudioModule = {
             // Стандартная структура: msg.plugindata.data
             event = msg.plugindata.data;
             console.log('✅ event извлечен из msg.plugindata.data');
-        } else if (msg.audiobridge) {
-            // Прямая структура: msg уже является событием
+        } else if (msg.videoroom) {
+            // VideoRoom прямая структура
             event = msg;
-            console.log('✅ event извлечен напрямую из msg (прямая структура)');
+            console.log('✅ event извлечен напрямую из msg (VideoRoom прямая структура)');
+        } else if (msg.audiobridge) {
+            // AudioBridge прямая структура (для обратной совместимости)
+            event = msg;
+            console.log('⚠️ event извлечен из AudioBridge (старая структура). Возможно, комната не была пересоздана в VideoRoom.');
         } else {
             console.warn('⚠️ Не удалось извлечь event из сообщения');
         }
@@ -464,8 +470,8 @@ var AudioModule = {
                 console.log('✅ УСЛОВИЕ JOINED СРАБОТАЛО! Присоединились к аудио комнате:', event.room);
                 this.participantId = event.id;
                 console.log('✅ Сохранен participantId:', this.participantId);
-                const participants = event.participants || [];
-                console.log('👥 Участники в комнате (из joined):', participants.length, participants);
+                const participants = event.publishers || event.participants || [];
+                console.log('👥 Publishers в комнате (из joined):', participants.length, participants);
                 
                 // Регистрируем подключение на сервере сразу после получения participantId
                 if (this.channelId && this.participantId) {
@@ -565,7 +571,7 @@ var AudioModule = {
                 } else {
                     console.log('ℹ️ Локальный поток уже существует, пропускаем публикацию');
                 }
-            } else if (event.videoroom === 'event' || event.audiobridge === 'event') {
+            } else if (event.videoroom === 'event' || event.audiobridge === 'event' || event.videoroom || event.audiobridge) {
                 // Обработка ошибок
                 if (event.error_code) {
                     console.error('❌ Ошибка от Janus:', event.error_code, event.error);
@@ -585,7 +591,19 @@ var AudioModule = {
                     const isNoSuchRoom = errorCode === 485 && (errorMessage.includes('No such room') || errorMessage.includes('does not exist'));
                     
                     if (isNoSuchRoom) {
-                        console.warn('⚠️ Комната не существует в VideoRoom (возможно, старая комната AudioBridge). Пытаемся пересоздать...');
+                        // Защита от бесконечного цикла
+                        if (this.recreateRoomAttempts >= this.maxRecreateAttempts) {
+                            console.error(`❌ Превышено максимальное количество попыток пересоздания комнаты (${this.maxRecreateAttempts}). Останавливаем попытки.`);
+                            const errorMsg = `Не удалось подключиться к комнате ${this.roomId} после ${this.maxRecreateAttempts} попыток пересоздания. Возможно, проблема с Janus Gateway. Обратитесь к администратору.`;
+                            if (window.onAudioError) {
+                                window.onAudioError(errorMsg);
+                            }
+                            this.disconnect();
+                            return;
+                        }
+                        
+                        this.recreateRoomAttempts++;
+                        console.warn(`⚠️ Комната не существует в VideoRoom (попытка ${this.recreateRoomAttempts}/${this.maxRecreateAttempts}). Пытаемся пересоздать...`);
                         console.log('🔍 channelId доступен:', this.channelId ? 'ДА' : 'НЕТ');
                         
                         // Пытаемся автоматически пересоздать комнату, если есть channelId
@@ -593,13 +611,43 @@ var AudioModule = {
                             try {
                                 console.log('🔄 Вызываем API для пересоздания комнаты для канала:', this.channelId);
                                 const response = await API.post(`${API.baseUrls.audio}/api/audio/AudioChannels/${this.channelId}/recreate-room`);
-                                console.log('✅ Комната успешно пересоздана в VideoRoom! Пытаемся подключиться снова...');
+                                console.log('✅ Комната успешно пересоздана в VideoRoom! Пересоздаем сессию Janus...');
                                 
-                                // Небольшая задержка перед повторным подключением
-                                setTimeout(() => {
-                                    // Повторно вызываем joinRoom
-                                    this.joinRoom();
-                                }, 1000);
+                                // Отключаемся и пересоздаем сессию для использования VideoRoom
+                                if (this.audioBridge) {
+                                    try {
+                                        this.audioBridge.detach();
+                                    } catch (e) {
+                                        console.warn('Ошибка при отключении handle:', e);
+                                    }
+                                    this.audioBridge = null;
+                                }
+                                
+                                if (this.janus) {
+                                    try {
+                                        this.janus.destroy();
+                                    } catch (e) {
+                                        console.warn('Ошибка при уничтожении сессии:', e);
+                                    }
+                                    this.janus = null;
+                                }
+                                
+                                // Увеличиваем задержку перед повторным подключением
+                                setTimeout(async () => {
+                                    console.log('🔄 Повторная попытка подключения с новой сессией...');
+                                    // Переподключаемся полностью через init
+                                    try {
+                                        await this.init(this.roomId, this.channelId, this.displayName);
+                                        console.log('✅ Новая сессия Janus создана, подключаемся к VideoRoom...');
+                                    } catch (initError) {
+                                        console.error('❌ Ошибка при создании новой сессии Janus:', initError);
+                                        const errorMsg = 'Не удалось создать новую сессию Janus после пересоздания комнаты. Попробуйте обновить страницу.';
+                                        if (window.onAudioError) {
+                                            window.onAudioError(errorMsg);
+                                        }
+                                        this.disconnect();
+                                    }
+                                }, 2000);
                                 
                                 return; // Не отключаемся, ждем переподключения
                             } catch (recreateError) {
@@ -1145,6 +1193,7 @@ var AudioModule = {
         }
         
         this.participantId = null;
+        this.recreateRoomAttempts = 0; // Сбрасываем счетчик попыток пересоздания
         
         // Очищаем RNNoise ресурсы
         if (this.rnnoiseProcessor) {
