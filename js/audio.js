@@ -633,6 +633,15 @@ var AudioModule = {
                 if (event.list) {
                     const participants = Array.isArray(event.list) ? event.list : [];
                     console.log('📋 Список участников (из list):', participants.length, 'участников', participants);
+                    
+                    if (!this.participantId && participants.length > 0) {
+                        const self = participants.find(p => (p.display || p.displayName || '').trim() === this.displayName.trim());
+                        if (self && self.id) {
+                            this.participantId = self.id;
+                            console.log('✅ Найден свой participantId из списка:', this.participantId);
+                        }
+                    }
+                    
                     console.log('🔍 Вызываем onParticipantsUpdate с', participants.length, 'участниками');
                     if (window.onParticipantsUpdate) {
                         window.onParticipantsUpdate(participants, this.participantId);
@@ -645,6 +654,15 @@ var AudioModule = {
                 if (event.participants) {
                     const participants = Array.isArray(event.participants) ? event.participants : [];
                     console.log('👥 Обновление списка участников (из event):', participants.length, 'участников', participants);
+                    
+                    if (!this.participantId && participants.length > 0) {
+                        const self = participants.find(p => (p.display || p.displayName || '').trim() === this.displayName.trim());
+                        if (self && self.id) {
+                            this.participantId = self.id;
+                            console.log('✅ Найден свой participantId из списка участников:', this.participantId);
+                        }
+                    }
+                    
                     if (window.onParticipantsUpdate) {
                         window.onParticipantsUpdate(participants, this.participantId);
                     }

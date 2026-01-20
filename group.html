@@ -908,6 +908,28 @@
             
             if (participantId !== undefined && participantId !== null) {
                 currentParticipantId = participantId;
+                console.log('✅ participantId установлен из параметра:', currentParticipantId);
+            } else if (!currentParticipantId && participants && Array.isArray(participants) && participants.length > 0) {
+                const audioModule = getAudioModule();
+                const displayNameToFind = audioModule?.displayName || currentNickName;
+                console.log('🔍 Ищем себя в списке по displayName:', displayNameToFind);
+                
+                const self = participants.find(p => {
+                    const pDisplay = (p.display || p.displayName || '').trim().toLowerCase();
+                    const myDisplay = displayNameToFind.trim().toLowerCase();
+                    return pDisplay === myDisplay;
+                });
+                
+                if (self && self.id) {
+                    currentParticipantId = self.id;
+                    console.log('✅ Найден свой participantId из списка:', currentParticipantId);
+                    if (audioModule) {
+                        audioModule.participantId = self.id;
+                    }
+                } else {
+                    console.warn('⚠️ Не удалось найти себя в списке участников. DisplayName для поиска:', displayNameToFind);
+                    console.warn('⚠️ Участники в списке:', participants.map(p => ({ id: p.id, display: p.display || p.displayName })));
+                }
             }
             
             // Обновляем счетчик в карточке канала
