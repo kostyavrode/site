@@ -174,19 +174,8 @@ var AudioModule = {
                         },
                         success: (result) => {
                             console.log('✅ Присоединились к комнате как Publisher:', result);
-                            
-                            // Сохраняем participantId (publisher ID)
-                            if (result.id) {
-                                this.participantId = result.id;
-                                console.log('✅ Сохранен participantId (publisher ID):', this.participantId);
-                                
-                                // Регистрируем подключение на сервере
-                                if (this.channelId && this.participantId && window.registerAudioConnection) {
-                                    window.registerAudioConnection(this.channelId, this.participantId);
-                                }
-                            }
-                            
-                            // Публикуем поток
+                            // participantId будет установлен в handlePublisherMessage при получении события 'joined'
+                        },
                             const hasAudio = this.localStream.getAudioTracks().length > 0;
                             
                             handle.createOffer({
@@ -575,6 +564,20 @@ var AudioModule = {
         }
         
         if (event) {
+            // Событие 'joined' - мы присоединились к комнате
+            if (event.videoroom === 'joined' && event.id) {
+                this.participantId = event.id;
+                console.log('✅ Сохранен participantId (publisher ID):', this.participantId);
+                
+                // Регистрируем подключение на сервере
+                if (this.channelId && this.participantId && window.registerAudioConnection) {
+                    window.registerAudioConnection(this.channelId, this.participantId);
+                }
+                
+                // Запрашиваем список publishers после присоединения
+                this.requestPublishersList();
+            }
+            
             // Новые publishers
             if (event.publishers) {
                 console.log('📋 Новые publishers:', event.publishers.length);
