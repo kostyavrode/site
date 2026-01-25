@@ -721,13 +721,19 @@ var AudioModule = {
                                 
                                 receivers.forEach(receiver => {
                                     if (receiver.track && receiver.track.kind === 'audio') {
+                                        console.log(`🔊 Найден аудио трек в receiver: ${receiver.track.id}, enabled=${receiver.track.enabled}, muted=${receiver.track.muted}`);
                                         remoteStream.addTrack(receiver.track);
                                     }
                                 });
                                 
                                 if (remoteStream.getAudioTracks().length > 0) {
+                                    console.log(`🔊 Создан MediaStream из receivers, треков: ${remoteStream.getAudioTracks().length}`);
                                     this.handleRemoteStream(remoteStream, publisherId, displayName);
+                                } else {
+                                    console.warn(`⚠️ Не найдено аудио треков в receivers для ${publisherId}`);
                                 }
+                            } else {
+                                console.warn(`⚠️ RTCPeerConnection не найден для ${publisherId}`);
                             }
                         }, 500);
                     }
@@ -797,6 +803,8 @@ var AudioModule = {
         const publisherIdStr = String(publisherId);
         
         console.log(`🎵 processAudioForMixing: publisherId=${publisherId} (строка: ${publisherIdStr}), displayName=${displayName}`);
+        console.log(`🔍 AudioContext состояние: ${this.audioContext.state}`);
+        console.log(`🔍 audioMixer подключен к destination: ${this.audioMixer.numberOfOutputs > 0}`);
         
         const audioTracks = stream.getAudioTracks();
         if (audioTracks.length === 0) {
@@ -806,6 +814,7 @@ var AudioModule = {
         
         // Проверяем и размучиваем треки
         audioTracks.forEach(track => {
+            console.log(`🔍 Трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
             if (track.muted) {
                 console.log(`🔇 Трек ${track.id} был muted, размучиваем...`);
                 track.muted = false;
@@ -822,9 +831,39 @@ var AudioModule = {
                 console.log('⏸️ AudioContext приостановлен, возобновляем...');
                 this.audioContext.resume().then(() => {
                     console.log('✅ AudioContext возобновлен, состояние:', this.audioContext.state);
+                    // Повторно обрабатываем поток после возобновления
+                    this.processAudioForMixing(stream, publisherId, displayName);
                 }).catch(error => {
                     console.error('❌ Ошибка возобновления AudioContext:', error);
                 });
+                return; // Выходим, ждем возобновления
+            }
+            
+            // Убеждаемся, что audioMixer подключен к destination
+            if (this.audioMixer.numberOfOutputs === 0) {
+                console.warn('⚠️ audioMixer не подключен к destination, переподключаем...');
+                this.audioMixer.disconnect();
+                this.audioMixer.connect(this.audioContext.destination);
+            }
+            
+            // Проверяем, что поток активен
+            const activeTracks = audioTracks.filter(track => track.readyState === 'live');
+            if (activeTracks.length === 0) {
+                console.warn(`⚠️ Нет активных треков в потоке для ${publisherIdStr}, ждем...`);
+                // Ждем активации треков
+                audioTracks.forEach(track => {
+                    track.onended = () => {
+                        console.log(`🔇 Трек ${track.id} завершен`);
+                    };
+                    track.onmute = () => {
+                        console.log(`🔇 Трек ${track.id} muted`);
+                    };
+                    track.onunmute = () => {
+                        console.log(`🔊 Трек ${track.id} unmuted, обрабатываем поток...`);
+                        this.processAudioForMixing(stream, publisherId, displayName);
+                    };
+                });
+                return;
             }
             
             // Создаем источник из потока
@@ -835,12 +874,12 @@ var AudioModule = {
             gainNode.gain.value = 1.0; // Начальная громкость 100%
             
             // Подключаем: source -> gainNode -> audioMixer -> destination
-            // audioMixer уже подключен к destination при инициализации
             source.connect(gainNode);
             gainNode.connect(this.audioMixer);
             
             console.log(`🔗 Подключено: source -> gainNode -> audioMixer -> destination`);
             console.log(`🔍 gainNode.gain.value: ${gainNode.gain.value}, audioMixer.gain.value: ${this.audioMixer.gain.value}`);
+            console.log(`🔍 source.numberOfOutputs: ${source.numberOfOutputs}, gainNode.numberOfInputs: ${gainNode.numberOfInputs}, gainNode.numberOfOutputs: ${gainNode.numberOfOutputs}`);
             
             // Сохраняем для управления
             this.streamVolumes.set(publisherIdStr, {
@@ -852,6 +891,24 @@ var AudioModule = {
             
             console.log(`✅ Аудио поток ${publisherIdStr} (${displayName}) подключен к микшеру`);
             console.log(`🔍 Теперь в streamVolumes:`, Array.from(this.streamVolumes.keys()));
+            
+            // Тест: создаем временный тестовый тон для проверки работы AudioContext
+            setTimeout(() => {
+                try {
+                    const oscillator = this.audioContext.createOscillator();
+                    const testGain = this.audioContext.createGain();
+                    oscillator.frequency.value = 440; // A4
+                    oscillator.type = 'sine';
+                    testGain.gain.value = 0.1; // Тихий тест
+                    oscillator.connect(testGain);
+                    testGain.connect(this.audioMixer);
+                    oscillator.start();
+                    oscillator.stop(this.audioContext.currentTime + 0.1);
+                    console.log('🔊 Тестовый тон отправлен для проверки AudioContext');
+                } catch (e) {
+                    console.error('❌ Ошибка создания тестового тона:', e);
+                }
+            }, 1000);
         } catch (error) {
             console.error('❌ Ошибка обработки аудио:', error);
             console.error('Детали ошибки:', error.stack);
