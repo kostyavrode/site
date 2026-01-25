@@ -741,12 +741,37 @@ var AudioModule = {
                 
                 // Обработка удаленного трека (новый API Janus.js)
                 handle.onremotetrack = (track, mid, on) => {
-                    console.log(`🔊 onremotetrack вызван: publisherId=${publisherId}, track.kind=${track.kind}, on=${on}, mid=${mid}`);
+                    console.log(`🔊 onremotetrack вызван: publisherId=${publisherId}, track.kind=${track.kind}, on=${on}, mid=${mid}, muted=${track.muted}, enabled=${track.enabled}`);
+                    
                     if (track.kind === 'audio' && on) {
-                        console.log(`🔊 Получен аудио трек от publisher ${publisherId}`);
-                        const stream = new MediaStream([track]);
-                        console.log(`🔊 Создан MediaStream из трека, треков в потоке: ${stream.getAudioTracks().length}`);
-                        this.handleRemoteStream(stream, publisherId, displayName);
+                        // Обрабатываем поток только если трек не muted
+                        if (track.muted) {
+                            console.log(`⏳ Трек ${track.id} еще muted, ждем события unmute...`);
+                            // Ждем события unmute
+                            const unmuteHandler = () => {
+                                console.log(`🔊 Трек ${track.id} unmuted, обрабатываем поток...`);
+                                track.removeEventListener('unmute', unmuteHandler);
+                                const stream = new MediaStream([track]);
+                                console.log(`🔊 Создан MediaStream из трека, треков в потоке: ${stream.getAudioTracks().length}`);
+                                this.handleRemoteStream(stream, publisherId, displayName);
+                            };
+                            track.addEventListener('unmute', unmuteHandler);
+                            
+                            // Также проверяем через небольшую задержку на случай, если событие уже произошло
+                            setTimeout(() => {
+                                if (!track.muted && !this.remoteStreams.has(String(publisherId))) {
+                                    console.log(`🔊 Трек ${track.id} уже unmuted (проверка через таймаут), обрабатываем...`);
+                                    track.removeEventListener('unmute', unmuteHandler);
+                                    const stream = new MediaStream([track]);
+                                    this.handleRemoteStream(stream, publisherId, displayName);
+                                }
+                            }, 1000);
+                        } else {
+                            console.log(`🔊 Получен аудио трек от publisher ${publisherId} (не muted)`);
+                            const stream = new MediaStream([track]);
+                            console.log(`🔊 Создан MediaStream из трека, треков в потоке: ${stream.getAudioTracks().length}`);
+                            this.handleRemoteStream(stream, publisherId, displayName);
+                        }
                     } else if (!on) {
                         console.log(`🔇 Трек от publisher ${publisherId} остановлен`);
                     }
@@ -812,18 +837,46 @@ var AudioModule = {
             return;
         }
         
-        // Проверяем и размучиваем треки
-        audioTracks.forEach(track => {
-            console.log(`🔍 Трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
-            if (track.muted) {
-                console.log(`🔇 Трек ${track.id} был muted, размучиваем...`);
-                track.muted = false;
-            }
-            if (!track.enabled) {
-                console.log(`🔇 Трек ${track.id} был disabled, включаем...`);
-                track.enabled = true;
-            }
+        // Проверяем состояние треков
+        // ВАЖНО: Для удаленных треков нельзя напрямую изменить muted/enabled
+        // Эти свойства управляются браузером и WebRTC
+        const activeTracks = audioTracks.filter(track => {
+            const isActive = !track.muted && track.readyState === 'live' && track.enabled;
+            console.log(`🔍 Трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}, isActive=${isActive}`);
+            return isActive;
         });
+        
+        if (activeTracks.length === 0) {
+            console.warn(`⚠️ Нет активных (не muted) треков в потоке для ${publisherIdStr}, ждем unmute...`);
+            // Ждем активации треков через событие unmute
+            audioTracks.forEach(track => {
+                if (track.muted) {
+                    const unmuteHandler = () => {
+                        console.log(`🔊 Трек ${track.id} unmuted, обрабатываем поток...`);
+                        track.removeEventListener('unmute', unmuteHandler);
+                        // Создаем новый поток с размученным треком
+                        const newStream = new MediaStream([track]);
+                        this.processAudioForMixing(newStream, publisherId, displayName);
+                    };
+                    track.addEventListener('unmute', unmuteHandler);
+                    
+                    // Также проверяем через небольшую задержку на случай, если событие уже произошло
+                    setTimeout(() => {
+                        if (!track.muted && !this.streamVolumes.has(publisherIdStr)) {
+                            console.log(`🔊 Трек ${track.id} уже unmuted (проверка через таймаут), обрабатываем...`);
+                            track.removeEventListener('unmute', unmuteHandler);
+                            const newStream = new MediaStream([track]);
+                            this.processAudioForMixing(newStream, publisherId, displayName);
+                        }
+                    }, 2000);
+                }
+            });
+            return;
+        }
+        
+        // Используем только активные треки
+        const activeStream = new MediaStream(activeTracks);
+        console.log(`✅ Создан поток из ${activeTracks.length} активных треков`);
         
         try {
             // Убеждаемся, что AudioContext активен
@@ -846,28 +899,8 @@ var AudioModule = {
                 this.audioMixer.connect(this.audioContext.destination);
             }
             
-            // Проверяем, что поток активен
-            const activeTracks = audioTracks.filter(track => track.readyState === 'live');
-            if (activeTracks.length === 0) {
-                console.warn(`⚠️ Нет активных треков в потоке для ${publisherIdStr}, ждем...`);
-                // Ждем активации треков
-                audioTracks.forEach(track => {
-                    track.onended = () => {
-                        console.log(`🔇 Трек ${track.id} завершен`);
-                    };
-                    track.onmute = () => {
-                        console.log(`🔇 Трек ${track.id} muted`);
-                    };
-                    track.onunmute = () => {
-                        console.log(`🔊 Трек ${track.id} unmuted, обрабатываем поток...`);
-                        this.processAudioForMixing(stream, publisherId, displayName);
-                    };
-                });
-                return;
-            }
-            
-            // Создаем источник из потока
-            const source = this.audioContext.createMediaStreamSource(stream);
+            // Создаем источник из потока (используем поток с активными треками)
+            const source = this.audioContext.createMediaStreamSource(activeStream);
             
             // Создаем GainNode для управления громкостью
             const gainNode = this.audioContext.createGain();
@@ -891,24 +924,6 @@ var AudioModule = {
             
             console.log(`✅ Аудио поток ${publisherIdStr} (${displayName}) подключен к микшеру`);
             console.log(`🔍 Теперь в streamVolumes:`, Array.from(this.streamVolumes.keys()));
-            
-            // Тест: создаем временный тестовый тон для проверки работы AudioContext
-            setTimeout(() => {
-                try {
-                    const oscillator = this.audioContext.createOscillator();
-                    const testGain = this.audioContext.createGain();
-                    oscillator.frequency.value = 440; // A4
-                    oscillator.type = 'sine';
-                    testGain.gain.value = 0.1; // Тихий тест
-                    oscillator.connect(testGain);
-                    testGain.connect(this.audioMixer);
-                    oscillator.start();
-                    oscillator.stop(this.audioContext.currentTime + 0.1);
-                    console.log('🔊 Тестовый тон отправлен для проверки AudioContext');
-                } catch (e) {
-                    console.error('❌ Ошибка создания тестового тона:', e);
-                }
-            }, 1000);
         } catch (error) {
             console.error('❌ Ошибка обработки аудио:', error);
             console.error('Детали ошибки:', error.stack);
