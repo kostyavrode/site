@@ -157,6 +157,28 @@ var AudioModule = {
         try {
             this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
             
+            // Убеждаемся, что AudioContext активен
+            if (this.audioContext && this.audioContext.state === 'suspended') {
+                await this.audioContext.resume();
+            }
+            
+            // Подключаем локальный поток к микшеру для мониторинга (side-tone)
+            // Это позволяет слышать свой голос в наушниках
+            if (this.audioContext && this.audioMixer && this.localStream) {
+                try {
+                    const source = this.audioContext.createMediaStreamSource(this.localStream);
+                    const gainNode = this.audioContext.createGain();
+                    gainNode.gain.value = 0.5; // 50% громкости для мониторинга (увеличено для лучшей слышимости)
+                    source.connect(gainNode);
+                    gainNode.connect(this.audioMixer);
+                    console.log('🎧 Локальный аудио поток подключен для мониторинга (side-tone)');
+                } catch (error) {
+                    console.warn('⚠️ Не удалось подключить локальный поток для мониторинга:', error);
+                }
+            } else {
+                console.warn('⚠️ AudioContext или audioMixer не готовы для мониторинга локального потока');
+            }
+            
             // Прикрепляем плагин Videoroom
             this.janus.attach({
                 plugin: 'janus.plugin.videoroom',
