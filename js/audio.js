@@ -221,6 +221,22 @@ var AudioModule = {
                     handle.onlocalstream = (stream) => {
                         this.localStream = stream;
                         console.log('🎤 Локальный аудио поток получен:', stream);
+                        
+                        // Опционально: воспроизводим локальный поток для мониторинга (side-tone)
+                        // Это позволяет слышать свой голос в наушниках
+                        if (this.audioContext && this.audioMixer) {
+                            try {
+                                const source = this.audioContext.createMediaStreamSource(stream);
+                                const gainNode = this.audioContext.createGain();
+                                gainNode.gain.value = 0.3; // 30% громкости для мониторинга
+                                source.connect(gainNode);
+                                gainNode.connect(this.audioMixer);
+                                console.log('🎧 Локальный аудио поток подключен для мониторинга');
+                            } catch (error) {
+                                console.warn('⚠️ Не удалось подключить локальный поток для мониторинга:', error);
+                            }
+                        }
+                        
                         if (window.onLocalStream) {
                             window.onLocalStream(stream);
                         }
@@ -682,13 +698,24 @@ var AudioModule = {
                     }
                 };
                 
-                // Альтернативный способ получения потока
+                // Обработка удаленного трека (новый API Janus.js)
+                handle.onremotetrack = (track, mid, on) => {
+                    if (track.kind === 'audio' && on) {
+                        console.log(`🔊 Получен аудио трек от publisher ${publisherId}`);
+                        const stream = new MediaStream([track]);
+                        this.handleRemoteStream(stream, publisherId, displayName);
+                    }
+                };
+                
+                // Альтернативный способ получения потока (старый API)
                 handle.onremotestream = (stream) => {
+                    console.log(`🔊 [Legacy] Получен удаленный поток от publisher ${publisherId}`);
                     this.handleRemoteStream(stream, publisherId, displayName);
                 };
                 
                 handle.ontrack = (event) => {
                     if (event.streams && event.streams.length > 0) {
+                        console.log(`🔊 [ontrack] Получен поток от publisher ${publisherId}`);
                         this.handleRemoteStream(event.streams[0], publisherId, displayName);
                     }
                 };
