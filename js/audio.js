@@ -777,8 +777,12 @@ var AudioModule = {
         // Преобразуем publisherId в строку для консистентности
         const publisherIdStr = String(publisherId);
         
+        console.log(`🔊 handleRemoteStream вызван: publisherId=${publisherId} (строка: ${publisherIdStr}), displayName=${displayName}`);
+        console.log(`🔍 Текущие потоки в streamVolumes:`, Array.from(this.streamVolumes.keys()));
+        
         // Проверяем, не обработан ли уже
         if (this.remoteStreams.has(publisherIdStr)) {
+            console.log(`⚠️ Поток ${publisherIdStr} уже обработан`);
             return;
         }
         
@@ -794,8 +798,14 @@ var AudioModule = {
 
     // Обработка аудио потока для микширования
     processAudioForMixing(stream, publisherId, displayName) {
+        // Преобразуем publisherId в строку для консистентности
+        const publisherIdStr = String(publisherId);
+        
+        console.log(`🎵 processAudioForMixing: publisherId=${publisherId} (строка: ${publisherIdStr}), displayName=${displayName}`);
+        
         const audioTracks = stream.getAudioTracks();
         if (audioTracks.length === 0) {
+            console.warn(`⚠️ Нет аудио треков в потоке для ${publisherIdStr}`);
             return;
         }
         
@@ -820,6 +830,7 @@ var AudioModule = {
             });
             
             console.log(`✅ Аудио поток ${publisherIdStr} (${displayName}) подключен к микшеру`);
+            console.log(`🔍 Теперь в streamVolumes:`, Array.from(this.streamVolumes.keys()));
         } catch (error) {
             console.error('❌ Ошибка обработки аудио:', error);
         }
