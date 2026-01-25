@@ -804,6 +804,18 @@ var AudioModule = {
             return;
         }
         
+        // Проверяем и размучиваем треки
+        audioTracks.forEach(track => {
+            if (track.muted) {
+                console.log(`🔇 Трек ${track.id} был muted, размучиваем...`);
+                track.muted = false;
+            }
+            if (!track.enabled) {
+                console.log(`🔇 Трек ${track.id} был disabled, включаем...`);
+                track.enabled = true;
+            }
+        });
+        
         try {
             // Убеждаемся, что AudioContext активен
             if (this.audioContext.state === 'suspended') {
@@ -822,14 +834,8 @@ var AudioModule = {
             const gainNode = this.audioContext.createGain();
             gainNode.gain.value = 1.0; // Начальная громкость 100%
             
-            // Проверяем подключение audioMixer к destination
-            if (!this.audioMixer.connected || this.audioMixer.numberOfOutputs === 0) {
-                console.warn('⚠️ audioMixer не подключен к destination, переподключаем...');
-                this.audioMixer.disconnect();
-                this.audioMixer.connect(this.audioContext.destination);
-            }
-            
             // Подключаем: source -> gainNode -> audioMixer -> destination
+            // audioMixer уже подключен к destination при инициализации
             source.connect(gainNode);
             gainNode.connect(this.audioMixer);
             
