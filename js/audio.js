@@ -1,17 +1,15 @@
 // Создаем модуль с явным именем, чтобы избежать конфликтов
 var AudioModule = {
     janus: null,
-    audioBridge: null,
+    publisherHandle: null, // Handle для публикации потока (Videoroom)
+    subscriberHandles: new Map(), // Map<PublisherId, Handle> для подписок
     roomId: null,
     channelId: null,
     displayName: 'User',
-    participantId: null,
+    participantId: null, // Publisher ID в Videoroom
     localStream: null,
-    remoteAudio: null,
     isMuted: false,
     participantsUpdateInterval: null,
-    offerCreated: false,
-    jsepProcessed: false,
     
     // Настройки аудио
     audioSettings: {
@@ -23,15 +21,15 @@ var AudioModule = {
     // RNNoise настройки
     rnnoiseEnabled: false,
     rnnoiseModule: null,
-    audioContext: null,
+    audioContext: null, // Web Audio API контекст для микширования
+    audioMixer: null, // Главный GainNode для микширования
     rnnoiseProcessor: null,
     rnnoiseSourceNode: null,
     rnnoiseDestinationNode: null,
     
-    // Управление громкостью участников
-    participantVolumes: new Map(), // Map<participantId, volume>
-    gainNodes: new Map(), // Map<participantId, GainNode>
-    remoteAudioContext: null, // AudioContext для удаленного аудио
+    // Управление громкостью участников (клиентское микширование)
+    streamVolumes: new Map(), // Map<PublisherId, {gainNode, source, volume, display}>
+    remoteStreams: new Map(), // Map<PublisherId, MediaStream>
 
     async init(roomId, channelId = null, displayName = 'User') {
         console.log('🎯 Audio.init:', roomId, channelId, displayName);
@@ -93,8 +91,11 @@ var AudioModule = {
                         this.janus = new Janus({
                             server: wsUrl,
                             success: () => {
-                                console.log('✅ Janus connected successfully, attaching AudioBridge...');
-                                this.attachAudioBridge();
+                                console.log('✅ Janus connected successfully, initializing Videoroom...');
+                                // Инициализируем AudioContext для клиентского микширования
+                                this.initializeAudioContext();
+                                // Присоединяемся как Publisher
+                                this.joinAsPublisher();
                                 resolve();
                             },
                             error: (error) => {
@@ -126,17 +127,143 @@ var AudioModule = {
         });
     },
 
-    // Присоединиться к AudioBridge плагину
-    attachAudioBridge() {
-        console.log('🔌 Присоединяемся к AudioBridge плагину...');
-        this.janus.attach({
-            plugin: 'janus.plugin.audiobridge',
-            success: (pluginHandle) => {
-                console.log('✅ AudioBridge плагин успешно подключен, handle:', pluginHandle);
-                this.audioBridge = pluginHandle;
-                console.log('🚪 Вызываем joinRoom()...');
-                this.joinRoom();
-            },
+    // Инициализация AudioContext для клиентского микширования
+    initializeAudioContext() {
+        if (this.audioContext) {
+            if (this.audioContext.state === 'suspended') {
+                this.audioContext.resume();
+            }
+            return;
+        }
+        
+        // Создаем AudioContext (должен быть вызван после пользовательского взаимодействия)
+        this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        
+        // Создаем главный микшер
+        this.audioMixer = this.audioContext.createGain();
+        this.audioMixer.gain.value = 1.0;
+        this.audioMixer.connect(this.audioContext.destination);
+        
+        console.log('✅ AudioContext инициализирован для клиентского микширования');
+    },
+
+    // Присоединиться к Videoroom как Publisher
+    async joinAsPublisher() {
+        console.log('🔌 Присоединяемся к Videoroom как Publisher...');
+        
+        // Получаем локальный поток
+        const constraints = this.getAudioConstraints();
+        
+        try {
+            this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
+            
+            // Прикрепляем плагин Videoroom
+            this.janus.attach({
+                plugin: 'janus.plugin.videoroom',
+                opaqueId: this.displayName,
+                success: (handle) => {
+                    this.publisherHandle = handle;
+                    
+                    // Присоединяемся к комнате как publisher
+                    handle.send({
+                        message: {
+                            request: 'join',
+                            room: this.roomId,
+                            ptype: 'publisher', // Ключевое отличие: всегда publisher
+                            display: this.displayName
+                        },
+                        success: (result) => {
+                            console.log('✅ Присоединились к комнате как Publisher:', result);
+                            
+                            // Сохраняем participantId (publisher ID)
+                            if (result.id) {
+                                this.participantId = result.id;
+                                console.log('✅ Сохранен participantId (publisher ID):', this.participantId);
+                                
+                                // Регистрируем подключение на сервере
+                                if (this.channelId && this.participantId && window.registerAudioConnection) {
+                                    window.registerAudioConnection(this.channelId, this.participantId);
+                                }
+                            }
+                            
+                            // Публикуем поток
+                            const hasAudio = this.localStream.getAudioTracks().length > 0;
+                            
+                            handle.createOffer({
+                                media: { 
+                                    audioRecv: false, 
+                                    videoRecv: false, 
+                                    audioSend: hasAudio, 
+                                    videoSend: false // Видео не используем
+                                },
+                                stream: this.localStream,
+                                success: (jsep) => {
+                                    handle.send({
+                                        message: {
+                                            request: 'publish',
+                                            audio: hasAudio,
+                                            video: false
+                                        },
+                                        jsep: jsep
+                                    });
+                                },
+                                error: (error) => {
+                                    console.error('❌ Create offer error:', error);
+                                }
+                            });
+                            
+                            // Подписываемся на существующих publishers
+                            if (result.publishers && result.publishers.length > 0) {
+                                console.log('📋 Найдено publishers:', result.publishers.length);
+                                if (window.onParticipantsUpdate) {
+                                    window.onParticipantsUpdate(result.publishers, this.participantId);
+                                }
+                                result.publishers.forEach(publisher => {
+                                    this.subscribeToPublisher(publisher);
+                                });
+                            }
+                            
+                            // Устанавливаем периодический запрос списка publishers
+                            if (this.participantsUpdateInterval) {
+                                clearInterval(this.participantsUpdateInterval);
+                            }
+                            this.participantsUpdateInterval = setInterval(() => {
+                                this.requestPublishersList();
+                            }, 2000);
+                        },
+                        error: (error) => {
+                            console.error('❌ Join error:', error);
+                            if (window.onAudioError) {
+                                window.onAudioError(error);
+                            }
+                        }
+                    });
+                    
+                    // Обработка сообщений от сервера
+                    handle.onmessage = (msg, jsep) => {
+                        this.handlePublisherMessage(msg, jsep);
+                    };
+                    
+                    handle.onlocalstream = (stream) => {
+                        this.localStream = stream;
+                        console.log('🎤 Локальный аудио поток получен:', stream);
+                        if (window.onLocalStream) {
+                            window.onLocalStream(stream);
+                        }
+                    };
+                    
+                    handle.webrtcState = (on) => {
+                        console.log('WebRTC state:', on ? 'up' : 'down');
+                        if (on) {
+                            console.log('✅ WebRTC соединение установлено - аудио пакеты передаются!');
+                            if (window.onAudioConnected) {
+                                window.onAudioConnected();
+                            }
+                        } else {
+                            console.log('❌ WebRTC соединение разорвано');
+                        }
+                    };
+                },
             error: (error) => {
                 console.error('AudioBridge attach error:', error);
                 if (window.onAudioError) {
@@ -400,47 +527,409 @@ var AudioModule = {
         }
     },
 
-    // Запросить список участников
-    requestParticipantsList() {
-        if (this.audioBridge && this.roomId) {
-            console.log('📋 Запрашиваем список участников для комнаты', this.roomId, '...');
-            this.audioBridge.send({
+    // Старые методы удалены - используются новые методы для Videoroom
+    // requestParticipantsList -> requestPublishersList
+    // joinRoom -> joinAsPublisher (вызывается автоматически при init)
+    // handleMessage -> handlePublisherMessage
+
+    // Установить громкость потока (клиентское управление)
+    setParticipantVolume(publisherId, volume) {
+        const streamData = this.streamVolumes.get(publisherId);
+        if (streamData && streamData.gainNode) {
+            // Ограничиваем значение (0.0 - 2.0)
+            const clampedVolume = Math.max(0.0, Math.min(2.0, volume));
+            
+            // Устанавливаем громкость
+            streamData.gainNode.gain.value = clampedVolume;
+            streamData.volume = clampedVolume;
+            
+            console.log(`✅ Громкость потока ${publisherId} установлена: ${Math.round(clampedVolume * 100)}%`);
+        } else {
+            console.warn(`⚠️ Поток ${publisherId} не найден для установки громкости`);
+        }
+    },
+
+    // Переключить микрофон (mute/unmute)
+    toggleMute() {
+        this.isMuted = !this.isMuted;
+        if (this.publisherHandle && this.localStream) {
+            // Отключаем трек в WebRTC transceiver
+            if (this.publisherHandle.webrtcStuff && this.publisherHandle.webrtcStuff.pc) {
+                const pc = this.publisherHandle.webrtcStuff.pc;
+                const transceivers = pc.getTransceivers();
+                
+                transceivers.forEach(transceiver => {
+                    if (transceiver.sender && transceiver.sender.track && 
+                        transceiver.sender.track.kind === 'audio') {
+                        transceiver.sender.track.enabled = !this.isMuted;
+                    }
+                });
+            }
+            
+            // Также отключаем локальные треки
+            this.localStream.getAudioTracks().forEach(track => {
+                track.enabled = !this.isMuted;
+            });
+        }
+        console.log(`Микрофон ${this.isMuted ? 'отключен' : 'включен'}`);
+        return this.isMuted;
+    },
+
+    // Отключиться
+    async disconnect() {
+        // Регистрируем отключение на сервере перед очисткой
+        if (this.channelId && this.participantId && window.registerAudioDisconnection) {
+            await window.registerAudioDisconnection(this.channelId, this.participantId);
+        }
+        
+        // Останавливаем периодический запрос publishers
+        if (this.participantsUpdateInterval) {
+            clearInterval(this.participantsUpdateInterval);
+            this.participantsUpdateInterval = null;
+        }
+        
+        // Закрываем все subscriber handles
+        this.subscriberHandles.forEach((handle, publisherId) => {
+            try {
+                handle.detach();
+            } catch (e) {
+                console.warn(`Ошибка при закрытии subscriber handle для ${publisherId}:`, e);
+            }
+        });
+        this.subscriberHandles.clear();
+        
+        // Отключаем все потоки от микшера
+        this.streamVolumes.forEach((streamData, publisherId) => {
+            try {
+                streamData.source.disconnect();
+                streamData.gainNode.disconnect();
+            } catch (e) {
+                console.warn(`Ошибка при отключении потока ${publisherId}:`, e);
+            }
+        });
+        this.streamVolumes.clear();
+        this.remoteStreams.clear();
+        
+        // Закрываем publisher handle
+        if (this.publisherHandle) {
+            try {
+                this.publisherHandle.send({ message: { request: 'leave' } });
+                this.publisherHandle.detach();
+            } catch (error) {
+                console.error('Leave room error:', error);
+            }
+            this.publisherHandle = null;
+        }
+        
+        // Останавливаем локальный поток
+        if (this.localStream) {
+            this.localStream.getTracks().forEach(track => track.stop());
+            this.localStream = null;
+        }
+        
+        // Закрываем AudioContext
+        if (this.audioContext && this.audioContext.state !== 'closed') {
+            try {
+                await this.audioContext.close();
+            } catch (e) {
+                console.warn('Ошибка при закрытии AudioContext:', e);
+            }
+        }
+        this.audioContext = null;
+        this.audioMixer = null;
+        
+        // Очищаем RNNoise ресурсы
+        if (this.rnnoiseProcessor) {
+            try {
+                this.rnnoiseProcessor.disconnect();
+            } catch (e) {
+                console.warn('Ошибка при отключении RNNoise процессора:', e);
+            }
+            this.rnnoiseProcessor = null;
+        }
+        if (this.rnnoiseSourceNode) {
+            try {
+                this.rnnoiseSourceNode.disconnect();
+            } catch (e) {
+                console.warn('Ошибка при отключении RNNoise источника:', e);
+            }
+            this.rnnoiseSourceNode = null;
+        }
+        this.rnnoiseDestinationNode = null;
+        this.rnnoiseEnabled = false;
+        
+        // Закрываем Janus соединение
+        if (this.janus) {
+            this.janus.destroy();
+            this.janus = null;
+        }
+        
+        this.participantId = null;
+        this.roomId = null;
+        this.isMuted = false;
+    },
+
+    // Обработка сообщений от Publisher handle
+    handlePublisherMessage(msg, jsep) {
+        console.log('📨 Получено сообщение от Publisher:', msg);
+        
+        // Обработка JSEP answer от сервера
+        if (jsep) {
+            this.publisherHandle.handleRemoteJsep({ jsep: jsep });
+        }
+        
+        // Извлекаем данные события
+        let event = null;
+        if (msg.plugindata && msg.plugindata.data) {
+            event = msg.plugindata.data;
+        } else if (msg.videoroom) {
+            event = msg;
+        }
+        
+        if (event) {
+            // Новые publishers
+            if (event.publishers) {
+                console.log('📋 Новые publishers:', event.publishers.length);
+                event.publishers.forEach(publisher => {
+                    // Пропускаем себя
+                    if (publisher.id !== this.participantId) {
+                        this.subscribeToPublisher(publisher);
+                    }
+                });
+                
+                // Обновляем UI
+                if (window.onParticipantsUpdate) {
+                    window.onParticipantsUpdate(event.publishers, this.participantId);
+                }
+            }
+            
+            // Удаленные publishers
+            if (event.unpublished) {
+                console.log('🔴 Publisher отключился:', event.unpublished);
+                this.removePublisher(event.unpublished);
+            }
+            
+            // Ошибки
+            if (event.error_code) {
+                console.error('❌ Ошибка от Janus:', event.error_code, event.error);
+                if (window.onAudioError) {
+                    window.onAudioError(event.error || `Ошибка ${event.error_code}`);
+                }
+            }
+        }
+    },
+
+    // Подписаться на поток другого publisher
+    subscribeToPublisher(publisher) {
+        const publisherId = publisher.id;
+        const displayName = publisher.display || `Publisher ${publisherId}`;
+        
+        // Проверяем, не подписаны ли уже
+        if (this.subscriberHandles.has(publisherId)) {
+            console.log(`⚠️ Уже подписаны на publisher ${publisherId}`);
+            return;
+        }
+        
+        console.log(`📡 Подписываемся на publisher ${publisherId} (${displayName})`);
+        
+        // Создаем отдельный handle для каждого subscriber
+        this.janus.attach({
+            plugin: 'janus.plugin.videoroom',
+            opaqueId: `subscriber-${publisherId}`,
+            success: (handle) => {
+                this.subscriberHandles.set(publisherId, handle);
+                
+                // Присоединяемся как subscriber
+                handle.send({
+                    message: {
+                        request: 'join',
+                        room: this.roomId,
+                        ptype: 'subscriber', // Ключевое отличие: subscriber
+                        feed: publisherId, // ID publisher, на которого подписываемся
+                        private_id: publisher.private_id
+                    },
+                    success: (result) => {
+                        console.log(`✅ Подписались на publisher ${publisherId}`);
+                        // Сервер отправит offer в onmessage
+                    },
+                    error: (error) => {
+                        console.error(`❌ Ошибка подписки на publisher ${publisherId}:`, error);
+                        this.subscriberHandles.delete(publisherId);
+                    }
+                });
+                
+                // Обработка сообщений
+                handle.onmessage = (msg, jsep) => {
+                    if (jsep) {
+                        // Получили offer от сервера
+                        handle.createAnswer({
+                            jsep: jsep,
+                            media: { 
+                                audioRecv: true, 
+                                videoRecv: false, 
+                                audioSend: false, 
+                                videoSend: false 
+                            },
+                            success: (answerJsep) => {
+                                handle.send({
+                                    message: { request: 'start' },
+                                    jsep: answerJsep
+                                });
+                            },
+                            error: (error) => {
+                                console.error(`❌ Ошибка создания answer для ${publisherId}:`, error);
+                            }
+                        });
+                    }
+                    
+                    // Когда поток начался
+                    if (msg.plugindata && msg.plugindata.data && msg.plugindata.data.started === 'ok') {
+                        console.log(`✅ Поток от publisher ${publisherId} начался`);
+                        // Получаем поток из RTCPeerConnection
+                        setTimeout(() => {
+                            const pc = handle.webrtcStuff.pc;
+                            if (pc) {
+                                const receivers = pc.getReceivers();
+                                const remoteStream = new MediaStream();
+                                
+                                receivers.forEach(receiver => {
+                                    if (receiver.track && receiver.track.kind === 'audio') {
+                                        remoteStream.addTrack(receiver.track);
+                                    }
+                                });
+                                
+                                if (remoteStream.getAudioTracks().length > 0) {
+                                    this.handleRemoteStream(remoteStream, publisherId, displayName);
+                                }
+                            }
+                        }, 500);
+                    }
+                };
+                
+                // Альтернативный способ получения потока
+                handle.onremotestream = (stream) => {
+                    this.handleRemoteStream(stream, publisherId, displayName);
+                };
+                
+                handle.ontrack = (event) => {
+                    if (event.streams && event.streams.length > 0) {
+                        this.handleRemoteStream(event.streams[0], publisherId, displayName);
+                    }
+                };
+            },
+            error: (error) => {
+                console.error(`❌ Ошибка создания subscriber handle для ${publisherId}:`, error);
+            }
+        });
+    },
+
+    // Обработка удаленного потока - подключение к микшеру
+    handleRemoteStream(stream, publisherId, displayName) {
+        // Проверяем, не обработан ли уже
+        if (this.remoteStreams.has(publisherId)) {
+            return;
+        }
+        
+        this.remoteStreams.set(publisherId, stream);
+        
+        // Подключаем аудио к микшеру
+        if (this.audioContext && this.audioMixer) {
+            this.processAudioForMixing(stream, publisherId, displayName);
+        } else {
+            console.warn('⚠️ AudioContext не инициализирован');
+        }
+    },
+
+    // Обработка аудио потока для микширования
+    processAudioForMixing(stream, publisherId, displayName) {
+        const audioTracks = stream.getAudioTracks();
+        if (audioTracks.length === 0) {
+            return;
+        }
+        
+        try {
+            // Создаем источник из потока
+            const source = this.audioContext.createMediaStreamSource(stream);
+            
+            // Создаем GainNode для управления громкостью
+            const gainNode = this.audioContext.createGain();
+            gainNode.gain.value = 1.0; // Начальная громкость 100%
+            
+            // Подключаем: source -> gainNode -> audioMixer -> destination
+            source.connect(gainNode);
+            gainNode.connect(this.audioMixer);
+            
+            // Сохраняем для управления
+            this.streamVolumes.set(publisherId, {
+                gainNode: gainNode,
+                source: source,
+                volume: 1.0,
+                display: displayName
+            });
+            
+            console.log(`✅ Аудио поток ${publisherId} (${displayName}) подключен к микшеру`);
+        } catch (error) {
+            console.error('❌ Ошибка обработки аудио:', error);
+        }
+    },
+
+    // Удалить publisher
+    removePublisher(publisherId) {
+        console.log(`🔴 Удаляем publisher ${publisherId}`);
+        
+        // Отключаем поток от микшера
+        const streamData = this.streamVolumes.get(publisherId);
+        if (streamData) {
+            try {
+                streamData.source.disconnect();
+                streamData.gainNode.disconnect();
+            } catch (e) {
+                console.warn(`Ошибка при отключении потока ${publisherId}:`, e);
+            }
+            this.streamVolumes.delete(publisherId);
+        }
+        
+        // Удаляем stream
+        this.remoteStreams.delete(publisherId);
+        
+        // Закрываем subscriber handle
+        const handle = this.subscriberHandles.get(publisherId);
+        if (handle) {
+            try {
+                handle.detach();
+            } catch (e) {
+                console.warn(`Ошибка при закрытии subscriber handle для ${publisherId}:`, e);
+            }
+            this.subscriberHandles.delete(publisherId);
+        }
+        
+        // Обновляем UI
+        if (window.onParticipantsUpdate) {
+            const publishers = Array.from(this.streamVolumes.values()).map(s => ({
+                id: Array.from(this.streamVolumes.entries()).find(([id, _]) => s === this.streamVolumes.get(id))?.[0],
+                display: s.display
+            }));
+            window.onParticipantsUpdate(publishers, this.participantId);
+        }
+    },
+
+    // Запросить список publishers
+    requestPublishersList() {
+        if (this.publisherHandle && this.roomId) {
+            console.log('📋 Запрашиваем список publishers для комнаты', this.roomId, '...');
+            this.publisherHandle.send({
                 message: { 
-                    request: 'listparticipants',
+                    request: 'list',
                     room: this.roomId
                 }
             });
         } else {
-            console.warn('⚠️ audioBridge или roomId не доступен, не могу запросить список участников');
+            console.warn('⚠️ publisherHandle или roomId не доступен');
         }
     },
 
-    // Присоединиться к комнате
-    joinRoom() {
-        if (!this.audioBridge) {
-            console.error('❌ audioBridge не инициализирован, не могу присоединиться к комнате');
-            return;
-        }
-        if (!this.roomId) {
-            console.error('❌ roomId не установлен, не могу присоединиться к комнате');
-            return;
-        }
-        console.log('🚪 Отправляем запрос на присоединение к комнате:', this.roomId);
-        const joinRequest = {
-            request: 'join',
-            room: this.roomId,
-            display: this.displayName
-        };
-        console.log('📤 Отправляем join запрос:', joinRequest);
-        try {
-            this.audioBridge.send({ message: joinRequest });
-            console.log('✅ Join запрос отправлен успешно');
-        } catch (error) {
-            console.error('❌ Ошибка при отправке join запроса:', error);
-        }
-    },
-
-    // Обработка сообщений от Janus
+    // Старые методы для совместимости (удалены, так как больше не нужны)
+    // Обработка сообщений от Janus (старый метод для AudioBridge)
     async handleMessage(msg, jsep) {
         console.log('📨 Получено сообщение от Janus:', msg);
         console.log('🔍 Структура msg:', {
