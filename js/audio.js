@@ -808,8 +808,11 @@ var AudioModule = {
             // Убеждаемся, что AudioContext активен
             if (this.audioContext.state === 'suspended') {
                 console.log('⏸️ AudioContext приостановлен, возобновляем...');
-                await this.audioContext.resume();
-                console.log('✅ AudioContext возобновлен, состояние:', this.audioContext.state);
+                this.audioContext.resume().then(() => {
+                    console.log('✅ AudioContext возобновлен, состояние:', this.audioContext.state);
+                }).catch(error => {
+                    console.error('❌ Ошибка возобновления AudioContext:', error);
+                });
             }
             
             // Создаем источник из потока
