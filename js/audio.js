@@ -735,20 +735,25 @@ var AudioModule = {
                 
                 // Обработка удаленного трека (новый API Janus.js)
                 handle.onremotetrack = (track, mid, on) => {
+                    console.log(`🔊 onremotetrack вызван: publisherId=${publisherId}, track.kind=${track.kind}, on=${on}, mid=${mid}`);
                     if (track.kind === 'audio' && on) {
                         console.log(`🔊 Получен аудио трек от publisher ${publisherId}`);
                         const stream = new MediaStream([track]);
+                        console.log(`🔊 Создан MediaStream из трека, треков в потоке: ${stream.getAudioTracks().length}`);
                         this.handleRemoteStream(stream, publisherId, displayName);
+                    } else if (!on) {
+                        console.log(`🔇 Трек от publisher ${publisherId} остановлен`);
                     }
                 };
                 
                 // Альтернативный способ получения потока (старый API)
                 handle.onremotestream = (stream) => {
-                    console.log(`🔊 [Legacy] Получен удаленный поток от publisher ${publisherId}`);
+                    console.log(`🔊 [Legacy] Получен удаленный поток от publisher ${publisherId}, треков: ${stream.getAudioTracks().length}`);
                     this.handleRemoteStream(stream, publisherId, displayName);
                 };
                 
                 handle.ontrack = (event) => {
+                    console.log(`🔊 ontrack вызван: publisherId=${publisherId}, streams.length=${event.streams ? event.streams.length : 0}`);
                     if (event.streams && event.streams.length > 0) {
                         console.log(`🔊 [ontrack] Получен поток от publisher ${publisherId}`);
                         this.handleRemoteStream(event.streams[0], publisherId, displayName);
@@ -779,9 +784,10 @@ var AudioModule = {
         
         // Подключаем аудио к микшеру
         if (this.audioContext && this.audioMixer) {
+            console.log(`✅ AudioContext и audioMixer готовы, обрабатываем поток для ${publisherIdStr}`);
             this.processAudioForMixing(stream, publisherId, displayName);
         } else {
-            console.warn('⚠️ AudioContext не инициализирован');
+            console.error(`❌ AudioContext или audioMixer не инициализированы! audioContext: ${!!this.audioContext}, audioMixer: ${!!this.audioMixer}`);
         }
     },
 
@@ -799,6 +805,13 @@ var AudioModule = {
         }
         
         try {
+            // Убеждаемся, что AudioContext активен
+            if (this.audioContext.state === 'suspended') {
+                console.log('⏸️ AudioContext приостановлен, возобновляем...');
+                await this.audioContext.resume();
+                console.log('✅ AudioContext возобновлен, состояние:', this.audioContext.state);
+            }
+            
             // Создаем источник из потока
             const source = this.audioContext.createMediaStreamSource(stream);
             
@@ -806,9 +819,19 @@ var AudioModule = {
             const gainNode = this.audioContext.createGain();
             gainNode.gain.value = 1.0; // Начальная громкость 100%
             
+            // Проверяем подключение audioMixer к destination
+            if (!this.audioMixer.connected || this.audioMixer.numberOfOutputs === 0) {
+                console.warn('⚠️ audioMixer не подключен к destination, переподключаем...');
+                this.audioMixer.disconnect();
+                this.audioMixer.connect(this.audioContext.destination);
+            }
+            
             // Подключаем: source -> gainNode -> audioMixer -> destination
             source.connect(gainNode);
             gainNode.connect(this.audioMixer);
+            
+            console.log(`🔗 Подключено: source -> gainNode -> audioMixer -> destination`);
+            console.log(`🔍 gainNode.gain.value: ${gainNode.gain.value}, audioMixer.gain.value: ${this.audioMixer.gain.value}`);
             
             // Сохраняем для управления
             this.streamVolumes.set(publisherIdStr, {
@@ -822,6 +845,7 @@ var AudioModule = {
             console.log(`🔍 Теперь в streamVolumes:`, Array.from(this.streamVolumes.keys()));
         } catch (error) {
             console.error('❌ Ошибка обработки аудио:', error);
+            console.error('Детали ошибки:', error.stack);
         }
     },
 
