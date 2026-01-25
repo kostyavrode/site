@@ -175,7 +175,8 @@ var AudioModule = {
                         success: (result) => {
                             console.log('✅ Присоединились к комнате как Publisher:', result);
                             // participantId будет установлен в handlePublisherMessage при получении события 'joined'
-                        },
+                            
+                            // Публикуем поток
                             const hasAudio = this.localStream.getAudioTracks().length > 0;
                             
                             handle.createOffer({
@@ -202,23 +203,7 @@ var AudioModule = {
                             });
                             
                             // Подписываемся на существующих publishers
-                            if (result.publishers && result.publishers.length > 0) {
-                                console.log('📋 Найдено publishers:', result.publishers.length);
-                                if (window.onParticipantsUpdate) {
-                                    window.onParticipantsUpdate(result.publishers, this.participantId);
-                                }
-                                result.publishers.forEach(publisher => {
-                                    this.subscribeToPublisher(publisher);
-                                });
-                            }
-                            
-                            // Устанавливаем периодический запрос списка publishers
-                            if (this.participantsUpdateInterval) {
-                                clearInterval(this.participantsUpdateInterval);
-                            }
-                            this.participantsUpdateInterval = setInterval(() => {
-                                this.requestPublishersList();
-                            }, 2000);
+                            this.requestPublishersList();
                         },
                         error: (error) => {
                             console.error('❌ Join error:', error);
