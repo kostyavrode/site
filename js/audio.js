@@ -434,18 +434,42 @@ var AudioModule = {
 
     // Установить громкость потока (клиентское управление)
     setParticipantVolume(publisherId, volume) {
-        const streamData = this.streamVolumes.get(publisherId);
-        if (streamData && streamData.gainNode) {
+        // Преобразуем publisherId в строку для поиска в Map
+        const publisherIdStr = String(publisherId);
+        
+        // Если volume больше 1, предполагаем что это проценты (0-100), преобразуем в 0.0-1.0
+        let normalizedVolume = volume;
+        if (volume > 1.0) {
+            normalizedVolume = volume / 100.0;
+        }
+        
+        const streamData = this.streamVolumes.get(publisherIdStr);
+        if (!streamData) {
+            // Пробуем найти по числовому ID
+            const numericId = typeof publisherId === 'string' ? parseInt(publisherId, 10) : publisherId;
+            const streamDataByNum = this.streamVolumes.get(String(numericId));
+            if (streamDataByNum && streamDataByNum.gainNode) {
+                const clampedVolume = Math.max(0.0, Math.min(2.0, normalizedVolume));
+                streamDataByNum.gainNode.gain.value = clampedVolume;
+                streamDataByNum.volume = clampedVolume;
+                console.log(`✅ Громкость потока ${numericId} установлена: ${Math.round(clampedVolume * 100)}%`);
+                return;
+            }
+            console.warn(`⚠️ Поток ${publisherId} не найден для установки громкости. Доступные потоки:`, Array.from(this.streamVolumes.keys()));
+            return;
+        }
+        
+        if (streamData.gainNode) {
             // Ограничиваем значение (0.0 - 2.0)
-            const clampedVolume = Math.max(0.0, Math.min(2.0, volume));
+            const clampedVolume = Math.max(0.0, Math.min(2.0, normalizedVolume));
             
             // Устанавливаем громкость
             streamData.gainNode.gain.value = clampedVolume;
             streamData.volume = clampedVolume;
             
-            console.log(`✅ Громкость потока ${publisherId} установлена: ${Math.round(clampedVolume * 100)}%`);
+            console.log(`✅ Громкость потока ${publisherIdStr} установлена: ${Math.round(clampedVolume * 100)}%`);
         } else {
-            console.warn(`⚠️ Поток ${publisherId} не найден для установки громкости`);
+            console.warn(`⚠️ GainNode не найден для потока ${publisherIdStr}`);
         }
     },
 
@@ -750,12 +774,15 @@ var AudioModule = {
 
     // Обработка удаленного потока - подключение к микшеру
     handleRemoteStream(stream, publisherId, displayName) {
+        // Преобразуем publisherId в строку для консистентности
+        const publisherIdStr = String(publisherId);
+        
         // Проверяем, не обработан ли уже
-        if (this.remoteStreams.has(publisherId)) {
+        if (this.remoteStreams.has(publisherIdStr)) {
             return;
         }
         
-        this.remoteStreams.set(publisherId, stream);
+        this.remoteStreams.set(publisherIdStr, stream);
         
         // Подключаем аудио к микшеру
         if (this.audioContext && this.audioMixer) {
@@ -785,14 +812,14 @@ var AudioModule = {
             gainNode.connect(this.audioMixer);
             
             // Сохраняем для управления
-            this.streamVolumes.set(publisherId, {
+            this.streamVolumes.set(publisherIdStr, {
                 gainNode: gainNode,
                 source: source,
                 volume: 1.0,
                 display: displayName
             });
             
-            console.log(`✅ Аудио поток ${publisherId} (${displayName}) подключен к микшеру`);
+            console.log(`✅ Аудио поток ${publisherIdStr} (${displayName}) подключен к микшеру`);
         } catch (error) {
             console.error('❌ Ошибка обработки аудио:', error);
         }
@@ -1072,36 +1099,7 @@ var AudioModule = {
         // RNNoise временно отключен
         this.rnnoiseEnabled = false;
     },
-    
-    async setParticipantVolume(participantId, volume) {
-        if (!this.channelId) {
-            console.warn('⚠️ channelId не установлен, не могу установить громкость');
-            return;
-        }
-        
-        const participantIdNum = typeof participantId === 'string' ? parseInt(participantId, 10) : participantId;
-        if (isNaN(participantIdNum)) {
-            console.error('❌ Неверный participantId:', participantId);
-            return;
-        }
-        
-        const volumePercent = Math.round(volume * 100);
-        this.participantVolumes.set(participantId, volume);
-        
-        console.log(`📤 Отправка запроса на изменение громкости: ChannelId=${this.channelId}, ParticipantId=${participantIdNum}, Volume=${volumePercent}%`);
-        
-        try {
-            const response = await API.post(
-                `${API.baseUrls.audio}/api/audio/AudioChannels/${this.channelId}/participants/${participantIdNum}/volume`,
-                { volume: volumePercent }
-            );
-            console.log(`✅ Громкость участника ${participantIdNum} установлена на ${volumePercent}% через Janus Gateway`, response);
-        } catch (error) {
-            console.error(`❌ Ошибка при установке громкости для участника ${participantIdNum}:`, error);
-        }
-    },
-
-    // Дублирующиеся методы удалены - используются методы выше (строки 441 и 467)
+    // Дублирующиеся методы удалены - используются методы выше (строки 436 и 453)
 };
 
 // Экспортируем в window для глобального доступа
