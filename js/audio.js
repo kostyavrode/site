@@ -15,7 +15,8 @@ var AudioModule = {
     audioSettings: {
         noiseSuppression: true,
         echoCancellation: true,
-        autoGainControl: true
+        autoGainControl: true,
+        monitorLocalAudio: false // Воспроизведение локального аудио для мониторинга (side-tone) - по умолчанию выключено
     },
     
     // RNNoise настройки
@@ -162,13 +163,13 @@ var AudioModule = {
                 await this.audioContext.resume();
             }
             
-            // Подключаем локальный поток к микшеру для мониторинга (side-tone)
+            // Подключаем локальный поток к микшеру для мониторинга (side-tone) только если включено в настройках
             // Это позволяет слышать свой голос в наушниках
-            if (this.audioContext && this.audioMixer && this.localStream) {
+            if (this.audioSettings.monitorLocalAudio && this.audioContext && this.audioMixer && this.localStream) {
                 try {
                     const source = this.audioContext.createMediaStreamSource(this.localStream);
                     const gainNode = this.audioContext.createGain();
-                    gainNode.gain.value = 0.5; // 50% громкости для мониторинга (увеличено для лучшей слышимости)
+                    gainNode.gain.value = 0.3; // 30% громкости для мониторинга (можно настроить)
                     source.connect(gainNode);
                     gainNode.connect(this.audioMixer);
                     console.log('🎧 Локальный аудио поток подключен для мониторинга (side-tone)');
@@ -176,7 +177,7 @@ var AudioModule = {
                     console.warn('⚠️ Не удалось подключить локальный поток для мониторинга:', error);
                 }
             } else {
-                console.warn('⚠️ AudioContext или audioMixer не готовы для мониторинга локального потока');
+                console.log('ℹ️ Мониторинг локального аудио отключен (monitorLocalAudio: false)');
             }
             
             // Прикрепляем плагин Videoroom
@@ -244,20 +245,8 @@ var AudioModule = {
                         this.localStream = stream;
                         console.log('🎤 Локальный аудио поток получен:', stream);
                         
-                        // Опционально: воспроизводим локальный поток для мониторинга (side-tone)
-                        // Это позволяет слышать свой голос в наушниках
-                        if (this.audioContext && this.audioMixer) {
-                            try {
-                                const source = this.audioContext.createMediaStreamSource(stream);
-                                const gainNode = this.audioContext.createGain();
-                                gainNode.gain.value = 0.3; // 30% громкости для мониторинга
-                                source.connect(gainNode);
-                                gainNode.connect(this.audioMixer);
-                                console.log('🎧 Локальный аудио поток подключен для мониторинга');
-                            } catch (error) {
-                                console.warn('⚠️ Не удалось подключить локальный поток для мониторинга:', error);
-                            }
-                        }
+                        // Мониторинг локального потока уже настроен в joinAsPublisher при получении getUserMedia
+                        // Здесь просто обновляем ссылку на поток
                         
                         if (window.onLocalStream) {
                             window.onLocalStream(stream);
