@@ -1042,34 +1042,58 @@ var AudioModule = {
                 
                 // Проверяем статистику после установки WebRTC соединения
                 handle.webrtcState = (on) => {
+                    console.log(`🔍 [webrtcState] Вызван для subscriber ${publisherIdStr}, on=${on}`);
                     if (on) {
                         console.log(`✅ WebRTC соединение установлено для subscriber ${publisherIdStr}`);
                         
                         // ВАЖНО: Получаем поток из receivers после установки соединения
                         setTimeout(() => {
+                            console.log(`🔍 [webrtcState] Проверяем handle.webrtcStuff для ${publisherIdStr}...`);
                             if (handle.webrtcStuff && handle.webrtcStuff.pc) {
                                 const pc = handle.webrtcStuff.pc;
+                                console.log(`✅ [webrtcState] PC найден для ${publisherIdStr}, получаем receivers...`);
                                 
                                 // Получаем поток из receivers
                                 const receivers = pc.getReceivers();
+                                console.log(`🔍 [webrtcState] Найдено ${receivers.length} receivers для ${publisherIdStr}`);
+                                
                                 const remoteStream = new MediaStream();
                                 
-                                receivers.forEach(receiver => {
+                                receivers.forEach((receiver, index) => {
+                                    console.log(`🔍 [webrtcState] Receiver ${index}:`, {
+                                        track: receiver.track ? {
+                                            id: receiver.track.id,
+                                            kind: receiver.track.kind,
+                                            enabled: receiver.track.enabled,
+                                            muted: receiver.track.muted,
+                                            readyState: receiver.track.readyState
+                                        } : 'null'
+                                    });
+                                    
                                     if (receiver.track && receiver.track.kind === 'audio') {
-                                        console.log(`🔍 [webrtcState] Receiver трек ${receiver.track.id}: enabled=${receiver.track.enabled}, muted=${receiver.track.muted}, readyState=${receiver.track.readyState}`);
+                                        console.log(`✅ [webrtcState] Добавляем трек ${receiver.track.id} в поток для ${publisherIdStr}`);
                                         remoteStream.addTrack(receiver.track);
                                     }
                                 });
+                                
+                                console.log(`🔍 [webrtcState] Создан поток с ${remoteStream.getAudioTracks().length} треками для ${publisherIdStr}`);
                                 
                                 if (remoteStream.getAudioTracks().length > 0) {
                                     console.log(`✅ [webrtcState] Создан поток из receivers для ${publisherIdStr}, треков: ${remoteStream.getAudioTracks().length}`);
                                     // ВАЖНО: Сохраняем поток в handle для использования в processAudioForMixing
                                     handle.remoteStream = remoteStream;
                                     console.log(`✅ [webrtcState] Сохранен remoteStream в handle для ${publisherIdStr}`);
+                                    
+                                    // Проверяем треки в сохраненном потоке
+                                    remoteStream.getAudioTracks().forEach(track => {
+                                        console.log(`🔍 [webrtcState] Трек в remoteStream: id=${track.id}, enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
+                                    });
+                                    
                                     // Обрабатываем поток
+                                    console.log(`🔍 [webrtcState] Вызываем handleRemoteStream для ${publisherIdStr}...`);
                                     this.handleRemoteStream(remoteStream, publisherId, displayName);
                                 } else {
-                                    console.warn(`⚠️ [webrtcState] Нет аудио треков в receivers для ${publisherIdStr}`);
+                                    console.error(`❌ [webrtcState] Нет аудио треков в receivers для ${publisherIdStr}!`);
                                 }
                                 
                                 // Проверяем статистику через 2 секунды после установки соединения
@@ -1112,8 +1136,13 @@ var AudioModule = {
                                         console.error(`❌ Ошибка получения статистики для subscriber ${publisherIdStr}:`, e);
                                     });
                                 }, 2000);
+                            } else {
+                                console.error(`❌ [webrtcState] handle.webrtcStuff или PC не найдены для ${publisherIdStr}!`);
+                                console.error(`🔍 [webrtcState] handle.webrtcStuff:`, handle.webrtcStuff);
                             }
                         }, 500);
+                    } else {
+                        console.log(`⚠️ [webrtcState] WebRTC соединение закрыто для subscriber ${publisherIdStr}`);
                     }
                 };
             },
@@ -1238,35 +1267,67 @@ var AudioModule = {
             let activeStream = null;
             const subscriberHandle = this.subscriberHandles.get(publisherIdStr);
             
+            console.log(`🔍 [processAudioForMixing] Проверяем handle для ${publisherIdStr}...`);
+            console.log(`🔍 [processAudioForMixing] subscriberHandle:`, subscriberHandle ? 'найден' : 'НЕ НАЙДЕН');
+            
             if (subscriberHandle && subscriberHandle.remoteStream) {
                 activeStream = subscriberHandle.remoteStream;
-                console.log(`✅ Используем поток из handle.remoteStream (started) для ${publisherIdStr}`);
+                console.log(`✅ [processAudioForMixing] Используем поток из handle.remoteStream (started) для ${publisherIdStr}`);
+                console.log(`🔍 [processAudioForMixing] Треков в handle.remoteStream: ${activeStream.getAudioTracks().length}`);
+                activeStream.getAudioTracks().forEach(track => {
+                    console.log(`🔍 [processAudioForMixing] Трек в handle.remoteStream: id=${track.id}, enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
+                });
             } else {
+                console.log(`⚠️ [processAudioForMixing] handle.remoteStream не найден для ${publisherIdStr}`);
+                if (subscriberHandle) {
+                    console.log(`🔍 [processAudioForMixing] handle.webrtcStuff:`, subscriberHandle.webrtcStuff ? 'есть' : 'НЕТ');
+                    console.log(`🔍 [processAudioForMixing] handle.remoteAudioTrack:`, subscriberHandle.remoteAudioTrack ? subscriberHandle.remoteAudioTrack.id : 'НЕТ');
+                }
+                
                 // Если потока нет в handle, пытаемся получить из receivers напрямую
                 if (subscriberHandle && subscriberHandle.webrtcStuff && subscriberHandle.webrtcStuff.pc) {
                     const pc = subscriberHandle.webrtcStuff.pc;
+                    console.log(`🔍 [processAudioForMixing] Получаем поток из receivers напрямую для ${publisherIdStr}...`);
                     const receivers = pc.getReceivers();
+                    console.log(`🔍 [processAudioForMixing] Найдено ${receivers.length} receivers`);
+                    
                     const receiverStream = new MediaStream();
                     
-                    receivers.forEach(receiver => {
+                    receivers.forEach((receiver, index) => {
+                        console.log(`🔍 [processAudioForMixing] Receiver ${index}:`, {
+                            track: receiver.track ? {
+                                id: receiver.track.id,
+                                kind: receiver.track.kind,
+                                enabled: receiver.track.enabled,
+                                muted: receiver.track.muted,
+                                readyState: receiver.track.readyState
+                            } : 'null'
+                        });
+                        
                         if (receiver.track && receiver.track.kind === 'audio' && !receiver.track.muted && receiver.track.readyState === 'live') {
-                            console.log(`🔍 Используем трек из receiver напрямую: ${receiver.track.id}`);
+                            console.log(`✅ [processAudioForMixing] Используем трек из receiver напрямую: ${receiver.track.id}`);
                             receiverStream.addTrack(receiver.track);
                         }
                     });
                     
                     if (receiverStream.getAudioTracks().length > 0) {
                         activeStream = receiverStream;
-                        console.log(`✅ Создан поток из receivers напрямую для ${publisherIdStr}`);
+                        console.log(`✅ [processAudioForMixing] Создан поток из receivers напрямую для ${publisherIdStr}, треков: ${receiverStream.getAudioTracks().length}`);
                     } else {
                         activeStream = stream;
-                        console.log(`⚠️ Используем переданный поток для ${publisherIdStr} (receivers пусты)`);
+                        console.log(`⚠️ [processAudioForMixing] Используем переданный поток для ${publisherIdStr} (receivers пусты)`);
                     }
                 } else {
                     activeStream = stream;
-                    console.log(`⚠️ Используем переданный поток для ${publisherIdStr} (handle не найден)`);
+                    console.log(`⚠️ [processAudioForMixing] Используем переданный поток для ${publisherIdStr} (handle не найден или PC нет)`);
                 }
             }
+            
+            console.log(`🔍 [processAudioForMixing] Финальный activeStream для ${publisherIdStr}:`, {
+                id: activeStream.id,
+                active: activeStream.active,
+                tracksCount: activeStream.getAudioTracks().length
+            });
             
             // Получаем треки из активного потока
             const activeTracks = activeStream.getAudioTracks();
