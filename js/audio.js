@@ -863,6 +863,12 @@ var AudioModule = {
                 handle.onremotetrack = (track, mid, on) => {
                     console.log(`🔊 onremotetrack вызван: publisherId=${publisherId}, track.kind=${track.kind}, on=${on}, mid=${mid}, muted=${track.muted}`);
                     
+                    // ВАЖНО: Сохраняем трек в handle для последующего использования
+                    if (track.kind === 'audio' && on) {
+                        handle.remoteAudioTrack = track;
+                        console.log(`✅ Сохранен remoteAudioTrack в handle: ${track.id}`);
+                    }
+                    
                     // Проверяем статистику WebRTC соединения
                     if (handle.webrtcStuff && handle.webrtcStuff.pc) {
                         const pc = handle.webrtcStuff.pc;
@@ -919,6 +925,7 @@ var AudioModule = {
                                 setTimeout(() => {
                                     if (!track.muted && track.readyState === 'live') {
                                         console.log(`✅ Трек ${track.id} активен, создаем источник...`);
+                                        // Используем трек напрямую из handle
                                         const stream = new MediaStream([track]);
                                         this.handleRemoteStream(stream, publisherId, displayName);
                                     } else {
@@ -956,6 +963,7 @@ var AudioModule = {
                         }
                     } else if (!on) {
                         console.log(`🔇 Трек от publisher ${publisherId} остановлен`);
+                        handle.remoteAudioTrack = null;
                     }
                 };
                 
@@ -1193,11 +1201,32 @@ var AudioModule = {
                 this.audioMixer.connect(this.audioContext.destination);
             }
             
-            // ВАЖНО: Получаем трек напрямую из RTCRtpReceiver, а не из потока
-            // Поток может быть создан из muted трека и не работать
-            let activeTrack = null;
+            // ВАЖНО: Используем поток из handle.onremotestream, если он есть
+            // Это более надежный способ получения потока
+            let activeStream = null;
             const subscriberHandle = this.subscriberHandles.get(publisherIdStr);
-            if (subscriberHandle && subscriberHandle.webrtcStuff && subscriberHandle.webrtcStuff.pc) {
+            
+            if (subscriberHandle && subscriberHandle.remoteStream) {
+                activeStream = subscriberHandle.remoteStream;
+                console.log(`✅ Используем поток из handle.remoteStream для ${publisherIdStr}`);
+            } else {
+                // Если потока нет в handle, используем переданный поток
+                activeStream = stream;
+                console.log(`⚠️ Используем переданный поток для ${publisherIdStr}`);
+            }
+            
+            // Получаем треки из активного потока
+            const activeTracks = activeStream.getAudioTracks();
+            if (activeTracks.length === 0) {
+                console.error(`❌ Нет аудио треков в активном потоке для ${publisherIdStr}!`);
+                return;
+            }
+            
+            // Ищем активный трек
+            let activeTrack = activeTracks.find(track => !track.muted && track.readyState === 'live' && track.enabled);
+            
+            // Если не нашли активный трек, пытаемся получить из receiver
+            if (!activeTrack && subscriberHandle && subscriberHandle.webrtcStuff && subscriberHandle.webrtcStuff.pc) {
                 const pc = subscriberHandle.webrtcStuff.pc;
                 const receivers = pc.getReceivers();
                 console.log(`🔍 Проверяем ${receivers.length} receivers для ${publisherIdStr}`);
@@ -1211,22 +1240,11 @@ var AudioModule = {
                         }
                     }
                 }
-            } else {
-                console.warn(`⚠️ Subscriber handle не найден для ${publisherIdStr}`);
-            }
-            
-            // Если не нашли в receiver, используем трек из потока
-            if (!activeTrack) {
-                console.log(`⚠️ Трек не найден в receiver, ищем в потоке...`);
-                activeTrack = audioTracks.find(track => !track.muted && track.readyState === 'live' && track.enabled);
-                if (activeTrack) {
-                    console.log(`✅ Используем трек из потока: ${activeTrack.id}`);
-                }
             }
             
             if (!activeTrack) {
                 console.error(`❌ Не найден активный трек для ${publisherIdStr}!`);
-                console.error(`🔍 Доступные треки в потоке:`, audioTracks.map(t => ({
+                console.error(`🔍 Доступные треки в потоке:`, activeTracks.map(t => ({
                     id: t.id,
                     muted: t.muted,
                     enabled: t.enabled,
@@ -1235,9 +1253,11 @@ var AudioModule = {
                 return;
             }
             
-            // Создаем поток из активного трека
-            const activeStream = new MediaStream([activeTrack]);
-            console.log(`✅ Создан поток из активного трека ${activeTrack.id}`);
+            // Создаем поток из активного трека (если трек из receiver)
+            if (activeTrack !== activeTracks[0]) {
+                activeStream = new MediaStream([activeTrack]);
+                console.log(`✅ Создан новый поток из активного трека ${activeTrack.id}`);
+            }
             
             // Создаем источник из потока с активным треком
             const source = this.audioContext.createMediaStreamSource(activeStream);
