@@ -555,7 +555,16 @@ var AudioModule = {
             // Устанавливаем громкость через GainNode (Web Audio API)
             streamData.gainNode.gain.value = clampedVolume;
             streamData.volume = clampedVolume;
-            console.log(`✅ Громкость потока ${publisherIdStr} установлена через GainNode: ${Math.round(clampedVolume * 100)}%`);
+            
+            // Проверяем, что значение действительно установлено
+            const actualGain = streamData.gainNode.gain.value;
+            console.log(`✅ Громкость потока ${publisherIdStr}: запрошено ${Math.round(clampedVolume * 100)}%, фактически gain.value=${actualGain.toFixed(3)}`);
+            
+            // Также устанавливаем громкость на audioElement как запасной вариант
+            if (streamData.audioElement) {
+                streamData.audioElement.volume = Math.min(1.0, clampedVolume);
+                console.log(`🔊 Также установлена громкость audioElement: ${streamData.audioElement.volume}`);
+            }
         } else if (streamData.audioElement) {
             // Устанавливаем громкость через HTMLAudioElement (только 0.0-1.0)
             streamData.audioElement.volume = Math.min(1.0, clampedVolume);
