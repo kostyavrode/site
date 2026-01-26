@@ -812,9 +812,9 @@ var AudioModule = {
                         });
                     }
                     
-                    // Когда поток начался (как в инструкции)
+                    // Когда поток начался (как в инструкции) - ВАЖНО: используем это как основной способ
                     if (msg.plugindata && msg.plugindata.data && msg.plugindata.data.started === 'ok') {
-                        console.log(`✅ Поток от publisher ${publisherId} начался`);
+                        console.log(`✅ Поток от publisher ${publisherIdStr} начался (started=ok)`);
                         // Получаем поток из RTCPeerConnection (как в инструкции)
                         setTimeout(() => {
                             const pc = handle.webrtcStuff.pc;
@@ -823,7 +823,7 @@ var AudioModule = {
                                 pc.getStats().then(stats => {
                                     stats.forEach(report => {
                                         if (report.type === 'inbound-rtp' && report.kind === 'audio') {
-                                            console.log(`📊 Статистика аудио для ${publisherId}:`, {
+                                            console.log(`📊 [started] Статистика аудио для ${publisherIdStr}:`, {
                                                 bytesReceived: report.bytesReceived,
                                                 packetsReceived: report.packetsReceived,
                                                 packetsLost: report.packetsLost,
@@ -832,7 +832,9 @@ var AudioModule = {
                                             });
                                             
                                             if (report.bytesReceived === 0) {
-                                                console.warn(`⚠️ Нет полученных байт для ${publisherId}!`);
+                                                console.warn(`⚠️ Нет полученных байт для ${publisherIdStr}!`);
+                                            } else {
+                                                console.log(`✅ [started] Получено ${report.bytesReceived} байт для ${publisherIdStr}`);
                                             }
                                         }
                                     });
@@ -843,16 +845,20 @@ var AudioModule = {
                                 
                                 receivers.forEach(receiver => {
                                     if (receiver.track && receiver.track.kind === 'audio') {
-                                        console.log(`🔍 Receiver трек ${receiver.track.id}: enabled=${receiver.track.enabled}, muted=${receiver.track.muted}, readyState=${receiver.track.readyState}`);
+                                        console.log(`🔍 [started] Receiver трек ${receiver.track.id}: enabled=${receiver.track.enabled}, muted=${receiver.track.muted}, readyState=${receiver.track.readyState}`);
                                         remoteStream.addTrack(receiver.track);
                                     }
                                 });
                                 
                                 if (remoteStream.getAudioTracks().length > 0) {
-                                    console.log(`✅ Создан поток из receivers для ${publisherId}, треков: ${remoteStream.getAudioTracks().length}`);
+                                    console.log(`✅ [started] Создан поток из receivers для ${publisherIdStr}, треков: ${remoteStream.getAudioTracks().length}`);
+                                    // ВАЖНО: Сохраняем поток в handle для использования в processAudioForMixing
+                                    handle.remoteStream = remoteStream;
+                                    console.log(`✅ [started] Сохранен remoteStream в handle для ${publisherIdStr}`);
+                                    // Обрабатываем поток
                                     this.handleRemoteStream(remoteStream, publisherId, displayName);
                                 } else {
-                                    console.warn(`⚠️ Нет аудио треков в receivers для ${publisherId}`);
+                                    console.warn(`⚠️ Нет аудио треков в receivers для ${publisherIdStr}`);
                                 }
                             }
                         }, 500);
@@ -1037,51 +1043,77 @@ var AudioModule = {
                 // Проверяем статистику после установки WebRTC соединения
                 handle.webrtcState = (on) => {
                     if (on) {
-                        console.log(`✅ WebRTC соединение установлено для subscriber ${publisherId}`);
+                        console.log(`✅ WebRTC соединение установлено для subscriber ${publisherIdStr}`);
                         
-                        // Проверяем статистику через 2 секунды после установки соединения
+                        // ВАЖНО: Получаем поток из receivers после установки соединения
                         setTimeout(() => {
                             if (handle.webrtcStuff && handle.webrtcStuff.pc) {
                                 const pc = handle.webrtcStuff.pc;
-                                pc.getStats().then(stats => {
-                                    console.log(`📊 [webrtcState] Статистика WebRTC для subscriber ${publisherId}:`);
-                                    let hasInboundRtp = false;
-                                    stats.forEach(report => {
-                                        if (report.type === 'inbound-rtp' && report.kind === 'audio') {
-                                            hasInboundRtp = true;
-                                            console.log(`📊 inbound-rtp (audio):`, {
-                                                bytesReceived: report.bytesReceived,
-                                                packetsReceived: report.packetsReceived,
-                                                packetsLost: report.packetsLost,
-                                                jitter: report.jitter,
-                                                audioLevel: report.audioLevel,
-                                                totalAudioEnergy: report.totalAudioEnergy
-                                            });
-                                            
-                                            if (report.bytesReceived === 0) {
-                                                console.error(`❌ КРИТИЧНО: Нет полученных байт для subscriber ${publisherId}! Отправитель не отправляет данные!`);
-                                            } else {
-                                                console.log(`✅ Получено ${report.bytesReceived} байт для subscriber ${publisherId}`);
-                                            }
-                                        }
-                                        if (report.type === 'transport') {
-                                            console.log(`📊 transport:`, {
-                                                bytesReceived: report.bytesReceived,
-                                                bytesSent: report.bytesSent,
-                                                dtlsState: report.dtlsState,
-                                                iceConnectionState: report.iceConnectionState
-                                            });
-                                        }
-                                    });
-                                    
-                                    if (!hasInboundRtp) {
-                                        console.error(`❌ КРИТИЧНО: Нет inbound-rtp статистики для subscriber ${publisherId}!`);
+                                
+                                // Получаем поток из receivers
+                                const receivers = pc.getReceivers();
+                                const remoteStream = new MediaStream();
+                                
+                                receivers.forEach(receiver => {
+                                    if (receiver.track && receiver.track.kind === 'audio') {
+                                        console.log(`🔍 [webrtcState] Receiver трек ${receiver.track.id}: enabled=${receiver.track.enabled}, muted=${receiver.track.muted}, readyState=${receiver.track.readyState}`);
+                                        remoteStream.addTrack(receiver.track);
                                     }
-                                }).catch(e => {
-                                    console.error(`❌ Ошибка получения статистики для subscriber ${publisherId}:`, e);
                                 });
+                                
+                                if (remoteStream.getAudioTracks().length > 0) {
+                                    console.log(`✅ [webrtcState] Создан поток из receivers для ${publisherIdStr}, треков: ${remoteStream.getAudioTracks().length}`);
+                                    // ВАЖНО: Сохраняем поток в handle для использования в processAudioForMixing
+                                    handle.remoteStream = remoteStream;
+                                    console.log(`✅ [webrtcState] Сохранен remoteStream в handle для ${publisherIdStr}`);
+                                    // Обрабатываем поток
+                                    this.handleRemoteStream(remoteStream, publisherId, displayName);
+                                } else {
+                                    console.warn(`⚠️ [webrtcState] Нет аудио треков в receivers для ${publisherIdStr}`);
+                                }
+                                
+                                // Проверяем статистику через 2 секунды после установки соединения
+                                setTimeout(() => {
+                                    pc.getStats().then(stats => {
+                                        console.log(`📊 [webrtcState] Статистика WebRTC для subscriber ${publisherIdStr}:`);
+                                        let hasInboundRtp = false;
+                                        stats.forEach(report => {
+                                            if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+                                                hasInboundRtp = true;
+                                                console.log(`📊 inbound-rtp (audio):`, {
+                                                    bytesReceived: report.bytesReceived,
+                                                    packetsReceived: report.packetsReceived,
+                                                    packetsLost: report.packetsLost,
+                                                    jitter: report.jitter,
+                                                    audioLevel: report.audioLevel,
+                                                    totalAudioEnergy: report.totalAudioEnergy
+                                                });
+                                                
+                                                if (report.bytesReceived === 0) {
+                                                    console.error(`❌ КРИТИЧНО: Нет полученных байт для subscriber ${publisherIdStr}! Отправитель не отправляет данные!`);
+                                                } else {
+                                                    console.log(`✅ Получено ${report.bytesReceived} байт для subscriber ${publisherIdStr}`);
+                                                }
+                                            }
+                                            if (report.type === 'transport') {
+                                                console.log(`📊 transport:`, {
+                                                    bytesReceived: report.bytesReceived,
+                                                    bytesSent: report.bytesSent,
+                                                    dtlsState: report.dtlsState,
+                                                    iceConnectionState: report.iceConnectionState
+                                                });
+                                            }
+                                        });
+                                        
+                                        if (!hasInboundRtp) {
+                                            console.error(`❌ КРИТИЧНО: Нет inbound-rtp статистики для subscriber ${publisherIdStr}!`);
+                                        }
+                                    }).catch(e => {
+                                        console.error(`❌ Ошибка получения статистики для subscriber ${publisherIdStr}:`, e);
+                                    });
+                                }, 2000);
                             }
-                        }, 2000);
+                        }, 500);
                     }
                 };
             },
@@ -1201,18 +1233,39 @@ var AudioModule = {
                 this.audioMixer.connect(this.audioContext.destination);
             }
             
-            // ВАЖНО: Используем поток из handle.onremotestream, если он есть
+            // ВАЖНО: Используем поток из handle.remoteStream (создан из receivers после started)
             // Это более надежный способ получения потока
             let activeStream = null;
             const subscriberHandle = this.subscriberHandles.get(publisherIdStr);
             
             if (subscriberHandle && subscriberHandle.remoteStream) {
                 activeStream = subscriberHandle.remoteStream;
-                console.log(`✅ Используем поток из handle.remoteStream для ${publisherIdStr}`);
+                console.log(`✅ Используем поток из handle.remoteStream (started) для ${publisherIdStr}`);
             } else {
-                // Если потока нет в handle, используем переданный поток
-                activeStream = stream;
-                console.log(`⚠️ Используем переданный поток для ${publisherIdStr}`);
+                // Если потока нет в handle, пытаемся получить из receivers напрямую
+                if (subscriberHandle && subscriberHandle.webrtcStuff && subscriberHandle.webrtcStuff.pc) {
+                    const pc = subscriberHandle.webrtcStuff.pc;
+                    const receivers = pc.getReceivers();
+                    const receiverStream = new MediaStream();
+                    
+                    receivers.forEach(receiver => {
+                        if (receiver.track && receiver.track.kind === 'audio' && !receiver.track.muted && receiver.track.readyState === 'live') {
+                            console.log(`🔍 Используем трек из receiver напрямую: ${receiver.track.id}`);
+                            receiverStream.addTrack(receiver.track);
+                        }
+                    });
+                    
+                    if (receiverStream.getAudioTracks().length > 0) {
+                        activeStream = receiverStream;
+                        console.log(`✅ Создан поток из receivers напрямую для ${publisherIdStr}`);
+                    } else {
+                        activeStream = stream;
+                        console.log(`⚠️ Используем переданный поток для ${publisherIdStr} (receivers пусты)`);
+                    }
+                } else {
+                    activeStream = stream;
+                    console.log(`⚠️ Используем переданный поток для ${publisherIdStr} (handle не найден)`);
+                }
             }
             
             // Получаем треки из активного потока
