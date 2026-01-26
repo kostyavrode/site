@@ -230,14 +230,29 @@ var AudioModule = {
                                         track.enabled = true;
                                     });
                                     
-                                    // Также проверяем через RTCPeerConnection
+                                    // Контролируем через RTCPeerConnection и RTCRtpTransceiver
                                     if (handle.webrtcStuff && handle.webrtcStuff.pc) {
                                         const pc = handle.webrtcStuff.pc;
+                                        
+                                        // Убеждаемся что все transceivers настроены правильно
+                                        const transceivers = pc.getTransceivers();
+                                        transceivers.forEach(transceiver => {
+                                            if (transceiver.sender && transceiver.sender.track && transceiver.sender.track.kind === 'audio') {
+                                                transceiver.sender.track.enabled = true;
+                                                // Убеждаемся что direction правильный
+                                                if (transceiver.direction !== 'sendonly' && transceiver.direction !== 'sendrecv') {
+                                                    transceiver.direction = 'sendonly';
+                                                }
+                                                console.log(`✅ RTCRtpTransceiver: track=${transceiver.sender.track.id}, enabled=${transceiver.sender.track.enabled}, direction=${transceiver.direction}`);
+                                            }
+                                        });
+                                        
+                                        // Также проверяем senders
                                         const senders = pc.getSenders();
                                         senders.forEach(sender => {
                                             if (sender.track && sender.track.kind === 'audio') {
                                                 sender.track.enabled = true;
-                                                console.log(`✅ RTCRtpSender перед publish: ${sender.track.id} enabled=${sender.track.enabled}`);
+                                                console.log(`✅ RTCRtpSender перед publish: ${sender.track.id} enabled=${sender.track.enabled}, muted=${sender.track.muted}`);
                                             }
                                         });
                                     }
@@ -315,14 +330,29 @@ var AudioModule = {
                                 });
                             }
                             
-                            // Проверяем RTCRtpSenders
+                            // Контролируем через RTCPeerConnection и RTCRtpTransceiver
                             if (handle.webrtcStuff && handle.webrtcStuff.pc) {
                                 const pc = handle.webrtcStuff.pc;
+                                
+                                // Убеждаемся что все transceivers настроены правильно
+                                const transceivers = pc.getTransceivers();
+                                transceivers.forEach(transceiver => {
+                                    if (transceiver.sender && transceiver.sender.track && transceiver.sender.track.kind === 'audio') {
+                                        transceiver.sender.track.enabled = true;
+                                        // Убеждаемся что direction правильный
+                                        if (transceiver.direction !== 'sendonly' && transceiver.direction !== 'sendrecv') {
+                                            transceiver.direction = 'sendonly';
+                                        }
+                                        console.log(`✅ WebRTC up RTCRtpTransceiver: track=${transceiver.sender.track.id}, enabled=${transceiver.sender.track.enabled}, direction=${transceiver.direction}, muted=${transceiver.sender.track.muted}`);
+                                    }
+                                });
+                                
+                                // Также проверяем senders
                                 const senders = pc.getSenders();
                                 senders.forEach(sender => {
                                     if (sender.track && sender.track.kind === 'audio') {
                                         sender.track.enabled = true;
-                                        console.log(`✅ WebRTC up RTCRtpSender: ${sender.track.id} enabled=${sender.track.enabled}`);
+                                        console.log(`✅ WebRTC up RTCRtpSender: ${sender.track.id} enabled=${sender.track.enabled}, muted=${sender.track.muted}`);
                                     }
                                 });
                             }
@@ -864,11 +894,45 @@ var AudioModule = {
         
         console.log(`🔊 handleRemoteStream вызван: publisherId=${publisherId} (строка: ${publisherIdStr}), displayName=${displayName}`);
         
+        // Проверяем состояние треков
+        const audioTracks = stream.getAudioTracks();
+        if (audioTracks.length === 0) {
+            console.warn(`⚠️ Нет аудио треков в потоке для ${publisherIdStr}`);
+            return;
+        }
+        
+        // Проверяем, есть ли muted треки
+        const mutedTracks = audioTracks.filter(track => track.muted);
+        if (mutedTracks.length > 0) {
+            console.warn(`⚠️ Поток ${publisherIdStr} содержит muted треки, пропускаем до unmute`);
+            return;
+        }
+        
         // Проверяем, есть ли уже источник для этого потока
         const existingData = this.streamVolumes.get(publisherIdStr);
         if (existingData && existingData.source) {
             console.log(`⚠️ Поток ${publisherIdStr} уже обработан, источник уже создан`);
-            return;
+            // Проверяем, что источник все еще подключен
+            try {
+                if (existingData.source.numberOfOutputs === 0) {
+                    console.warn(`⚠️ Источник ${publisherIdStr} отключен, пересоздаем...`);
+                    // Удаляем старый источник
+                    existingData.source.disconnect();
+                    existingData.gainNode.disconnect();
+                    this.streamVolumes.delete(publisherIdStr);
+                } else {
+                    console.log(`✅ Источник ${publisherIdStr} активен, numberOfOutputs=${existingData.source.numberOfOutputs}`);
+                    return;
+                }
+            } catch (e) {
+                console.warn(`⚠️ Ошибка проверки источника ${publisherIdStr}, пересоздаем:`, e);
+                // Удаляем старый источник
+                try {
+                    existingData.source.disconnect();
+                    existingData.gainNode.disconnect();
+                } catch (e2) {}
+                this.streamVolumes.delete(publisherIdStr);
+            }
         }
         
         // Сохраняем поток
@@ -876,9 +940,24 @@ var AudioModule = {
         
         // Подключаем аудио к микшеру
         if (this.audioContext && this.audioMixer) {
+            // Проверяем состояние AudioContext
+            if (this.audioContext.state === 'suspended') {
+                console.warn('⚠️ AudioContext suspended, возобновляем...');
+                this.audioContext.resume().then(() => {
+                    this.processAudioForMixing(stream, publisherId, displayName);
+                });
+                return;
+            }
+            
+            // Проверяем подключение audioMixer
+            if (this.audioMixer.numberOfOutputs === 0) {
+                console.warn('⚠️ audioMixer не подключен к destination, переподключаем...');
+                this.audioMixer.connect(this.audioContext.destination);
+            }
+            
             this.processAudioForMixing(stream, publisherId, displayName);
         } else {
-            console.warn('⚠️ AudioContext не инициализирован');
+            console.warn(`⚠️ AudioContext не инициализирован: audioContext=${!!this.audioContext}, audioMixer=${!!this.audioMixer}`);
         }
     },
 
@@ -895,8 +974,35 @@ var AudioModule = {
             return;
         }
         
+        // Проверяем состояние треков перед созданием источника
+        audioTracks.forEach(track => {
+            console.log(`🔍 Трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
+        });
+        
+        // Если есть muted треки - не создаем источник
+        const mutedTracks = audioTracks.filter(track => track.muted);
+        if (mutedTracks.length > 0) {
+            console.warn(`⚠️ Поток ${publisherIdStr} содержит ${mutedTracks.length} muted треков, не создаем источник`);
+            return;
+        }
+        
         try {
-            // Создаем источник из потока (как в инструкции - БЕЗ фильтрации по muted/enabled)
+            // Убеждаемся, что AudioContext активен
+            if (this.audioContext.state === 'suspended') {
+                console.warn('⚠️ AudioContext suspended в processAudioForMixing');
+                this.audioContext.resume().then(() => {
+                    this.processAudioForMixing(stream, publisherId, displayName);
+                });
+                return;
+            }
+            
+            // Убеждаемся, что audioMixer подключен
+            if (this.audioMixer.numberOfOutputs === 0) {
+                console.warn('⚠️ audioMixer не подключен в processAudioForMixing, переподключаем...');
+                this.audioMixer.connect(this.audioContext.destination);
+            }
+            
+            // Создаем источник из потока
             const source = this.audioContext.createMediaStreamSource(stream);
             
             // Создаем GainNode для управления громкостью
@@ -907,6 +1013,8 @@ var AudioModule = {
             source.connect(gainNode);
             gainNode.connect(this.audioMixer);
             
+            console.log(`🔗 Подключено: source (${source.numberOfOutputs} outputs) -> gainNode (${gainNode.numberOfInputs} inputs, ${gainNode.numberOfOutputs} outputs) -> audioMixer (${this.audioMixer.numberOfInputs} inputs, ${this.audioMixer.numberOfOutputs} outputs)`);
+            
             // Сохраняем для управления
             this.streamVolumes.set(publisherIdStr, {
                 gainNode: gainNode,
@@ -916,8 +1024,10 @@ var AudioModule = {
             });
             
             console.log(`✅ Аудио поток ${publisherIdStr} (${displayName}) подключен к микшеру`);
+            console.log(`🔍 AudioContext состояние: ${this.audioContext.state}, audioMixer подключен: ${this.audioMixer.numberOfOutputs > 0}`);
         } catch (error) {
             console.error('❌ Ошибка обработки аудио:', error);
+            console.error('Детали:', error.stack);
         }
     },
 
