@@ -731,12 +731,35 @@ var AudioModule = {
                 
                 // Обработка удаленного трека (новый API Janus.js)
                 handle.onremotetrack = (track, mid, on) => {
-                    console.log(`🔊 onremotetrack вызван: publisherId=${publisherId}, track.kind=${track.kind}, on=${on}, mid=${mid}`);
+                    console.log(`🔊 onremotetrack вызван: publisherId=${publisherId}, track.kind=${track.kind}, on=${on}, mid=${mid}, muted=${track.muted}`);
                     
                     if (track.kind === 'audio' && on) {
-                        // Создаем поток из трека (как в инструкции - БЕЗ проверок на muted)
-                        const stream = new MediaStream([track]);
-                        this.handleRemoteStream(stream, publisherId, displayName);
+                        // Если трек muted - ждем unmute перед обработкой
+                        if (track.muted) {
+                            console.log(`⏳ Трек ${track.id} muted, ждем unmute для ${publisherId}...`);
+                            const unmuteHandler = () => {
+                                console.log(`🔊 Трек ${track.id} unmuted для ${publisherId}, обрабатываем...`);
+                                track.removeEventListener('unmute', unmuteHandler);
+                                const stream = new MediaStream([track]);
+                                this.handleRemoteStream(stream, publisherId, displayName);
+                            };
+                            track.addEventListener('unmute', unmuteHandler);
+                            
+                            // Проверка через таймаут на случай если событие уже произошло
+                            setTimeout(() => {
+                                if (!track.muted) {
+                                    console.log(`🔊 Трек ${track.id} уже unmuted (таймаут) для ${publisherId}, обрабатываем...`);
+                                    track.removeEventListener('unmute', unmuteHandler);
+                                    const stream = new MediaStream([track]);
+                                    this.handleRemoteStream(stream, publisherId, displayName);
+                                }
+                            }, 1000);
+                        } else {
+                            // Трек не muted - обрабатываем сразу
+                            console.log(`🔊 Трек ${track.id} не muted, обрабатываем сразу для ${publisherId}`);
+                            const stream = new MediaStream([track]);
+                            this.handleRemoteStream(stream, publisherId, displayName);
+                        }
                     } else if (!on) {
                         console.log(`🔇 Трек от publisher ${publisherId} остановлен`);
                     }
@@ -769,15 +792,17 @@ var AudioModule = {
         
         console.log(`🔊 handleRemoteStream вызван: publisherId=${publisherId} (строка: ${publisherIdStr}), displayName=${displayName}`);
         
-        // Проверяем, не обработан ли уже (как в инструкции)
-        if (this.remoteStreams.has(publisherIdStr)) {
-            console.log(`⚠️ Поток ${publisherIdStr} уже обработан`);
+        // Проверяем, есть ли уже источник для этого потока
+        const existingData = this.streamVolumes.get(publisherIdStr);
+        if (existingData && existingData.source) {
+            console.log(`⚠️ Поток ${publisherIdStr} уже обработан, источник уже создан`);
             return;
         }
         
+        // Сохраняем поток
         this.remoteStreams.set(publisherIdStr, stream);
         
-        // Подключаем аудио к микшеру (как в инструкции)
+        // Подключаем аудио к микшеру
         if (this.audioContext && this.audioMixer) {
             this.processAudioForMixing(stream, publisherId, displayName);
         } else {
