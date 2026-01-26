@@ -158,6 +158,16 @@ var AudioModule = {
         try {
             this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
             
+            // Убеждаемся, что все локальные треки enabled и не muted перед публикацией
+            this.localStream.getAudioTracks().forEach(track => {
+                track.enabled = true;
+                // muted - read-only свойство для локальных треков, но можем проверить
+                if (track.muted) {
+                    console.warn(`⚠️ Локальный трек ${track.id} muted, пытаемся исправить...`);
+                }
+                console.log(`✅ Локальный трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
+            });
+            
             // Убеждаемся, что AudioContext активен
             if (this.audioContext && this.audioContext.state === 'suspended') {
                 await this.audioContext.resume();
@@ -197,6 +207,12 @@ var AudioModule = {
                             console.log('✅ Присоединились к комнате как Publisher:', result);
                             // participantId будет установлен в handlePublisherMessage при получении события 'joined'
                             
+                            // Убеждаемся, что все треки enabled перед публикацией
+                            this.localStream.getAudioTracks().forEach(track => {
+                                track.enabled = true;
+                                console.log(`✅ Перед публикацией трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
+                            });
+                            
                             // Публикуем поток
                             const hasAudio = this.localStream.getAudioTracks().length > 0;
                             
@@ -209,6 +225,23 @@ var AudioModule = {
                                 },
                                 stream: this.localStream,
                                 success: (jsep) => {
+                                    // Убеждаемся, что треки enabled перед отправкой publish
+                                    this.localStream.getAudioTracks().forEach(track => {
+                                        track.enabled = true;
+                                    });
+                                    
+                                    // Также проверяем через RTCPeerConnection
+                                    if (handle.webrtcStuff && handle.webrtcStuff.pc) {
+                                        const pc = handle.webrtcStuff.pc;
+                                        const senders = pc.getSenders();
+                                        senders.forEach(sender => {
+                                            if (sender.track && sender.track.kind === 'audio') {
+                                                sender.track.enabled = true;
+                                                console.log(`✅ RTCRtpSender перед publish: ${sender.track.id} enabled=${sender.track.enabled}`);
+                                            }
+                                        });
+                                    }
+                                    
                                     handle.send({
                                         message: {
                                             request: 'publish',
@@ -243,6 +276,24 @@ var AudioModule = {
                         this.localStream = stream;
                         console.log('🎤 Локальный аудио поток получен:', stream);
                         
+                        // Убеждаемся, что все треки enabled и не muted
+                        stream.getAudioTracks().forEach(track => {
+                            track.enabled = true;
+                            console.log(`✅ onlocalstream трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
+                        });
+                        
+                        // Убеждаемся, что треки отправляются через RTCRtpSender
+                        if (handle.webrtcStuff && handle.webrtcStuff.pc) {
+                            const pc = handle.webrtcStuff.pc;
+                            const senders = pc.getSenders();
+                            senders.forEach(sender => {
+                                if (sender.track && sender.track.kind === 'audio') {
+                                    sender.track.enabled = true;
+                                    console.log(`✅ RTCRtpSender трек ${sender.track.id}: enabled=${sender.track.enabled}, muted=${sender.track.muted}`);
+                                }
+                            });
+                        }
+                        
                         // Мониторинг локального потока уже настроен в joinAsPublisher при получении getUserMedia
                         // Здесь просто обновляем ссылку на поток
                         
@@ -255,6 +306,27 @@ var AudioModule = {
                         console.log('WebRTC state:', on ? 'up' : 'down');
                         if (on) {
                             console.log('✅ WebRTC соединение установлено - аудио пакеты передаются!');
+                            
+                            // Убеждаемся, что все треки enabled после установки соединения
+                            if (this.localStream) {
+                                this.localStream.getAudioTracks().forEach(track => {
+                                    track.enabled = true;
+                                    console.log(`✅ WebRTC up трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}`);
+                                });
+                            }
+                            
+                            // Проверяем RTCRtpSenders
+                            if (handle.webrtcStuff && handle.webrtcStuff.pc) {
+                                const pc = handle.webrtcStuff.pc;
+                                const senders = pc.getSenders();
+                                senders.forEach(sender => {
+                                    if (sender.track && sender.track.kind === 'audio') {
+                                        sender.track.enabled = true;
+                                        console.log(`✅ WebRTC up RTCRtpSender: ${sender.track.id} enabled=${sender.track.enabled}`);
+                                    }
+                                });
+                            }
+                            
                             if (window.onAudioConnected) {
                                 window.onAudioConnected();
                             }
