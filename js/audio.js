@@ -1030,13 +1030,37 @@ var AudioModule = {
                 };
                 
                 handle.ontrack = (event) => {
-                    console.log(`🔊 ontrack вызван: publisherId=${publisherId}, streams.length=${event.streams ? event.streams.length : 0}`);
+                    console.log(`🔊 [ontrack] Вызван для publisher ${publisherIdStr}, streams.length=${event.streams ? event.streams.length : 0}`);
+                    console.log(`🔍 [ontrack] event.track:`, event.track ? {
+                        id: event.track.id,
+                        kind: event.track.kind,
+                        enabled: event.track.enabled,
+                        muted: event.track.muted,
+                        readyState: event.track.readyState
+                    } : 'null');
+                    
                     if (event.streams && event.streams.length > 0) {
-                        console.log(`🔊 [ontrack] Получен поток от publisher ${publisherId}`);
-                        event.streams[0].getAudioTracks().forEach(track => {
+                        const stream = event.streams[0];
+                        console.log(`✅ [ontrack] Получен поток от publisher ${publisherIdStr}, id=${stream.id}`);
+                        console.log(`🔍 [ontrack] Треков в потоке: ${stream.getAudioTracks().length}`);
+                        
+                        stream.getAudioTracks().forEach(track => {
                             console.log(`🔍 [ontrack] Трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
                         });
-                        this.handleRemoteStream(event.streams[0], publisherId, displayName);
+                        
+                        // ВАЖНО: Сохраняем поток из ontrack - он уже связан с receiver
+                        handle.ontrackStream = stream;
+                        console.log(`✅ [ontrack] Сохранен ontrackStream в handle для ${publisherIdStr}`);
+                        
+                        // Обрабатываем поток
+                        this.handleRemoteStream(stream, publisherId, displayName);
+                    } else if (event.track) {
+                        // Если нет streams, но есть track - создаем поток из трека
+                        console.log(`⚠️ [ontrack] Нет streams, но есть track, создаем поток из трека`);
+                        const stream = new MediaStream([event.track]);
+                        handle.ontrackStream = stream;
+                        console.log(`✅ [ontrack] Создан поток из track для ${publisherIdStr}`);
+                        this.handleRemoteStream(stream, publisherId, displayName);
                     }
                 };
                 
@@ -1270,9 +1294,17 @@ var AudioModule = {
             console.log(`🔍 [processAudioForMixing] Проверяем handle для ${publisherIdStr}...`);
             console.log(`🔍 [processAudioForMixing] subscriberHandle:`, subscriberHandle ? 'найден' : 'НЕ НАЙДЕН');
             
-            if (subscriberHandle && subscriberHandle.remoteStream) {
+            // ПРИОРИТЕТ 1: Используем поток из ontrack - он уже связан с receiver
+            if (subscriberHandle && subscriberHandle.ontrackStream) {
+                activeStream = subscriberHandle.ontrackStream;
+                console.log(`✅ [processAudioForMixing] Используем поток из handle.ontrackStream для ${publisherIdStr}`);
+                console.log(`🔍 [processAudioForMixing] Треков в handle.ontrackStream: ${activeStream.getAudioTracks().length}`);
+                activeStream.getAudioTracks().forEach(track => {
+                    console.log(`🔍 [processAudioForMixing] Трек в handle.ontrackStream: id=${track.id}, enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
+                });
+            } else if (subscriberHandle && subscriberHandle.remoteStream) {
                 activeStream = subscriberHandle.remoteStream;
-                console.log(`✅ [processAudioForMixing] Используем поток из handle.remoteStream (started) для ${publisherIdStr}`);
+                console.log(`✅ [processAudioForMixing] Используем поток из handle.remoteStream (webrtcState) для ${publisherIdStr}`);
                 console.log(`🔍 [processAudioForMixing] Треков в handle.remoteStream: ${activeStream.getAudioTracks().length}`);
                 activeStream.getAudioTracks().forEach(track => {
                     console.log(`🔍 [processAudioForMixing] Трек в handle.remoteStream: id=${track.id}, enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
