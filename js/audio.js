@@ -1399,31 +1399,65 @@ var AudioModule = {
                 return;
             }
             
-            // ВАЖНО: Используем трек напрямую из receiver, а не из потока
-            // Проверяем, что трек в потоке - это тот же объект, что и трек в receiver
-            let finalTrack = activeTrack;
-            if (subscriberHandle && subscriberHandle.webrtcStuff && subscriberHandle.webrtcStuff.pc) {
-                const pc = subscriberHandle.webrtcStuff.pc;
-                const receivers = pc.getReceivers();
-                for (const receiver of receivers) {
-                    if (receiver.track && receiver.track.kind === 'audio' && receiver.track.id === activeTrack.id) {
-                        // Используем трек напрямую из receiver - это тот же объект, который получает данные
-                        finalTrack = receiver.track;
-                        console.log(`✅ Используем трек напрямую из receiver: ${finalTrack.id} (тот же объект)`);
-                        break;
-                    }
-                }
+            // ВАЖНО: Используем HTMLAudioElement для воспроизведения WebRTC аудио
+            // Это стандартный и надежный способ - MediaStreamAudioSourceNode часто не работает с WebRTC
+            console.log(`🎧 Создаем HTMLAudioElement для воспроизведения потока ${publisherIdStr}...`);
+            
+            // Создаем аудио элемент для воспроизведения
+            const audioElement = document.createElement('audio');
+            audioElement.id = `remote-audio-${publisherIdStr}`;
+            audioElement.autoplay = true;
+            audioElement.playsInline = true;
+            audioElement.muted = false; // НЕ muted - нам нужен звук!
+            
+            // Используем activeStream напрямую (он уже содержит нужный трек)
+            audioElement.srcObject = activeStream;
+            console.log(`✅ srcObject установлен для ${publisherIdStr}, поток id: ${activeStream.id}`);
+            
+            // Добавляем элемент на страницу (скрытый)
+            audioElement.style.display = 'none';
+            document.body.appendChild(audioElement);
+            console.log(`✅ Audio элемент добавлен на страницу для ${publisherIdStr}`);
+            
+            // Запускаем воспроизведение
+            audioElement.play()
+                .then(() => {
+                    console.log(`✅ Воспроизведение запущено для ${publisherIdStr}`);
+                    console.log(`🔍 audioElement.paused=${audioElement.paused}, volume=${audioElement.volume}, muted=${audioElement.muted}`);
+                })
+                .catch(err => {
+                    console.error(`❌ Ошибка запуска воспроизведения для ${publisherIdStr}:`, err);
+                    // Пробуем с задержкой после взаимодействия пользователя
+                    console.log(`⏳ Пробуем запустить воспроизведение позже...`);
+                });
+            
+            // Обработчики событий для отладки
+            audioElement.onplay = () => console.log(`▶️ Audio ${publisherIdStr} playing`);
+            audioElement.onpause = () => console.warn(`⏸️ Audio ${publisherIdStr} paused`);
+            audioElement.onerror = (e) => console.error(`❌ Audio ${publisherIdStr} error:`, e);
+            audioElement.onended = () => console.warn(`⏹️ Audio ${publisherIdStr} ended`);
+            audioElement.onloadeddata = () => console.log(`📦 Audio ${publisherIdStr} data loaded`);
+            audioElement.oncanplay = () => console.log(`✅ Audio ${publisherIdStr} can play`);
+            
+            // Теперь создаем MediaElementAudioSourceNode для регулировки громкости через Web Audio API
+            // Это позволяет использовать GainNode для управления громкостью
+            let source;
+            try {
+                source = this.audioContext.createMediaElementSource(audioElement);
+                console.log(`✅ MediaElementAudioSourceNode создан для ${publisherIdStr}`);
+            } catch (e) {
+                console.error(`❌ Ошибка создания MediaElementAudioSourceNode:`, e);
+                // Если не удалось создать source, используем только audioElement
+                // Громкость будем регулировать через audioElement.volume
+                console.log(`⚠️ Используем только HTMLAudioElement для ${publisherIdStr} (без Web Audio API)`);
+                
+                this.streamVolumes.set(publisherIdStr, {
+                    audioElement: audioElement,
+                    volume: 1.0,
+                    display: displayName
+                });
+                return;
             }
-            
-            // Создаем поток из финального трека (из receiver)
-            const finalStream = new MediaStream([finalTrack]);
-            console.log(`✅ Создан поток из трека receiver для ${publisherIdStr}, трек: ${finalTrack.id}`);
-            console.log(`🔍 Финальный трек: enabled=${finalTrack.enabled}, muted=${finalTrack.muted}, readyState=${finalTrack.readyState}`);
-            
-            // Создаем источник из потока с треком из receiver
-            const source = this.audioContext.createMediaStreamSource(finalStream);
-            console.log(`✅ Источник создан для ${publisherIdStr}, source:`, source);
-            console.log(`🔍 Источник создан из потока с треком ${finalTrack.id}, поток активен: ${finalStream.active}`);
             
             // Создаем GainNode для управления громкостью
             const gainNode = this.audioContext.createGain();
@@ -1485,10 +1519,11 @@ var AudioModule = {
                 }, 2000);
             });
             
-            // Сохраняем для управления
+            // Сохраняем для управления (включая audioElement)
             this.streamVolumes.set(publisherIdStr, {
                 gainNode: gainNode,
                 source: source,
+                audioElement: audioElement,
                 volume: 1.0,
                 display: displayName
             });
