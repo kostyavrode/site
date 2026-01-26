@@ -1021,11 +1021,42 @@ var AudioModule = {
                     console.warn(`⚠️ Трек ${track.id} от ${publisherIdStr} завершен`);
                 });
                 
+                track.addEventListener('mute', () => {
+                    console.warn(`⚠️ Трек ${track.id} от ${publisherIdStr} стал muted!`);
+                });
+                
+                track.addEventListener('unmute', () => {
+                    console.log(`✅ Трек ${track.id} от ${publisherIdStr} стал unmuted`);
+                });
+                
                 // Проверяем активность трека через некоторое время
                 setTimeout(() => {
                     console.log(`🔍 Проверка трека ${track.id} через 2 сек: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
                     if (track.muted) {
                         console.warn(`⚠️ Трек ${track.id} все еще muted после 2 секунд!`);
+                    }
+                    
+                    // Проверяем, есть ли данные в потоке через AudioContext
+                    try {
+                        const testSource = this.audioContext.createMediaStreamSource(new MediaStream([track]));
+                        const analyser = this.audioContext.createAnalyser();
+                        analyser.fftSize = 256;
+                        testSource.connect(analyser);
+                        
+                        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                        analyser.getByteFrequencyData(dataArray);
+                        
+                        const max = Math.max(...dataArray);
+                        console.log(`🔍 Анализ трека ${track.id}: максимальная частота=${max}, есть данные=${max > 0}`);
+                        
+                        if (max === 0) {
+                            console.warn(`⚠️ Трек ${track.id} не передает данные!`);
+                        }
+                        
+                        testSource.disconnect();
+                        analyser.disconnect();
+                    } catch (e) {
+                        console.error(`❌ Ошибка анализа трека ${track.id}:`, e);
                     }
                 }, 2000);
             });
@@ -1042,6 +1073,40 @@ var AudioModule = {
             console.log(`🔍 AudioContext состояние: ${this.audioContext.state}, audioMixer подключен: ${this.audioMixer.numberOfOutputs > 0}`);
             console.log(`🔍 AudioContext destination: ${this.audioContext.destination ? 'есть' : 'нет'}, numberOfInputs: ${this.audioContext.destination ? this.audioContext.destination.numberOfInputs : 'N/A'}`);
             
+            // Проверяем источник через AnalyserNode
+            setTimeout(() => {
+                try {
+                    const analyser = this.audioContext.createAnalyser();
+                    analyser.fftSize = 256;
+                    source.connect(analyser);
+                    
+                    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                    analyser.getByteFrequencyData(dataArray);
+                    
+                    const max = Math.max(...dataArray);
+                    console.log(`🔍 Проверка источника ${publisherIdStr} через 3 сек: максимальная частота=${max}, есть данные=${max > 0}`);
+                    
+                    if (max === 0) {
+                        console.warn(`⚠️ Источник ${publisherIdStr} не получает данные из потока!`);
+                        console.warn(`⚠️ Проверка треков:`, audioTracks.map(t => ({
+                            id: t.id,
+                            enabled: t.enabled,
+                            muted: t.muted,
+                            readyState: t.readyState
+                        })));
+                    } else {
+                        console.log(`✅ Источник ${publisherIdStr} получает данные!`);
+                    }
+                    
+                    source.disconnect(analyser);
+                    analyser.disconnect();
+                    // Переподключаем source к gainNode
+                    source.connect(gainNode);
+                } catch (e) {
+                    console.error(`❌ Ошибка проверки источника ${publisherIdStr}:`, e);
+                }
+            }, 3000);
+            
             // Тестовый тон для проверки что микшер работает
             setTimeout(() => {
                 const testOscillator = this.audioContext.createOscillator();
@@ -1053,7 +1118,7 @@ var AudioModule = {
                 testOscillator.start();
                 testOscillator.stop(this.audioContext.currentTime + 0.1);
                 console.log('🔊 Тестовый тон отправлен через микшер для проверки');
-            }, 3000);
+            }, 3500);
         } catch (error) {
             console.error('❌ Ошибка обработки аудио:', error);
             console.error('Детали:', error.stack);
