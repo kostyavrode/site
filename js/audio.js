@@ -816,16 +816,41 @@ var AudioModule = {
                         setTimeout(() => {
                             const pc = handle.webrtcStuff.pc;
                             if (pc) {
+                                // Проверяем статистику соединения
+                                pc.getStats().then(stats => {
+                                    stats.forEach(report => {
+                                        if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+                                            console.log(`📊 Статистика аудио для ${publisherId}:`, {
+                                                bytesReceived: report.bytesReceived,
+                                                packetsReceived: report.packetsReceived,
+                                                packetsLost: report.packetsLost,
+                                                jitter: report.jitter,
+                                                audioLevel: report.audioLevel
+                                            });
+                                            
+                                            if (report.bytesReceived === 0) {
+                                                console.warn(`⚠️ Нет полученных байт для ${publisherId}!`);
+                                            }
+                                        }
+                                    });
+                                });
+                                
                                 const receivers = pc.getReceivers();
                                 const remoteStream = new MediaStream();
                                 
                                 receivers.forEach(receiver => {
-                                    if (receiver.track) {
+                                    if (receiver.track && receiver.track.kind === 'audio') {
+                                        console.log(`🔍 Receiver трек ${receiver.track.id}: enabled=${receiver.track.enabled}, muted=${receiver.track.muted}, readyState=${receiver.track.readyState}`);
                                         remoteStream.addTrack(receiver.track);
                                     }
                                 });
                                 
-                                this.handleRemoteStream(remoteStream, publisherId, displayName);
+                                if (remoteStream.getAudioTracks().length > 0) {
+                                    console.log(`✅ Создан поток из receivers для ${publisherId}, треков: ${remoteStream.getAudioTracks().length}`);
+                                    this.handleRemoteStream(remoteStream, publisherId, displayName);
+                                } else {
+                                    console.warn(`⚠️ Нет аудио треков в receivers для ${publisherId}`);
+                                }
                             }
                         }, 500);
                     }
@@ -834,6 +859,29 @@ var AudioModule = {
                 // Обработка удаленного трека (новый API Janus.js)
                 handle.onremotetrack = (track, mid, on) => {
                     console.log(`🔊 onremotetrack вызван: publisherId=${publisherId}, track.kind=${track.kind}, on=${on}, mid=${mid}, muted=${track.muted}`);
+                    
+                    // Проверяем статистику WebRTC соединения
+                    if (handle.webrtcStuff && handle.webrtcStuff.pc) {
+                        const pc = handle.webrtcStuff.pc;
+                        pc.getStats().then(stats => {
+                            stats.forEach(report => {
+                                if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+                                    console.log(`📊 [onremotetrack] Статистика аудио для ${publisherId}:`, {
+                                        bytesReceived: report.bytesReceived,
+                                        packetsReceived: report.packetsReceived,
+                                        packetsLost: report.packetsLost,
+                                        jitter: report.jitter,
+                                        audioLevel: report.audioLevel,
+                                        totalAudioEnergy: report.totalAudioEnergy
+                                    });
+                                    
+                                    if (report.bytesReceived === 0) {
+                                        console.warn(`⚠️ [onremotetrack] Нет полученных байт для ${publisherId}!`);
+                                    }
+                                }
+                            });
+                        });
+                    }
                     
                     if (track.kind === 'audio' && on) {
                         // Если трек muted - ждем unmute перед обработкой
