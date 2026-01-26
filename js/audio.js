@@ -1015,6 +1015,21 @@ var AudioModule = {
             
             console.log(`🔗 Подключено: source (${source.numberOfOutputs} outputs) -> gainNode (${gainNode.numberOfInputs} inputs, ${gainNode.numberOfOutputs} outputs) -> audioMixer (${this.audioMixer.numberOfInputs} inputs, ${this.audioMixer.numberOfOutputs} outputs)`);
             
+            // Добавляем обработчик для проверки активности трека
+            audioTracks.forEach(track => {
+                track.addEventListener('ended', () => {
+                    console.warn(`⚠️ Трек ${track.id} от ${publisherIdStr} завершен`);
+                });
+                
+                // Проверяем активность трека через некоторое время
+                setTimeout(() => {
+                    console.log(`🔍 Проверка трека ${track.id} через 2 сек: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
+                    if (track.muted) {
+                        console.warn(`⚠️ Трек ${track.id} все еще muted после 2 секунд!`);
+                    }
+                }, 2000);
+            });
+            
             // Сохраняем для управления
             this.streamVolumes.set(publisherIdStr, {
                 gainNode: gainNode,
@@ -1025,6 +1040,20 @@ var AudioModule = {
             
             console.log(`✅ Аудио поток ${publisherIdStr} (${displayName}) подключен к микшеру`);
             console.log(`🔍 AudioContext состояние: ${this.audioContext.state}, audioMixer подключен: ${this.audioMixer.numberOfOutputs > 0}`);
+            console.log(`🔍 AudioContext destination: ${this.audioContext.destination ? 'есть' : 'нет'}, numberOfInputs: ${this.audioContext.destination ? this.audioContext.destination.numberOfInputs : 'N/A'}`);
+            
+            // Тестовый тон для проверки что микшер работает
+            setTimeout(() => {
+                const testOscillator = this.audioContext.createOscillator();
+                const testGain = this.audioContext.createGain();
+                testOscillator.frequency.value = 440; // A4
+                testGain.gain.value = 0.1;
+                testOscillator.connect(testGain);
+                testGain.connect(this.audioMixer);
+                testOscillator.start();
+                testOscillator.stop(this.audioContext.currentTime + 0.1);
+                console.log('🔊 Тестовый тон отправлен через микшер для проверки');
+            }, 3000);
         } catch (error) {
             console.error('❌ Ошибка обработки аудио:', error);
             console.error('Детали:', error.stack);
