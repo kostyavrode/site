@@ -976,7 +976,9 @@ var AudioModule = {
         // Преобразуем publisherId в строку для консистентности
         const publisherIdStr = String(publisherId);
         
-        console.log(`🎵 processAudioForMixing: publisherId=${publisherId} (строка: ${publisherIdStr}), displayName=${displayName}`);
+        console.log(`🎵 processAudioForMixing ВЫЗВАН: publisherId=${publisherId} (строка: ${publisherIdStr}), displayName=${displayName}`);
+        console.log(`🔍 Поток:`, stream);
+        console.log(`🔍 Треков в потоке:`, stream.getAudioTracks().length);
         
         const audioTracks = stream.getAudioTracks();
         if (audioTracks.length === 0) {
@@ -996,6 +998,8 @@ var AudioModule = {
             return;
         }
         
+        console.log(`✅ Все треки unmuted, создаем источник для ${publisherIdStr}...`);
+        
         try {
             // Убеждаемся, что AudioContext активен
             if (this.audioContext.state === 'suspended') {
@@ -1014,14 +1018,19 @@ var AudioModule = {
             
             // Создаем источник из потока
             const source = this.audioContext.createMediaStreamSource(stream);
+            console.log(`✅ Источник создан для ${publisherIdStr}, source:`, source);
             
             // Создаем GainNode для управления громкостью
             const gainNode = this.audioContext.createGain();
             gainNode.gain.value = 1.0; // Начальная громкость 100%
+            console.log(`✅ GainNode создан для ${publisherIdStr}, gain=${gainNode.gain.value}`);
             
             // Подключаем: source -> gainNode -> audioMixer -> destination
             source.connect(gainNode);
+            console.log(`✅ source подключен к gainNode для ${publisherIdStr}`);
+            
             gainNode.connect(this.audioMixer);
+            console.log(`✅ gainNode подключен к audioMixer для ${publisherIdStr}`);
             
             console.log(`🔗 Подключено: source (${source.numberOfOutputs} outputs) -> gainNode (${gainNode.numberOfInputs} inputs, ${gainNode.numberOfOutputs} outputs) -> audioMixer (${this.audioMixer.numberOfInputs} inputs, ${this.audioMixer.numberOfOutputs} outputs)`);
             
@@ -1083,7 +1092,10 @@ var AudioModule = {
             console.log(`🔍 AudioContext состояние: ${this.audioContext.state}, audioMixer подключен: ${this.audioMixer.numberOfOutputs > 0}`);
             console.log(`🔍 AudioContext destination: ${this.audioContext.destination ? 'есть' : 'нет'}, numberOfInputs: ${this.audioContext.destination ? this.audioContext.destination.numberOfInputs : 'N/A'}`);
             
-            // Проверяем источник через AnalyserNode
+            // Проверяем источник через AnalyserNode сразу после создания
+            console.log(`🔍 Создан источник для ${publisherIdStr}, проверяем данные...`);
+            
+            // Первая проверка через 500мс
             setTimeout(() => {
                 try {
                     const analyser = this.audioContext.createAnalyser();
@@ -1094,18 +1106,40 @@ var AudioModule = {
                     analyser.getByteFrequencyData(dataArray);
                     
                     const max = Math.max(...dataArray);
-                    console.log(`🔍 Проверка источника ${publisherIdStr} через 3 сек: максимальная частота=${max}, есть данные=${max > 0}`);
+                    const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+                    console.log(`🔍 [500мс] Источник ${publisherIdStr}: max=${max}, avg=${avg.toFixed(2)}, есть данные=${max > 0}`);
+                    
+                    source.disconnect(analyser);
+                    analyser.disconnect();
+                    // Переподключаем source к gainNode
+                    source.connect(gainNode);
+                } catch (e) {
+                    console.error(`❌ Ошибка проверки источника ${publisherIdStr}:`, e);
+                }
+            }, 500);
+            
+            // Вторая проверка через 2 секунды
+            setTimeout(() => {
+                try {
+                    const analyser = this.audioContext.createAnalyser();
+                    analyser.fftSize = 256;
+                    source.connect(analyser);
+                    
+                    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                    analyser.getByteFrequencyData(dataArray);
+                    
+                    const max = Math.max(...dataArray);
+                    const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+                    console.log(`🔍 [2сек] Источник ${publisherIdStr}: max=${max}, avg=${avg.toFixed(2)}, есть данные=${max > 0}`);
                     
                     if (max === 0) {
-                        console.warn(`⚠️ Источник ${publisherIdStr} не получает данные из потока!`);
+                        console.warn(`⚠️ Источник ${publisherIdStr} НЕ получает данные через 2 секунды!`);
                         console.warn(`⚠️ Проверка треков:`, audioTracks.map(t => ({
                             id: t.id,
                             enabled: t.enabled,
                             muted: t.muted,
                             readyState: t.readyState
                         })));
-                    } else {
-                        console.log(`✅ Источник ${publisherIdStr} получает данные!`);
                     }
                     
                     source.disconnect(analyser);
@@ -1115,7 +1149,30 @@ var AudioModule = {
                 } catch (e) {
                     console.error(`❌ Ошибка проверки источника ${publisherIdStr}:`, e);
                 }
-            }, 3000);
+            }, 2000);
+            
+            // Третья проверка через 5 секунд
+            setTimeout(() => {
+                try {
+                    const analyser = this.audioContext.createAnalyser();
+                    analyser.fftSize = 256;
+                    source.connect(analyser);
+                    
+                    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                    analyser.getByteFrequencyData(dataArray);
+                    
+                    const max = Math.max(...dataArray);
+                    const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+                    console.log(`🔍 [5сек] Источник ${publisherIdStr}: max=${max}, avg=${avg.toFixed(2)}, есть данные=${max > 0}`);
+                    
+                    source.disconnect(analyser);
+                    analyser.disconnect();
+                    // Переподключаем source к gainNode
+                    source.connect(gainNode);
+                } catch (e) {
+                    console.error(`❌ Ошибка проверки источника ${publisherIdStr}:`, e);
+                }
+            }, 5000);
             
             // Тестовый тон для проверки что микшер работает
             setTimeout(() => {
