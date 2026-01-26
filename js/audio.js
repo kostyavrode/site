@@ -548,17 +548,21 @@ var AudioModule = {
             return;
         }
         
+        // Ограничиваем значение (0.0 - 2.0)
+        const clampedVolume = Math.max(0.0, Math.min(2.0, normalizedVolume));
+        
         if (streamData.gainNode) {
-            // Ограничиваем значение (0.0 - 2.0)
-            const clampedVolume = Math.max(0.0, Math.min(2.0, normalizedVolume));
-            
-            // Устанавливаем громкость
+            // Устанавливаем громкость через GainNode (Web Audio API)
             streamData.gainNode.gain.value = clampedVolume;
             streamData.volume = clampedVolume;
-            
-            console.log(`✅ Громкость потока ${publisherIdStr} установлена: ${Math.round(clampedVolume * 100)}%`);
+            console.log(`✅ Громкость потока ${publisherIdStr} установлена через GainNode: ${Math.round(clampedVolume * 100)}%`);
+        } else if (streamData.audioElement) {
+            // Устанавливаем громкость через HTMLAudioElement (только 0.0-1.0)
+            streamData.audioElement.volume = Math.min(1.0, clampedVolume);
+            streamData.volume = clampedVolume;
+            console.log(`✅ Громкость потока ${publisherIdStr} установлена через audioElement: ${Math.round(Math.min(1.0, clampedVolume) * 100)}%`);
         } else {
-            console.warn(`⚠️ GainNode не найден для потока ${publisherIdStr}`);
+            console.warn(`⚠️ Ни GainNode, ни audioElement не найдены для потока ${publisherIdStr}`);
         }
     },
 
@@ -611,11 +615,23 @@ var AudioModule = {
         });
         this.subscriberHandles.clear();
         
-        // Отключаем все потоки от микшера
+        // Отключаем все потоки от микшера и удаляем аудио элементы
         this.streamVolumes.forEach((streamData, publisherId) => {
             try {
-                streamData.source.disconnect();
-                streamData.gainNode.disconnect();
+                if (streamData.source) {
+                    streamData.source.disconnect();
+                }
+                if (streamData.gainNode) {
+                    streamData.gainNode.disconnect();
+                }
+                // Удаляем HTMLAudioElement из DOM
+                if (streamData.audioElement) {
+                    streamData.audioElement.pause();
+                    streamData.audioElement.srcObject = null;
+                    if (streamData.audioElement.parentNode) {
+                        streamData.audioElement.parentNode.removeChild(streamData.audioElement);
+                    }
+                }
             } catch (e) {
                 console.warn(`Ошибка при отключении потока ${publisherId}:`, e);
             }
@@ -1199,15 +1215,31 @@ var AudioModule = {
         
         // Проверяем, есть ли уже источник для этого потока
         const existingData = this.streamVolumes.get(publisherIdStr);
-        if (existingData && existingData.source) {
-            console.log(`⚠️ Поток ${publisherIdStr} уже обработан, источник уже создан`);
+        if (existingData) {
+            // Если audioElement уже существует и воспроизводится - не пересоздаем
+            if (existingData.audioElement && !existingData.audioElement.paused) {
+                console.log(`✅ Поток ${publisherIdStr} уже воспроизводится через audioElement, пропускаем пересоздание`);
+                return;
+            }
             
-            // ВАЖНО: Если источник был создан из muted трека, он может не работать
-            // Пересоздаем источник из нового unmuted потока
-            console.log(`🔄 Пересоздаем источник ${publisherIdStr} из unmuted потока...`);
+            console.log(`⚠️ Поток ${publisherIdStr} уже обработан, но не воспроизводится. Пересоздаем...`);
+            
+            // Очищаем старые ресурсы
             try {
-                existingData.source.disconnect();
-                existingData.gainNode.disconnect();
+                if (existingData.source) {
+                    existingData.source.disconnect();
+                }
+                if (existingData.gainNode) {
+                    existingData.gainNode.disconnect();
+                }
+                // Удаляем старый audioElement
+                if (existingData.audioElement) {
+                    existingData.audioElement.pause();
+                    existingData.audioElement.srcObject = null;
+                    if (existingData.audioElement.parentNode) {
+                        existingData.audioElement.parentNode.removeChild(existingData.audioElement);
+                    }
+                }
             } catch (e) {
                 console.warn(`⚠️ Ошибка отключения старого источника:`, e);
             }
@@ -1420,16 +1452,33 @@ var AudioModule = {
             console.log(`✅ Audio элемент добавлен на страницу для ${publisherIdStr}`);
             
             // Запускаем воспроизведение
-            audioElement.play()
-                .then(() => {
-                    console.log(`✅ Воспроизведение запущено для ${publisherIdStr}`);
-                    console.log(`🔍 audioElement.paused=${audioElement.paused}, volume=${audioElement.volume}, muted=${audioElement.muted}`);
-                })
-                .catch(err => {
-                    console.error(`❌ Ошибка запуска воспроизведения для ${publisherIdStr}:`, err);
-                    // Пробуем с задержкой после взаимодействия пользователя
-                    console.log(`⏳ Пробуем запустить воспроизведение позже...`);
-                });
+            const playPromise = audioElement.play();
+            if (playPromise !== undefined) {
+                playPromise
+                    .then(() => {
+                        console.log(`✅ Воспроизведение запущено для ${publisherIdStr}`);
+                        console.log(`🔍 audioElement.paused=${audioElement.paused}, volume=${audioElement.volume}, muted=${audioElement.muted}`);
+                    })
+                    .catch(err => {
+                        console.error(`❌ Ошибка запуска воспроизведения для ${publisherIdStr}:`, err);
+                        // Autoplay был заблокирован браузером
+                        // Пробуем воспроизвести при следующем взаимодействии пользователя
+                        console.log(`⚠️ Autoplay заблокирован. Ожидаем взаимодействия пользователя...`);
+                        
+                        // Добавляем обработчик клика для запуска воспроизведения
+                        const resumePlayback = () => {
+                            audioElement.play()
+                                .then(() => {
+                                    console.log(`✅ Воспроизведение запущено после взаимодействия для ${publisherIdStr}`);
+                                    document.removeEventListener('click', resumePlayback);
+                                    document.removeEventListener('touchstart', resumePlayback);
+                                })
+                                .catch(e => console.error(`❌ Повторная попытка воспроизведения не удалась:`, e));
+                        };
+                        document.addEventListener('click', resumePlayback, { once: true });
+                        document.addEventListener('touchstart', resumePlayback, { once: true });
+                    });
+            }
             
             // Обработчики событий для отладки
             audioElement.onplay = () => console.log(`▶️ Audio ${publisherIdStr} playing`);
