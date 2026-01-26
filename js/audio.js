@@ -840,16 +840,24 @@ var AudioModule = {
                         if (track.muted) {
                             console.log(`⏳ Трек ${track.id} muted, ждем unmute для ${publisherId}...`);
                             const unmuteHandler = () => {
-                                console.log(`🔊 Трек ${track.id} unmuted для ${publisherId}, обрабатываем...`);
+                                console.log(`🔊 Трек ${track.id} unmuted для ${publisherId}, ждем 100мс перед обработкой...`);
                                 track.removeEventListener('unmute', unmuteHandler);
-                                const stream = new MediaStream([track]);
-                                this.handleRemoteStream(stream, publisherId, displayName);
+                                // Небольшая задержка чтобы трек точно был активен
+                                setTimeout(() => {
+                                    if (!track.muted && track.readyState === 'live') {
+                                        console.log(`✅ Трек ${track.id} активен, создаем источник...`);
+                                        const stream = new MediaStream([track]);
+                                        this.handleRemoteStream(stream, publisherId, displayName);
+                                    } else {
+                                        console.warn(`⚠️ Трек ${track.id} все еще не активен после unmute`);
+                                    }
+                                }, 100);
                             };
                             track.addEventListener('unmute', unmuteHandler);
                             
                             // Проверка через таймаут на случай если событие уже произошло
                             setTimeout(() => {
-                                if (!track.muted) {
+                                if (!track.muted && track.readyState === 'live') {
                                     console.log(`🔊 Трек ${track.id} уже unmuted (таймаут) для ${publisherId}, обрабатываем...`);
                                     track.removeEventListener('unmute', unmuteHandler);
                                     const stream = new MediaStream([track]);
@@ -857,10 +865,21 @@ var AudioModule = {
                                 }
                             }, 1000);
                         } else {
-                            // Трек не muted - обрабатываем сразу
-                            console.log(`🔊 Трек ${track.id} не muted, обрабатываем сразу для ${publisherId}`);
-                            const stream = new MediaStream([track]);
-                            this.handleRemoteStream(stream, publisherId, displayName);
+                            // Трек не muted - обрабатываем сразу, но проверяем readyState
+                            if (track.readyState === 'live') {
+                                console.log(`🔊 Трек ${track.id} не muted и live, обрабатываем сразу для ${publisherId}`);
+                                const stream = new MediaStream([track]);
+                                this.handleRemoteStream(stream, publisherId, displayName);
+                            } else {
+                                console.log(`⏳ Трек ${track.id} не muted но readyState=${track.readyState}, ждем...`);
+                                const liveHandler = () => {
+                                    console.log(`✅ Трек ${track.id} стал live, обрабатываем...`);
+                                    track.removeEventListener('live', liveHandler);
+                                    const stream = new MediaStream([track]);
+                                    this.handleRemoteStream(stream, publisherId, displayName);
+                                };
+                                track.addEventListener('live', liveHandler);
+                            }
                         }
                     } else if (!on) {
                         console.log(`🔇 Трек от publisher ${publisherId} остановлен`);
@@ -912,27 +931,18 @@ var AudioModule = {
         const existingData = this.streamVolumes.get(publisherIdStr);
         if (existingData && existingData.source) {
             console.log(`⚠️ Поток ${publisherIdStr} уже обработан, источник уже создан`);
-            // Проверяем, что источник все еще подключен
+            
+            // ВАЖНО: Если источник был создан из muted трека, он может не работать
+            // Пересоздаем источник из нового unmuted потока
+            console.log(`🔄 Пересоздаем источник ${publisherIdStr} из unmuted потока...`);
             try {
-                if (existingData.source.numberOfOutputs === 0) {
-                    console.warn(`⚠️ Источник ${publisherIdStr} отключен, пересоздаем...`);
-                    // Удаляем старый источник
-                    existingData.source.disconnect();
-                    existingData.gainNode.disconnect();
-                    this.streamVolumes.delete(publisherIdStr);
-                } else {
-                    console.log(`✅ Источник ${publisherIdStr} активен, numberOfOutputs=${existingData.source.numberOfOutputs}`);
-                    return;
-                }
+                existingData.source.disconnect();
+                existingData.gainNode.disconnect();
             } catch (e) {
-                console.warn(`⚠️ Ошибка проверки источника ${publisherIdStr}, пересоздаем:`, e);
-                // Удаляем старый источник
-                try {
-                    existingData.source.disconnect();
-                    existingData.gainNode.disconnect();
-                } catch (e2) {}
-                this.streamVolumes.delete(publisherIdStr);
+                console.warn(`⚠️ Ошибка отключения старого источника:`, e);
             }
+            this.streamVolumes.delete(publisherIdStr);
+            // Продолжаем создавать новый источник
         }
         
         // Сохраняем поток
