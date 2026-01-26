@@ -863,24 +863,46 @@ var AudioModule = {
                     // Проверяем статистику WebRTC соединения
                     if (handle.webrtcStuff && handle.webrtcStuff.pc) {
                         const pc = handle.webrtcStuff.pc;
-                        pc.getStats().then(stats => {
-                            stats.forEach(report => {
-                                if (report.type === 'inbound-rtp' && report.kind === 'audio') {
-                                    console.log(`📊 [onremotetrack] Статистика аудио для ${publisherId}:`, {
-                                        bytesReceived: report.bytesReceived,
-                                        packetsReceived: report.packetsReceived,
-                                        packetsLost: report.packetsLost,
-                                        jitter: report.jitter,
-                                        audioLevel: report.audioLevel,
-                                        totalAudioEnergy: report.totalAudioEnergy
-                                    });
-                                    
-                                    if (report.bytesReceived === 0) {
-                                        console.warn(`⚠️ [onremotetrack] Нет полученных байт для ${publisherId}!`);
+                        setTimeout(() => {
+                            pc.getStats().then(stats => {
+                                console.log(`📊 Статистика WebRTC для ${publisherId}:`);
+                                let hasInboundRtp = false;
+                                stats.forEach(report => {
+                                    if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+                                        hasInboundRtp = true;
+                                        console.log(`📊 inbound-rtp (audio):`, {
+                                            bytesReceived: report.bytesReceived,
+                                            packetsReceived: report.packetsReceived,
+                                            packetsLost: report.packetsLost,
+                                            jitter: report.jitter,
+                                            audioLevel: report.audioLevel,
+                                            totalAudioEnergy: report.totalAudioEnergy,
+                                            framesDecoded: report.framesDecoded
+                                        });
+                                        
+                                        if (report.bytesReceived === 0) {
+                                            console.error(`❌ КРИТИЧНО: Нет полученных байт для ${publisherId}! Отправитель не отправляет данные или соединение не установлено!`);
+                                        } else {
+                                            console.log(`✅ Получено ${report.bytesReceived} байт от ${publisherId}`);
+                                        }
                                     }
+                                    if (report.type === 'transport') {
+                                        console.log(`📊 transport:`, {
+                                            bytesReceived: report.bytesReceived,
+                                            bytesSent: report.bytesSent,
+                                            dtlsState: report.dtlsState,
+                                            iceConnectionState: report.iceConnectionState
+                                        });
+                                    }
+                                });
+                                
+                                if (!hasInboundRtp) {
+                                    console.error(`❌ КРИТИЧНО: Нет inbound-rtp статистики для ${publisherId}! WebRTC соединение не установлено или не настроено правильно!`);
                                 }
+                            }).catch(e => {
+                                console.error(`❌ Ошибка получения статистики для ${publisherId}:`, e);
                             });
-                        });
+                        }, 1000);
                     }
                     
                     if (track.kind === 'audio' && on) {
