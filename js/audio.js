@@ -759,12 +759,15 @@ var AudioModule = {
         
         console.log(`📡 Подписываемся на publisher ${publisherId} (${displayName})`);
         
+        // Приводим publisherId к строке для консистентности
+        const publisherIdStr = String(publisherId);
+        
         // Создаем отдельный handle для каждого subscriber
         this.janus.attach({
             plugin: 'janus.plugin.videoroom',
-            opaqueId: `subscriber-${publisherId}`,
+            opaqueId: `subscriber-${publisherIdStr}`,
             success: (handle) => {
-                this.subscriberHandles.set(publisherId, handle);
+                this.subscriberHandles.set(publisherIdStr, handle);
                 
                 // Присоединяемся как subscriber
                 handle.send({
@@ -780,8 +783,8 @@ var AudioModule = {
                         // Сервер отправит offer в onmessage
                     },
                     error: (error) => {
-                        console.error(`❌ Ошибка подписки на publisher ${publisherId}:`, error);
-                        this.subscriberHandles.delete(publisherId);
+                        console.error(`❌ Ошибка подписки на publisher ${publisherIdStr}:`, error);
+                        this.subscriberHandles.delete(publisherIdStr);
                     }
                 });
                 
@@ -1190,8 +1193,54 @@ var AudioModule = {
                 this.audioMixer.connect(this.audioContext.destination);
             }
             
-            // Создаем источник из потока
-            const source = this.audioContext.createMediaStreamSource(stream);
+            // ВАЖНО: Получаем трек напрямую из RTCRtpReceiver, а не из потока
+            // Поток может быть создан из muted трека и не работать
+            let activeTrack = null;
+            const subscriberHandle = this.subscriberHandles.get(publisherIdStr);
+            if (subscriberHandle && subscriberHandle.webrtcStuff && subscriberHandle.webrtcStuff.pc) {
+                const pc = subscriberHandle.webrtcStuff.pc;
+                const receivers = pc.getReceivers();
+                console.log(`🔍 Проверяем ${receivers.length} receivers для ${publisherIdStr}`);
+                for (const receiver of receivers) {
+                    if (receiver.track && receiver.track.kind === 'audio') {
+                        console.log(`🔍 Receiver трек ${receiver.track.id}: muted=${receiver.track.muted}, readyState=${receiver.track.readyState}, enabled=${receiver.track.enabled}`);
+                        if (!receiver.track.muted && receiver.track.readyState === 'live' && receiver.track.enabled) {
+                            activeTrack = receiver.track;
+                            console.log(`✅ Найден активный трек в receiver: ${activeTrack.id}`);
+                            break;
+                        }
+                    }
+                }
+            } else {
+                console.warn(`⚠️ Subscriber handle не найден для ${publisherIdStr}`);
+            }
+            
+            // Если не нашли в receiver, используем трек из потока
+            if (!activeTrack) {
+                console.log(`⚠️ Трек не найден в receiver, ищем в потоке...`);
+                activeTrack = audioTracks.find(track => !track.muted && track.readyState === 'live' && track.enabled);
+                if (activeTrack) {
+                    console.log(`✅ Используем трек из потока: ${activeTrack.id}`);
+                }
+            }
+            
+            if (!activeTrack) {
+                console.error(`❌ Не найден активный трек для ${publisherIdStr}!`);
+                console.error(`🔍 Доступные треки в потоке:`, audioTracks.map(t => ({
+                    id: t.id,
+                    muted: t.muted,
+                    enabled: t.enabled,
+                    readyState: t.readyState
+                })));
+                return;
+            }
+            
+            // Создаем поток из активного трека
+            const activeStream = new MediaStream([activeTrack]);
+            console.log(`✅ Создан поток из активного трека ${activeTrack.id}`);
+            
+            // Создаем источник из потока с активным треком
+            const source = this.audioContext.createMediaStreamSource(activeStream);
             console.log(`✅ Источник создан для ${publisherIdStr}, source:`, source);
             
             // Создаем GainNode для управления громкостью
@@ -1386,14 +1435,15 @@ var AudioModule = {
         this.remoteStreams.delete(publisherId);
         
         // Закрываем subscriber handle
-        const handle = this.subscriberHandles.get(publisherId);
+        const publisherIdStr = String(publisherId);
+        const handle = this.subscriberHandles.get(publisherIdStr);
         if (handle) {
             try {
                 handle.detach();
             } catch (e) {
                 console.warn(`Ошибка при закрытии subscriber handle для ${publisherId}:`, e);
             }
-            this.subscriberHandles.delete(publisherId);
+            this.subscriberHandles.delete(publisherIdStr);
         }
         
         // Обновляем UI
