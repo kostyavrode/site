@@ -956,9 +956,59 @@ var AudioModule = {
                     }
                 };
                 
-                // Альтернативный способ получения потока (старый API)
+                // Альтернативный способ получения потока (старый API) - ПРИОРИТЕТНЫЙ
                 handle.onremotestream = (stream) => {
-                    console.log(`🔊 [Legacy] Получен удаленный поток от publisher ${publisherId}, треков: ${stream.getAudioTracks().length}`);
+                    console.log(`🔊 [onremotestream] Получен удаленный поток от publisher ${publisherId}, треков: ${stream.getAudioTracks().length}`);
+                    
+                    // Проверяем статистику WebRTC
+                    if (handle.webrtcStuff && handle.webrtcStuff.pc) {
+                        const pc = handle.webrtcStuff.pc;
+                        setTimeout(() => {
+                            pc.getStats().then(stats => {
+                                console.log(`📊 [onremotestream] Статистика WebRTC для ${publisherId}:`);
+                                let hasInboundRtp = false;
+                                stats.forEach(report => {
+                                    if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+                                        hasInboundRtp = true;
+                                        console.log(`📊 inbound-rtp (audio):`, {
+                                            bytesReceived: report.bytesReceived,
+                                            packetsReceived: report.packetsReceived,
+                                            packetsLost: report.packetsLost,
+                                            jitter: report.jitter,
+                                            audioLevel: report.audioLevel,
+                                            totalAudioEnergy: report.totalAudioEnergy
+                                        });
+                                        
+                                        if (report.bytesReceived === 0) {
+                                            console.error(`❌ КРИТИЧНО: Нет полученных байт для ${publisherId}! Отправитель не отправляет данные!`);
+                                        } else {
+                                            console.log(`✅ Получено ${report.bytesReceived} байт от ${publisherId}`);
+                                        }
+                                    }
+                                    if (report.type === 'transport') {
+                                        console.log(`📊 transport:`, {
+                                            bytesReceived: report.bytesReceived,
+                                            bytesSent: report.bytesSent,
+                                            dtlsState: report.dtlsState,
+                                            iceConnectionState: report.iceConnectionState
+                                        });
+                                    }
+                                });
+                                
+                                if (!hasInboundRtp) {
+                                    console.error(`❌ КРИТИЧНО: Нет inbound-rtp статистики для ${publisherId}!`);
+                                }
+                            }).catch(e => {
+                                console.error(`❌ Ошибка получения статистики:`, e);
+                            });
+                        }, 2000);
+                    }
+                    
+                    // Используем onremotestream как основной способ (более надежный)
+                    stream.getAudioTracks().forEach(track => {
+                        console.log(`🔍 [onremotestream] Трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
+                    });
+                    
                     this.handleRemoteStream(stream, publisherId, displayName);
                 };
                 
@@ -966,7 +1016,61 @@ var AudioModule = {
                     console.log(`🔊 ontrack вызван: publisherId=${publisherId}, streams.length=${event.streams ? event.streams.length : 0}`);
                     if (event.streams && event.streams.length > 0) {
                         console.log(`🔊 [ontrack] Получен поток от publisher ${publisherId}`);
+                        event.streams[0].getAudioTracks().forEach(track => {
+                            console.log(`🔍 [ontrack] Трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
+                        });
                         this.handleRemoteStream(event.streams[0], publisherId, displayName);
+                    }
+                };
+                
+                // Проверяем статистику после установки WebRTC соединения
+                handle.webrtcState = (on) => {
+                    if (on) {
+                        console.log(`✅ WebRTC соединение установлено для subscriber ${publisherId}`);
+                        
+                        // Проверяем статистику через 2 секунды после установки соединения
+                        setTimeout(() => {
+                            if (handle.webrtcStuff && handle.webrtcStuff.pc) {
+                                const pc = handle.webrtcStuff.pc;
+                                pc.getStats().then(stats => {
+                                    console.log(`📊 [webrtcState] Статистика WebRTC для subscriber ${publisherId}:`);
+                                    let hasInboundRtp = false;
+                                    stats.forEach(report => {
+                                        if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+                                            hasInboundRtp = true;
+                                            console.log(`📊 inbound-rtp (audio):`, {
+                                                bytesReceived: report.bytesReceived,
+                                                packetsReceived: report.packetsReceived,
+                                                packetsLost: report.packetsLost,
+                                                jitter: report.jitter,
+                                                audioLevel: report.audioLevel,
+                                                totalAudioEnergy: report.totalAudioEnergy
+                                            });
+                                            
+                                            if (report.bytesReceived === 0) {
+                                                console.error(`❌ КРИТИЧНО: Нет полученных байт для subscriber ${publisherId}! Отправитель не отправляет данные!`);
+                                            } else {
+                                                console.log(`✅ Получено ${report.bytesReceived} байт для subscriber ${publisherId}`);
+                                            }
+                                        }
+                                        if (report.type === 'transport') {
+                                            console.log(`📊 transport:`, {
+                                                bytesReceived: report.bytesReceived,
+                                                bytesSent: report.bytesSent,
+                                                dtlsState: report.dtlsState,
+                                                iceConnectionState: report.iceConnectionState
+                                            });
+                                        }
+                                    });
+                                    
+                                    if (!hasInboundRtp) {
+                                        console.error(`❌ КРИТИЧНО: Нет inbound-rtp статистики для subscriber ${publisherId}!`);
+                                    }
+                                }).catch(e => {
+                                    console.error(`❌ Ошибка получения статистики для subscriber ${publisherId}:`, e);
+                                });
+                            }
+                        }, 2000);
                     }
                 };
             },
