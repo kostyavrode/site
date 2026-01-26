@@ -1367,15 +1367,31 @@ var AudioModule = {
                 return;
             }
             
-            // Создаем поток из активного трека (если трек из receiver)
-            if (activeTrack !== activeTracks[0]) {
-                activeStream = new MediaStream([activeTrack]);
-                console.log(`✅ Создан новый поток из активного трека ${activeTrack.id}`);
+            // ВАЖНО: Используем трек напрямую из receiver, а не из потока
+            // Проверяем, что трек в потоке - это тот же объект, что и трек в receiver
+            let finalTrack = activeTrack;
+            if (subscriberHandle && subscriberHandle.webrtcStuff && subscriberHandle.webrtcStuff.pc) {
+                const pc = subscriberHandle.webrtcStuff.pc;
+                const receivers = pc.getReceivers();
+                for (const receiver of receivers) {
+                    if (receiver.track && receiver.track.kind === 'audio' && receiver.track.id === activeTrack.id) {
+                        // Используем трек напрямую из receiver - это тот же объект, который получает данные
+                        finalTrack = receiver.track;
+                        console.log(`✅ Используем трек напрямую из receiver: ${finalTrack.id} (тот же объект)`);
+                        break;
+                    }
+                }
             }
             
-            // Создаем источник из потока с активным треком
-            const source = this.audioContext.createMediaStreamSource(activeStream);
+            // Создаем поток из финального трека (из receiver)
+            const finalStream = new MediaStream([finalTrack]);
+            console.log(`✅ Создан поток из трека receiver для ${publisherIdStr}, трек: ${finalTrack.id}`);
+            console.log(`🔍 Финальный трек: enabled=${finalTrack.enabled}, muted=${finalTrack.muted}, readyState=${finalTrack.readyState}`);
+            
+            // Создаем источник из потока с треком из receiver
+            const source = this.audioContext.createMediaStreamSource(finalStream);
             console.log(`✅ Источник создан для ${publisherIdStr}, source:`, source);
+            console.log(`🔍 Источник создан из потока с треком ${finalTrack.id}, поток активен: ${finalStream.active}`);
             
             // Создаем GainNode для управления громкостью
             const gainNode = this.audioContext.createGain();
