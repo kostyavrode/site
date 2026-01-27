@@ -764,11 +764,115 @@ var AudioModule = {
             // Ошибки
             if (event.error_code) {
                 console.error('❌ Ошибка от Janus:', event.error_code, event.error);
+                
+                // Ошибка 426 - комната не существует (после перезагрузки Janus)
+                // Автоматически создаем комнату и повторяем подключение
+                if (event.error_code === 426) {
+                    console.log('🔄 Комната не существует, создаем автоматически...');
+                    this.createRoomAndRejoin();
+                    return; // Не показываем ошибку пользователю
+                }
+                
                 if (window.onAudioError) {
                     window.onAudioError(event.error || `Ошибка ${event.error_code}`);
                 }
             }
         }
+    },
+    
+    // Создать комнату и повторить подключение
+    async createRoomAndRejoin() {
+        if (!this.publisherHandle) {
+            console.error('❌ publisherHandle не найден для создания комнаты');
+            return;
+        }
+        
+        console.log(`📦 Создаем комнату ${this.roomId}...`);
+        
+        // Создаем комнату через Janus API
+        this.publisherHandle.send({
+            message: {
+                request: 'create',
+                room: this.roomId,
+                description: `Audio channel ${this.channelId}`,
+                publishers: 50, // Максимальное количество publishers
+                bitrate: 128000,
+                audiocodec: 'opus',
+                permanent: false // Не сохранять после перезагрузки Janus
+            },
+            success: (result) => {
+                console.log('✅ Комната создана:', result);
+                
+                // Повторяем подключение к комнате
+                this.publisherHandle.send({
+                    message: {
+                        request: 'join',
+                        room: this.roomId,
+                        ptype: 'publisher',
+                        display: this.displayName
+                    },
+                    success: (joinResult) => {
+                        console.log('✅ Присоединились к созданной комнате:', joinResult);
+                        
+                        // Публикуем поток
+                        const hasAudio = this.localStream && this.localStream.getAudioTracks().length > 0;
+                        if (hasAudio) {
+                            this.publisherHandle.createOffer({
+                                media: { 
+                                    audioRecv: false, 
+                                    videoRecv: false, 
+                                    audioSend: true, 
+                                    videoSend: false
+                                },
+                                stream: this.localStream,
+                                success: (jsep) => {
+                                    this.publisherHandle.send({
+                                        message: {
+                                            request: 'publish',
+                                            audio: true,
+                                            video: false
+                                        },
+                                        jsep: jsep
+                                    });
+                                },
+                                error: (error) => {
+                                    console.error('❌ Create offer error after room creation:', error);
+                                }
+                            });
+                        }
+                        
+                        // Запрашиваем список publishers
+                        this.requestPublishersList();
+                    },
+                    error: (error) => {
+                        console.error('❌ Join error after room creation:', error);
+                        if (window.onAudioError) {
+                            window.onAudioError(error);
+                        }
+                    }
+                });
+            },
+            error: (error) => {
+                // Ошибка 427 - комната уже существует (race condition)
+                if (error && error.error_code === 427) {
+                    console.log('⚠️ Комната уже существует, пытаемся присоединиться...');
+                    // Повторяем присоединение
+                    this.publisherHandle.send({
+                        message: {
+                            request: 'join',
+                            room: this.roomId,
+                            ptype: 'publisher',
+                            display: this.displayName
+                        }
+                    });
+                } else {
+                    console.error('❌ Ошибка создания комнаты:', error);
+                    if (window.onAudioError) {
+                        window.onAudioError(error.error || 'Ошибка создания комнаты');
+                    }
+                }
+            }
+        });
     },
 
     // Подписаться на поток другого publisher
