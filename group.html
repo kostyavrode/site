@@ -845,6 +845,9 @@
                 return;
             }
             
+            // Проверяем, находится ли пользователь в этом канале
+            const isUserInChannel = currentAudioChannel !== null;
+            
             container.innerHTML = participants.map(participant => {
                 const name = participant.display || participant.displayName || participant.name || 'Пользователь';
                 const participantId = participant.id || participant.userId || name;
@@ -862,6 +865,11 @@
                     console.warn('Не удалось загрузить громкость:', e);
                 }
                 
+                // Ползунок громкости показывается только если:
+                // 1. Это не вы сами
+                // 2. Пользователь находится в этом канале (currentAudioChannel установлен)
+                const showVolumeSlider = !isYou && isUserInChannel;
+                
                 return `
                     <div style="padding: var(--spacing-sm); margin-bottom: var(--spacing-sm); background-color: var(--bg-secondary); border-radius: var(--border-radius); ${isYou ? 'border-left: 3px solid var(--accent-green);' : ''}">
                         <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--spacing-xs);">
@@ -869,7 +877,7 @@
                                 ${isYou ? '🎤 ' : '🔊 '}${Utils.escapeHtml(name)}${isYou ? ' (Вы)' : ''}
                             </div>
                         </div>
-                        ${!isYou ? `
+                        ${showVolumeSlider ? `
                             <div style="display: flex; align-items: center; gap: var(--spacing-xs);">
                                 <span style="font-size: 11px; color: var(--text-secondary); min-width: 30px;">🔊</span>
                                 <input type="range" 
@@ -945,7 +953,40 @@
             await audioModule.setParticipantVolume(participantId, volume);
         }
         
+        // Хранилище участников по каналам: Map<channelId, Map<participantId, participant>>
+        const channelParticipantsMap = new Map();
+        
+        // Участники текущего канала (для обратной совместимости)
         const participantsMap = new Map();
+
+        // Функция для обновления счетчика и краткого списка участников канала
+        function updateChannelParticipantsDisplay(channelId) {
+            const channelParticipants = channelParticipantsMap.get(channelId) || new Map();
+            const participantsArray = Array.from(channelParticipants.values());
+            const count = participantsArray.length;
+            
+            // Обновляем счетчик
+            const countEl = document.getElementById(`participantsCount-${channelId}`);
+            if (countEl) {
+                countEl.textContent = `${count} участников`;
+            }
+            
+            // Обновляем краткий список участников в карточке канала
+            const participantsContainer = document.getElementById(`channelParticipants-${channelId}`);
+            if (participantsContainer) {
+                if (count > 0) {
+                    const names = participantsArray.map(p => p.displayName || p.display || 'User').join(', ');
+                    participantsContainer.innerHTML = `<span style="color: var(--accent-green);">🎤 ${count}:</span> ${Utils.escapeHtml(names)}`;
+                } else {
+                    participantsContainer.innerHTML = '<span style="color: var(--text-secondary);">Пусто</span>';
+                }
+            }
+            
+            // Если это текущий канал, обновляем детальный список участников
+            if (channelId === currentAudioChannel) {
+                displayAudioParticipants(participantsArray);
+            }
+        }
 
         window.onParticipantsUpdate = (participants, participantId) => {
             console.log('🔄 Обновление UI участников:', participants);
@@ -990,16 +1031,7 @@
             
             // Обновляем счетчик в карточке канала
             if (currentAudioChannel) {
-                const countEl = document.getElementById(`participantsCount-${currentAudioChannel}`);
-                if (countEl) {
-                    const count = Array.isArray(participants) ? participants.length : participantsMap.size;
-                    countEl.textContent = `${count} участников`;
-                    console.log(`📊 Обновлен счетчик для канала ${currentAudioChannel}: ${count} участников`);
-                }
-                
-                // Обновляем список участников в sidebar
-                const participantsArray = Array.from(participantsMap.values());
-                displayAudioParticipants(participantsArray);
+                updateChannelParticipantsDisplay(currentAudioChannel);
             } else {
                 console.warn('⚠️ currentAudioChannel не установлен, не могу обновить счетчик');
                 const section = document.getElementById('audioParticipantsSection');
@@ -1012,40 +1044,39 @@
         window.onAudioParticipantJoined = (data) => {
             console.log('🔊 Участник подключился к аудио каналу:', data);
             
-            if (data.channelId === currentAudioChannel) {
-                const participant = {
-                    id: data.participantId,
-                    display: data.displayName,
-                    displayName: data.displayName,
-                    userId: data.userId
-                };
-                
-                participantsMap.set(data.participantId.toString(), participant);
-                
-                const participantsArray = Array.from(participantsMap.values());
-                displayAudioParticipants(participantsArray);
-                
-                const countEl = document.getElementById(`participantsCount-${currentAudioChannel}`);
-                if (countEl) {
-                    countEl.textContent = `${participantsArray.length} участников`;
-                }
+            const participant = {
+                id: data.participantId,
+                display: data.displayName,
+                displayName: data.displayName,
+                userId: data.userId
+            };
+            
+            // Получаем или создаем Map участников для этого канала
+            if (!channelParticipantsMap.has(data.channelId)) {
+                channelParticipantsMap.set(data.channelId, new Map());
             }
+            const channelParticipants = channelParticipantsMap.get(data.channelId);
+            channelParticipants.set(data.participantId.toString(), participant);
+            
+            // Обновляем отображение для этого канала (счетчик и краткий список)
+            updateChannelParticipantsDisplay(data.channelId);
         };
 
         window.onAudioParticipantLeft = (data) => {
             console.log('🔇 Участник отключился от аудио канала:', data);
             
-            if (data.channelId === currentAudioChannel) {
-                participantsMap.delete(data.participantId.toString());
+            const channelParticipants = channelParticipantsMap.get(data.channelId);
+            if (channelParticipants) {
+                channelParticipants.delete(data.participantId.toString());
                 
-                const participantsArray = Array.from(participantsMap.values());
-                displayAudioParticipants(participantsArray);
-                
-                const countEl = document.getElementById(`participantsCount-${currentAudioChannel}`);
-                if (countEl) {
-                    countEl.textContent = `${participantsArray.length} участников`;
+                // Если участников не осталось, можно удалить Map для этого канала
+                if (channelParticipants.size === 0) {
+                    channelParticipantsMap.delete(data.channelId);
                 }
             }
+            
+            // Обновляем отображение для этого канала (счетчик и краткий список)
+            updateChannelParticipantsDisplay(data.channelId);
         };
         
         // Обработка получения нового сообщения
@@ -1133,7 +1164,11 @@
             
             const channelHtml = !channels || channels.length === 0 
                 ? '<p style="color: var(--text-secondary);">Нет аудио каналов</p>'
-                : channels.map(channel => `
+                : channels.map(channel => {
+                    // Обновляем отображение участников для этого канала после создания HTML
+                    setTimeout(() => updateChannelParticipantsDisplay(channel.id), 0);
+                    
+                    return `
                     <div class="audio-channel" data-channel-id="${channel.id}" data-janus-room="${channel.janusRoomId}">
                         <div style="font-weight: 600; margin-bottom: var(--spacing-sm);">${Utils.escapeHtml(channel.name)}</div>
                         ${channel.description ? `<div style="font-size: 12px; color: var(--text-secondary); margin-bottom: var(--spacing-sm);">${Utils.escapeHtml(channel.description)}</div>` : ''}
@@ -1150,7 +1185,8 @@
                             </div>
                         </div>
                     </div>
-                `).join('');
+                `;
+                }).join('');
             
             if (container) {
                 container.innerHTML = channelHtml;

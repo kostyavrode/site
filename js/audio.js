@@ -653,7 +653,7 @@ var AudioModule = {
             try {
                 this.publisherHandle.send({ message: { request: 'leave' } });
                 this.publisherHandle.detach();
-            } catch (error) {
+        } catch (error) {
                 console.error('Leave room error:', error);
             }
             this.publisherHandle = null;
@@ -910,8 +910,8 @@ var AudioModule = {
                     success: (result) => {
                         console.log(`✅ Подписались на publisher ${publisherId}`);
                         // Сервер отправит offer в onmessage
-                    },
-                    error: (error) => {
+                        },
+                            error: (error) => {
                         console.error(`❌ Ошибка подписки на publisher ${publisherIdStr}:`, error);
                         this.subscriberHandles.delete(publisherIdStr);
                     }
@@ -962,7 +962,7 @@ var AudioModule = {
                                             
                                             if (report.bytesReceived === 0) {
                                                 console.warn(`⚠️ Нет полученных байт для ${publisherIdStr}!`);
-                                            } else {
+                } else {
                                                 console.log(`✅ [started] Получено ${report.bytesReceived} байт для ${publisherIdStr}`);
                                             }
                                         }
@@ -1007,7 +1007,7 @@ var AudioModule = {
                     // Проверяем статистику WebRTC соединения
                     if (handle.webrtcStuff && handle.webrtcStuff.pc) {
                         const pc = handle.webrtcStuff.pc;
-                        setTimeout(() => {
+                                setTimeout(() => {
                             pc.getStats().then(stats => {
                                 console.log(`📊 Статистика WebRTC для ${publisherId}:`);
                                 let hasInboundRtp = false;
@@ -1046,7 +1046,7 @@ var AudioModule = {
                             }).catch(e => {
                                 console.error(`❌ Ошибка получения статистики для ${publisherId}:`, e);
                             });
-                        }, 1000);
+                                }, 1000);
                     }
                     
                     if (track.kind === 'audio' && on) {
@@ -1316,8 +1316,8 @@ var AudioModule = {
         const audioTracks = stream.getAudioTracks();
         if (audioTracks.length === 0) {
             console.warn(`⚠️ Нет аудио треков в потоке для ${publisherIdStr}`);
-            return;
-        }
+                                return;
+                            }
         
         // Проверяем, есть ли muted треки
         const mutedTracks = audioTracks.filter(track => track.muted);
@@ -1381,7 +1381,7 @@ var AudioModule = {
             }
             
             this.processAudioForMixing(stream, publisherId, displayName);
-        } else {
+                    } else {
             console.warn(`⚠️ AudioContext не инициализирован: audioContext=${!!this.audioContext}, audioMixer=${!!this.audioMixer}`);
         }
     },
@@ -1410,9 +1410,9 @@ var AudioModule = {
         const mutedTracks = audioTracks.filter(track => track.muted);
         if (mutedTracks.length > 0) {
             console.warn(`⚠️ Поток ${publisherIdStr} содержит ${mutedTracks.length} muted треков, не создаем источник`);
-            return;
-        }
-        
+                    return;
+                }
+                
         console.log(`✅ Все треки unmuted, создаем источник для ${publisherIdStr}...`);
         
         try {
@@ -1454,7 +1454,7 @@ var AudioModule = {
                 activeStream.getAudioTracks().forEach(track => {
                     console.log(`🔍 [processAudioForMixing] Трек в handle.remoteStream: id=${track.id}, enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
                 });
-            } else {
+                    } else {
                 console.log(`⚠️ [processAudioForMixing] handle.remoteStream не найден для ${publisherIdStr}`);
                 if (subscriberHandle) {
                     console.log(`🔍 [processAudioForMixing] handle.webrtcStuff:`, subscriberHandle.webrtcStuff ? 'есть' : 'НЕТ');
@@ -1795,7 +1795,7 @@ var AudioModule = {
                 testOscillator.stop(this.audioContext.currentTime + 0.1);
                 console.log('🔊 Тестовый тон отправлен через микшер для проверки');
             }, 3500);
-        } catch (error) {
+                } catch (error) {
             console.error('❌ Ошибка обработки аудио:', error);
             console.error('Детали:', error.stack);
         }
