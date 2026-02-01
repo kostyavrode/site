@@ -32,6 +32,12 @@ var AudioModule = {
     streamVolumes: new Map(), // Map<PublisherId, {gainNode, source, volume, display}>
     remoteStreams: new Map(), // Map<PublisherId, MediaStream>
     pendingPublishers: new Map(), // Map<PublisherId, {id, display}> - publishers, на которых подписались, но поток ещё не получен
+    
+    // Управление видео (screen share / webcam)
+    localVideoStream: null, // Локальный видео-поток (screen или camera)
+    isScreenSharing: false, // Флаг демонстрации экрана
+    isCameraEnabled: false, // Флаг веб-камеры
+    remoteVideoStreams: new Map(), // Map<PublisherId, {stream, videoElement, display}> - удаленные видео-потоки
 
     async init(roomId, channelId = null, displayName = 'User') {
         console.log('🎯 Audio.init:', roomId, channelId, displayName);
@@ -667,6 +673,33 @@ var AudioModule = {
             this.localStream = null;
         }
         
+        // Останавливаем видео-поток
+        if (this.localVideoStream) {
+            this.localVideoStream.getTracks().forEach(track => track.stop());
+            this.localVideoStream = null;
+        }
+        this.isScreenSharing = false;
+        this.isCameraEnabled = false;
+        
+        // Очищаем удаленные видео-потоки
+        this.remoteVideoStreams.forEach((videoData, publisherId) => {
+            try {
+                if (videoData.videoElement) {
+                    videoData.videoElement.pause();
+                    videoData.videoElement.srcObject = null;
+                    if (videoData.videoElement.parentNode) {
+                        videoData.videoElement.parentNode.removeChild(videoData.videoElement);
+                    }
+                }
+                if (videoData.stream) {
+                    videoData.stream.getTracks().forEach(track => track.stop());
+                }
+            } catch (e) {
+                console.warn(`Ошибка при очистке видео-потока ${publisherId}:`, e);
+            }
+        });
+        this.remoteVideoStreams.clear();
+        
         // Закрываем AudioContext
         if (this.audioContext && this.audioContext.state !== 'closed') {
             try {
@@ -707,6 +740,278 @@ var AudioModule = {
         this.participantId = null;
         this.roomId = null;
         this.isMuted = false;
+    },
+
+    // ============================================
+    // Методы для работы с видео (screen share / webcam)
+    // ============================================
+    
+    // Запустить демонстрацию экрана
+    async startScreenShare() {
+        if (this.isScreenSharing) {
+            console.warn('⚠️ Демонстрация экрана уже активна');
+            return false;
+        }
+        
+        if (!this.publisherHandle) {
+            console.error('❌ Publisher handle не найден. Подключитесь к каналу сначала.');
+            return false;
+        }
+        
+        try {
+            console.log('🖥️ Запускаем демонстрацию экрана...');
+            
+            // Останавливаем камеру, если она была включена
+            if (this.isCameraEnabled) {
+                await this.stopVideo();
+            }
+            
+            // Запрашиваем доступ к экрану
+            const stream = await navigator.mediaDevices.getDisplayMedia({
+                video: {
+                    cursor: 'always',
+                    displaySurface: 'monitor'
+                },
+                audio: false // Экран не передает аудио
+            });
+            
+            this.localVideoStream = stream;
+            this.isScreenSharing = true;
+            
+            // Обработка остановки пользователем через UI браузера
+            stream.getVideoTracks()[0].addEventListener('ended', () => {
+                console.log('🖥️ Пользователь остановил демонстрацию экрана через UI браузера');
+                this.stopVideo();
+            });
+            
+            // Публикуем видео-трек
+            await this.publishVideo(stream);
+            
+            console.log('✅ Демонстрация экрана запущена');
+            return true;
+        } catch (error) {
+            console.error('❌ Ошибка при запуске демонстрации экрана:', error);
+            this.isScreenSharing = false;
+            this.localVideoStream = null;
+            return false;
+        }
+    },
+    
+    // Запустить веб-камеру
+    async startCamera() {
+        if (this.isCameraEnabled) {
+            console.warn('⚠️ Веб-камера уже активна');
+            return false;
+        }
+        
+        if (!this.publisherHandle) {
+            console.error('❌ Publisher handle не найден. Подключитесь к каналу сначала.');
+            return false;
+        }
+        
+        try {
+            console.log('📷 Запускаем веб-камеру...');
+            
+            // Останавливаем screen share, если он был включен
+            if (this.isScreenSharing) {
+                await this.stopVideo();
+            }
+            
+            // Запрашиваем доступ к камере
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: {
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 },
+                    facingMode: 'user'
+                },
+                audio: false // Аудио уже идет отдельно
+            });
+            
+            this.localVideoStream = stream;
+            this.isCameraEnabled = true;
+            
+            // Публикуем видео-трек
+            await this.publishVideo(stream);
+            
+            console.log('✅ Веб-камера запущена');
+            return true;
+        } catch (error) {
+            console.error('❌ Ошибка при запуске веб-камеры:', error);
+            this.isCameraEnabled = false;
+            this.localVideoStream = null;
+            return false;
+        }
+    },
+    
+    // Остановить видео (screen share или webcam)
+    async stopVideo() {
+        if (!this.isScreenSharing && !this.isCameraEnabled) {
+            console.warn('⚠️ Видео не активно');
+            return false;
+        }
+        
+        if (!this.publisherHandle) {
+            console.error('❌ Publisher handle не найден');
+            return false;
+        }
+        
+        try {
+            console.log('🛑 Останавливаем видео...');
+            
+            // Удаляем видео-трек из публикации
+            if (this.localVideoStream) {
+                const videoTrack = this.localVideoStream.getVideoTracks()[0];
+                if (videoTrack) {
+                    // Отправляем unpublish для видео
+                    this.publisherHandle.send({
+                        message: {
+                            request: 'unpublish',
+                            streams: [{ mid: videoTrack.id }]
+                        }
+                    });
+                    
+                    // Останавливаем трек
+                    videoTrack.stop();
+                }
+            }
+            
+            this.localVideoStream = null;
+            this.isScreenSharing = false;
+            this.isCameraEnabled = false;
+            
+            console.log('✅ Видео остановлено');
+            return true;
+        } catch (error) {
+            console.error('❌ Ошибка при остановке видео:', error);
+            return false;
+        }
+    },
+    
+    // Публиковать видео-трек в Janus
+    async publishVideo(stream) {
+        if (!this.publisherHandle) {
+            console.error('❌ Publisher handle не найден');
+            return false;
+        }
+        
+        const videoTrack = stream.getVideoTracks()[0];
+        if (!videoTrack) {
+            console.error('❌ Видео-трек не найден в потоке');
+            return false;
+        }
+        
+        try {
+            console.log('📤 Публикуем видео-трек:', videoTrack.id);
+            
+            // Создаем комбинированный поток (аудио + видео)
+            const combinedStream = new MediaStream();
+            
+            // Добавляем аудио-треки из localStream
+            if (this.localStream) {
+                this.localStream.getAudioTracks().forEach(track => {
+                    combinedStream.addTrack(track);
+                });
+            }
+            
+            // Добавляем видео-трек
+            combinedStream.addTrack(videoTrack);
+            
+            // Создаем новый offer с обоими потоками
+            this.publisherHandle.createOffer({
+                media: {
+                    audioRecv: false,
+                    videoRecv: false,
+                    audioSend: this.localStream && this.localStream.getAudioTracks().length > 0,
+                    videoSend: true // Включаем видео
+                },
+                stream: combinedStream, // Передаем комбинированный поток
+                success: (jsep) => {
+                    console.log('✅ Offer создан для видео:', jsep);
+                    
+                    // Отправляем configure с видео
+                    this.publisherHandle.send({
+                        message: {
+                            request: 'configure',
+                            video: true,
+                            audio: this.localStream && this.localStream.getAudioTracks().length > 0
+                        },
+                        jsep: jsep
+                    });
+                },
+                error: (error) => {
+                    console.error('❌ Ошибка создания offer для видео:', error);
+                }
+            });
+            
+            return true;
+        } catch (error) {
+            console.error('❌ Ошибка при публикации видео:', error);
+            return false;
+        }
+    },
+    
+    // Обработать удаленный видео-поток
+    handleRemoteVideoStream(stream, publisherId, displayName) {
+        const publisherIdStr = String(publisherId);
+        console.log(`📹 Обрабатываем удаленный видео-поток от ${publisherIdStr} (${displayName})`);
+        
+        // Проверяем, есть ли уже видео для этого publisher
+        if (this.remoteVideoStreams.has(publisherIdStr)) {
+            console.log(`⚠️ Видео-поток для ${publisherIdStr} уже существует, обновляем...`);
+            this.removeRemoteVideoStream(publisherId);
+        }
+        
+        // Создаем video элемент
+        const videoElement = document.createElement('video');
+        videoElement.autoplay = true;
+        videoElement.playsInline = true;
+        videoElement.muted = true; // Видео без звука (аудио идет отдельно)
+        videoElement.srcObject = stream;
+        
+        // Сохраняем данные
+        this.remoteVideoStreams.set(publisherIdStr, {
+            stream: stream,
+            videoElement: videoElement,
+            display: displayName
+        });
+        
+        // Уведомляем UI о новом видео-потоке
+        if (window.onVideoStreamAdded) {
+            window.onVideoStreamAdded(publisherId, stream, displayName, videoElement);
+        }
+        
+        console.log(`✅ Видео-поток от ${publisherIdStr} обработан`);
+    },
+    
+    // Удалить удаленный видео-поток
+    removeRemoteVideoStream(publisherId) {
+        const publisherIdStr = String(publisherId);
+        console.log(`🔴 Удаляем видео-поток от ${publisherIdStr}`);
+        
+        const videoData = this.remoteVideoStreams.get(publisherIdStr);
+        if (videoData) {
+            try {
+                // Останавливаем видео элемент
+                if (videoData.videoElement) {
+                    videoData.videoElement.pause();
+                    videoData.videoElement.srcObject = null;
+                }
+                
+                // Останавливаем треки
+                if (videoData.stream) {
+                    videoData.stream.getTracks().forEach(track => track.stop());
+                }
+                
+                // Уведомляем UI об удалении видео
+                if (window.onVideoStreamRemoved) {
+                    window.onVideoStreamRemoved(publisherId);
+                }
+            } catch (e) {
+                console.warn(`Ошибка при удалении видео-потока ${publisherIdStr}:`, e);
+            }
+            
+            this.remoteVideoStreams.delete(publisherIdStr);
+        }
     },
 
     // Обработка сообщений от Publisher handle
@@ -932,7 +1237,7 @@ var AudioModule = {
                             jsep: jsep,
                             media: { 
                                 audioRecv: true, 
-                                videoRecv: false, 
+                                videoRecv: true, // Включаем прием видео
                                 audioSend: false, 
                                 videoSend: false 
                             },
@@ -979,22 +1284,37 @@ var AudioModule = {
                                 const receivers = pc.getReceivers();
                                 const remoteStream = new MediaStream();
                                 
+                                const audioStream = new MediaStream();
+                                const videoStream = new MediaStream();
+                                
                                 receivers.forEach(receiver => {
-                                    if (receiver.track && receiver.track.kind === 'audio') {
-                                        console.log(`🔍 [started] Receiver трек ${receiver.track.id}: enabled=${receiver.track.enabled}, muted=${receiver.track.muted}, readyState=${receiver.track.readyState}`);
-                                        remoteStream.addTrack(receiver.track);
+                                    if (receiver.track) {
+                                        if (receiver.track.kind === 'audio') {
+                                            console.log(`🔍 [started] Receiver трек ${receiver.track.id}: enabled=${receiver.track.enabled}, muted=${receiver.track.muted}, readyState=${receiver.track.readyState}`);
+                                            audioStream.addTrack(receiver.track);
+                                        } else if (receiver.track.kind === 'video') {
+                                            console.log(`🔍 [started] Receiver видео-трек ${receiver.track.id}: enabled=${receiver.track.enabled}, muted=${receiver.track.muted}, readyState=${receiver.track.readyState}`);
+                                            videoStream.addTrack(receiver.track);
+                                        }
                                     }
                                 });
                                 
-                                if (remoteStream.getAudioTracks().length > 0) {
-                                    console.log(`✅ [started] Создан поток из receivers для ${publisherIdStr}, треков: ${remoteStream.getAudioTracks().length}`);
+                                // Обрабатываем аудио-поток
+                                if (audioStream.getAudioTracks().length > 0) {
+                                    console.log(`✅ [started] Создан аудио-поток из receivers для ${publisherIdStr}, треков: ${audioStream.getAudioTracks().length}`);
                                     // ВАЖНО: Сохраняем поток в handle для использования в processAudioForMixing
-                                    handle.remoteStream = remoteStream;
+                                    handle.remoteStream = audioStream;
                                     console.log(`✅ [started] Сохранен remoteStream в handle для ${publisherIdStr}`);
                                     // Обрабатываем поток
-                                    this.handleRemoteStream(remoteStream, publisherId, displayName);
+                                    this.handleRemoteStream(audioStream, publisherId, displayName);
                                 } else {
                                     console.warn(`⚠️ Нет аудио треков в receivers для ${publisherIdStr}`);
+                                }
+                                
+                                // Обрабатываем видео-поток
+                                if (videoStream.getVideoTracks().length > 0) {
+                                    console.log(`✅ [started] Создан видео-поток из receivers для ${publisherIdStr}, треков: ${videoStream.getVideoTracks().length}`);
+                                    this.handleRemoteVideoStream(videoStream, publisherId, displayName);
                                 }
                             }
                         }, 500);
@@ -1009,6 +1329,20 @@ var AudioModule = {
                     if (track.kind === 'audio' && on) {
                         handle.remoteAudioTrack = track;
                         console.log(`✅ Сохранен remoteAudioTrack в handle: ${track.id}`);
+                    }
+                    
+                    // Обрабатываем видео-треки
+                    if (track.kind === 'video' && on) {
+                        handle.remoteVideoTrack = track;
+                        console.log(`✅ Получен видео-трек от publisher ${publisherId}: ${track.id}`);
+                        
+                        // Создаем поток из видео-трека
+                        const videoStream = new MediaStream([track]);
+                        this.handleRemoteVideoStream(videoStream, publisherId, displayName);
+                    } else if (track.kind === 'video' && !on) {
+                        // Видео-трек остановлен
+                        console.log(`🔴 Видео-трек от publisher ${publisherId} остановлен`);
+                        this.removeRemoteVideoStream(publisherId);
                     }
                     
                     // Проверяем статистику WebRTC соединения
@@ -1842,6 +2176,9 @@ var AudioModule = {
         
         // Удаляем stream
         this.remoteStreams.delete(publisherIdStr);
+        
+        // Удаляем видео-поток
+        this.removeRemoteVideoStream(publisherId);
         
         // Закрываем subscriber handle
         const handle = this.subscriberHandles.get(publisherIdStr);

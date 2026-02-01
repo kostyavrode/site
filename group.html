@@ -1362,6 +1362,80 @@
                         };
                         controlsContainer.appendChild(settingsBtn);
                     }
+                    
+                    // Кнопка Screen Share
+                    if (!controlsContainer.querySelector('.audio-screen-share-btn')) {
+                        const screenShareBtn = document.createElement('button');
+                        screenShareBtn.className = 'btn btn-sm audio-screen-share-btn';
+                        screenShareBtn.title = 'Демонстрация экрана';
+                        screenShareBtn.textContent = '🖥️';
+                        screenShareBtn.onclick = async () => {
+                            const audioModule = getAudioModule();
+                            if (!audioModule) return;
+                            
+                            if (audioModule.isScreenSharing) {
+                                // Останавливаем screen share
+                                await audioModule.stopVideo();
+                                screenShareBtn.style.opacity = '1';
+                                screenShareBtn.style.backgroundColor = '';
+                                Utils.showSuccess('🖥️ Демонстрация экрана остановлена');
+                            } else {
+                                // Запускаем screen share
+                                const success = await audioModule.startScreenShare();
+                                if (success) {
+                                    screenShareBtn.style.opacity = '1';
+                                    screenShareBtn.style.backgroundColor = 'var(--accent-green)';
+                                    Utils.showSuccess('🖥️ Демонстрация экрана запущена');
+                                } else {
+                                    Utils.showError('❌ Не удалось запустить демонстрацию экрана');
+                                }
+                            }
+                        };
+                        controlsContainer.appendChild(screenShareBtn);
+                    }
+                    
+                    // Кнопка Webcam
+                    if (!controlsContainer.querySelector('.audio-webcam-btn')) {
+                        const webcamBtn = document.createElement('button');
+                        webcamBtn.className = 'btn btn-sm audio-webcam-btn';
+                        webcamBtn.title = 'Веб-камера';
+                        webcamBtn.textContent = '📷';
+                        webcamBtn.onclick = async () => {
+                            const audioModule = getAudioModule();
+                            if (!audioModule) return;
+                            
+                            if (audioModule.isCameraEnabled) {
+                                // Останавливаем камеру
+                                await audioModule.stopVideo();
+                                webcamBtn.style.opacity = '1';
+                                webcamBtn.style.backgroundColor = '';
+                                Utils.showSuccess('📷 Веб-камера отключена');
+                            } else {
+                                // Запускаем камеру
+                                const success = await audioModule.startCamera();
+                                if (success) {
+                                    webcamBtn.style.opacity = '1';
+                                    webcamBtn.style.backgroundColor = 'var(--accent-green)';
+                                    Utils.showSuccess('📷 Веб-камера включена');
+                                } else {
+                                    Utils.showError('❌ Не удалось включить веб-камеру');
+                                }
+                            }
+                        };
+                        controlsContainer.appendChild(webcamBtn);
+                    }
+                    
+                    // Кнопка "Смотреть" (появляется когда есть видео)
+                    if (!controlsContainer.querySelector('.audio-watch-btn')) {
+                        const watchBtn = document.createElement('button');
+                        watchBtn.className = 'btn btn-sm audio-watch-btn hidden';
+                        watchBtn.title = 'Смотреть видео';
+                        watchBtn.textContent = '👁️ Смотреть';
+                        watchBtn.onclick = () => {
+                            toggleVideoOverlay();
+                        };
+                        controlsContainer.appendChild(watchBtn);
+                    }
                 }
                 
                 // Показываем индикатор аудио активности
@@ -1617,6 +1691,123 @@
                 await audioModule.disconnect();
             }
         });
+        
+        // ============================================
+        // Video Overlay (демонстрация экрана / веб-камера)
+        // ============================================
+        
+        let videoOverlayVisible = false;
+        
+        // Переключить видимость video overlay
+        function toggleVideoOverlay() {
+            const overlay = document.getElementById('videoOverlay');
+            if (!overlay) return;
+            
+            videoOverlayVisible = !videoOverlayVisible;
+            if (videoOverlayVisible) {
+                overlay.classList.remove('hidden');
+                updateVideoOverlay();
+            } else {
+                overlay.classList.add('hidden');
+            }
+        }
+        
+        // Обновить содержимое video overlay
+        function updateVideoOverlay() {
+            const container = document.getElementById('videoOverlayContainer');
+            if (!container) return;
+            
+            const audioModule = getAudioModule();
+            if (!audioModule) return;
+            
+            // Очищаем контейнер
+            container.innerHTML = '';
+            
+            // Получаем все видео-потоки
+            const videoStreams = Array.from(audioModule.remoteVideoStreams.entries());
+            
+            if (videoStreams.length === 0) {
+                container.innerHTML = '<p style="color: var(--text-secondary); text-align: center; padding: 20px; grid-column: 1 / -1;">Нет активных видео-трансляций</p>';
+                return;
+            }
+            
+            // Создаем grid для видео
+            videoStreams.forEach(([publisherId, videoData]) => {
+                const videoWrapper = document.createElement('div');
+                videoWrapper.className = 'video-wrapper';
+                videoWrapper.style.cssText = 'position: relative; background: var(--bg-secondary); border-radius: var(--border-radius); overflow: hidden; min-height: 200px;';
+                
+                // Создаем новый video элемент и привязываем к потоку
+                const videoElement = document.createElement('video');
+                videoElement.autoplay = true;
+                videoElement.playsInline = true;
+                videoElement.muted = true;
+                videoElement.srcObject = videoData.stream;
+                videoElement.style.cssText = 'width: 100%; height: 100%; object-fit: contain;';
+                
+                // Обработка ошибок
+                videoElement.onerror = (e) => {
+                    console.error('Ошибка воспроизведения видео:', e);
+                };
+                
+                const nameLabel = document.createElement('div');
+                nameLabel.className = 'video-name-label';
+                nameLabel.textContent = videoData.display || 'Пользователь';
+                nameLabel.style.cssText = 'position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,0.7); color: white; padding: 8px; font-size: 12px; text-align: center;';
+                
+                videoWrapper.appendChild(videoElement);
+                videoWrapper.appendChild(nameLabel);
+                container.appendChild(videoWrapper);
+            });
+        }
+        
+        // Callback для добавления видео-потока
+        window.onVideoStreamAdded = (publisherId, stream, displayName, videoElement) => {
+            console.log('📹 Видео-поток добавлен:', publisherId, displayName);
+            
+            // Показываем кнопку "Смотреть"
+            document.querySelectorAll('.audio-watch-btn').forEach(btn => {
+                btn.classList.remove('hidden');
+            });
+            
+            // Обновляем overlay, если он видим
+            if (videoOverlayVisible) {
+                updateVideoOverlay();
+            }
+        };
+        
+        // Callback для удаления видео-потока
+        window.onVideoStreamRemoved = (publisherId) => {
+            console.log('🔴 Видео-поток удален:', publisherId);
+            
+            const audioModule = getAudioModule();
+            if (audioModule && audioModule.remoteVideoStreams.size === 0) {
+                // Скрываем кнопку "Смотреть" если нет видео
+                document.querySelectorAll('.audio-watch-btn').forEach(btn => {
+                    btn.classList.add('hidden');
+                });
+                
+                // Закрываем overlay если он открыт
+                if (videoOverlayVisible) {
+                    toggleVideoOverlay();
+                }
+            } else {
+                // Обновляем overlay
+                if (videoOverlayVisible) {
+                    updateVideoOverlay();
+                }
+            }
+        };
     </script>
+    
+    <!-- Video Overlay -->
+    <div id="videoOverlay" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; height: 70vh; z-index: 1000; background: var(--bg-primary); border-bottom: 2px solid var(--border-color); box-shadow: 0 -2px 10px rgba(0,0,0,0.1); display: flex; flex-direction: column;">
+        <div style="flex: 1; padding: var(--spacing-md); overflow: auto; position: relative;">
+            <button onclick="toggleVideoOverlay()" class="btn btn-sm" style="position: absolute; top: var(--spacing-sm); right: var(--spacing-sm); z-index: 10; background: var(--error); color: white;">✕ Закрыть</button>
+            <div id="videoOverlayContainer" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: var(--spacing-md); height: 100%;">
+                <!-- Видео будут добавлены динамически -->
+            </div>
+        </div>
+    </div>
 </body>
 </html>
