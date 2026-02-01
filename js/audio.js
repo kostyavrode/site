@@ -31,6 +31,7 @@ var AudioModule = {
     // Управление громкостью участников (клиентское микширование)
     streamVolumes: new Map(), // Map<PublisherId, {gainNode, source, volume, display}>
     remoteStreams: new Map(), // Map<PublisherId, MediaStream>
+    pendingPublishers: new Map(), // Map<PublisherId, {id, display}> - publishers, на которых подписались, но поток ещё не получен
 
     async init(roomId, channelId = null, displayName = 'User') {
         console.log('🎯 Audio.init:', roomId, channelId, displayName);
@@ -647,6 +648,7 @@ var AudioModule = {
         });
         this.streamVolumes.clear();
         this.remoteStreams.clear();
+        this.pendingPublishers.clear();
         
         // Закрываем publisher handle
         if (this.publisherHandle) {
@@ -742,18 +744,22 @@ var AudioModule = {
             // Новые publishers
             if (event.publishers) {
                 console.log('📋 Новые publishers:', event.publishers.length);
+                
+                // Сохраняем pending publishers для UI (они ещё не в streamVolumes)
                 event.publishers.forEach(publisher => {
                     // Пропускаем себя
                     if (publisher.id !== this.participantId) {
+                        // Добавляем в pending list для UI
+                        this.pendingPublishers.set(String(publisher.id), {
+                            id: publisher.id,
+                            display: publisher.display || `Publisher ${publisher.id}`
+                        });
                         this.subscribeToPublisher(publisher);
                     }
                 });
                 
-                // Обновляем UI - формируем полный список, ВКЛЮЧАЯ себя
-                if (window.onParticipantsUpdate) {
-                    const fullList = this.getFullParticipantsList();
-                    window.onParticipantsUpdate(fullList, this.participantId);
-                }
+                // Обновляем UI - используем комбинированный список (себя + streamVolumes + pending)
+                this.notifyParticipantsUpdate();
             }
             
             // Удаленные publishers
@@ -1596,6 +1602,12 @@ var AudioModule = {
                     volume: 1.0,
                     display: displayName
                 });
+                
+                // Удаляем из pending (поток получен)
+                this.pendingPublishers.delete(publisherIdStr);
+                
+                // ВАЖНО: Обновляем UI после добавления нового участника
+                this.notifyParticipantsUpdate();
                 return;
             }
             
@@ -1698,7 +1710,13 @@ var AudioModule = {
                 display: displayName
             });
             
+            // Удаляем из pending (поток получен)
+            this.pendingPublishers.delete(publisherIdStr);
+            
             console.log(`✅ Аудио поток ${publisherIdStr} (${displayName}) подключен к Web Audio API`);
+            
+            // ВАЖНО: Обновляем UI после добавления нового участника
+            this.notifyParticipantsUpdate();
             console.log(`🔍 AudioContext состояние: ${this.audioContext.state}`);
             console.log(`🔍 AudioContext destination: ${this.audioContext.destination ? 'есть' : 'нет'}, numberOfInputs: ${this.audioContext.destination ? this.audioContext.destination.numberOfInputs : 'N/A'}`);
             
@@ -1805,24 +1823,27 @@ var AudioModule = {
     // Удалить publisher
     removePublisher(publisherId) {
         console.log(`🔴 Удаляем publisher ${publisherId}`);
+        const publisherIdStr = String(publisherId);
         
         // Отключаем поток от микшера
-        const streamData = this.streamVolumes.get(publisherId);
+        const streamData = this.streamVolumes.get(publisherIdStr);
         if (streamData) {
             try {
-                streamData.source.disconnect();
-                streamData.gainNode.disconnect();
+                if (streamData.source) streamData.source.disconnect();
+                if (streamData.gainNode) streamData.gainNode.disconnect();
             } catch (e) {
                 console.warn(`Ошибка при отключении потока ${publisherId}:`, e);
             }
-            this.streamVolumes.delete(publisherId);
+            this.streamVolumes.delete(publisherIdStr);
         }
         
+        // Удаляем из pending (если ещё был там)
+        this.pendingPublishers.delete(publisherIdStr);
+        
         // Удаляем stream
-        this.remoteStreams.delete(publisherId);
+        this.remoteStreams.delete(publisherIdStr);
         
         // Закрываем subscriber handle
-        const publisherIdStr = String(publisherId);
         const handle = this.subscriberHandles.get(publisherIdStr);
         if (handle) {
             try {
@@ -1833,16 +1854,14 @@ var AudioModule = {
             this.subscriberHandles.delete(publisherIdStr);
         }
         
-        // Обновляем UI - формируем полный список, ВКЛЮЧАЯ себя
-        if (window.onParticipantsUpdate) {
-            const fullList = this.getFullParticipantsList();
-            window.onParticipantsUpdate(fullList, this.participantId);
-        }
+        // Обновляем UI после удаления участника
+        this.notifyParticipantsUpdate();
     },
     
     // Получить полный список участников, ВКЛЮЧАЯ себя
     getFullParticipantsList() {
         const participants = [];
+        const addedIds = new Set(); // Для избежания дубликатов
         
         // Добавляем себя первым, если мы подключены
         if (this.participantId && this.displayName) {
@@ -1851,18 +1870,44 @@ var AudioModule = {
                 display: this.displayName,
                 isMe: true
             });
+            addedIds.add(String(this.participantId));
         }
         
-        // Добавляем остальных участников из streamVolumes
+        // Добавляем участников из streamVolumes (уже подключенные потоки)
         this.streamVolumes.forEach((streamData, publisherId) => {
-            participants.push({
-                id: publisherId,
-                display: streamData.display || 'Пользователь'
-            });
+            const idStr = String(publisherId);
+            if (!addedIds.has(idStr)) {
+                participants.push({
+                    id: publisherId,
+                    display: streamData.display || 'Пользователь'
+                });
+                addedIds.add(idStr);
+            }
         });
         
-        console.log('📋 Полный список участников:', participants);
+        // Добавляем pending publishers (подписались, но поток ещё не получен)
+        this.pendingPublishers.forEach((publisherData, publisherId) => {
+            const idStr = String(publisherId);
+            if (!addedIds.has(idStr)) {
+                participants.push({
+                    id: publisherData.id,
+                    display: publisherData.display || 'Пользователь'
+                });
+                addedIds.add(idStr);
+            }
+        });
+        
+        console.log('📋 Полный список участников:', participants.length, '(streamVolumes:', this.streamVolumes.size, ', pending:', this.pendingPublishers.size, ')');
         return participants;
+    },
+    
+    // Уведомить UI об изменении списка участников
+    notifyParticipantsUpdate() {
+        if (window.onParticipantsUpdate) {
+            const fullList = this.getFullParticipantsList();
+            console.log('🔄 Уведомляем UI об изменении участников:', fullList.length, 'участников');
+            window.onParticipantsUpdate(fullList, this.participantId);
+        }
     },
 
     // Запросить список publishers
