@@ -851,7 +851,16 @@
             container.innerHTML = participants.map(participant => {
                 const name = participant.display || participant.displayName || participant.name || 'Пользователь';
                 const participantId = participant.id || participant.userId || name;
-                const isYou = participant.id && currentParticipantId && participant.id.toString() === currentParticipantId.toString();
+                
+                // Проверяем, является ли это нами - несколько способов определения:
+                // 1. По флагу isMe (установленному в getFullParticipantsList)
+                // 2. По participantId (если он установлен)
+                // 3. По displayName (сравниваем с текущим никнеймом)
+                const isYouById = participant.id && currentParticipantId && participant.id.toString() === currentParticipantId.toString();
+                const isYouByFlag = participant.isMe === true;
+                const isYouByName = currentNickName && name.toLowerCase().trim() === currentNickName.toLowerCase().trim();
+                const isYou = isYouById || isYouByFlag || isYouByName;
+                
                 const volumeKey = `${currentAudioChannel}-${participantId}`;
                 
                 // Получаем сохраненную громкость или используем 100%

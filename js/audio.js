@@ -749,9 +749,10 @@ var AudioModule = {
                     }
                 });
                 
-                // Обновляем UI
+                // Обновляем UI - формируем полный список, ВКЛЮЧАЯ себя
                 if (window.onParticipantsUpdate) {
-                    window.onParticipantsUpdate(event.publishers, this.participantId);
+                    const fullList = this.getFullParticipantsList();
+                    window.onParticipantsUpdate(fullList, this.participantId);
                 }
             }
             
@@ -1832,14 +1833,36 @@ var AudioModule = {
             this.subscriberHandles.delete(publisherIdStr);
         }
         
-        // Обновляем UI
+        // Обновляем UI - формируем полный список, ВКЛЮЧАЯ себя
         if (window.onParticipantsUpdate) {
-            const publishers = Array.from(this.streamVolumes.values()).map(s => ({
-                id: Array.from(this.streamVolumes.entries()).find(([id, _]) => s === this.streamVolumes.get(id))?.[0],
-                display: s.display
-            }));
-            window.onParticipantsUpdate(publishers, this.participantId);
+            const fullList = this.getFullParticipantsList();
+            window.onParticipantsUpdate(fullList, this.participantId);
         }
+    },
+    
+    // Получить полный список участников, ВКЛЮЧАЯ себя
+    getFullParticipantsList() {
+        const participants = [];
+        
+        // Добавляем себя первым, если мы подключены
+        if (this.participantId && this.displayName) {
+            participants.push({
+                id: this.participantId,
+                display: this.displayName,
+                isMe: true
+            });
+        }
+        
+        // Добавляем остальных участников из streamVolumes
+        this.streamVolumes.forEach((streamData, publisherId) => {
+            participants.push({
+                id: publisherId,
+                display: streamData.display || 'Пользователь'
+            });
+        });
+        
+        console.log('📋 Полный список участников:', participants);
+        return participants;
     },
 
     // Запросить список publishers

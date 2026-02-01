@@ -243,3 +243,32 @@ document.addEventListener('keydown', async (event) => {
         }
     }
 });
+
+// При загрузке страницы: если пользователь уже авторизован, запускаем auto-refresh
+// Это критически важно, потому что после перезагрузки страницы auto-refresh не работает!
+document.addEventListener('DOMContentLoaded', async () => {
+    // Даем время на инициализацию API (baseUrls могут устанавливаться позже)
+    setTimeout(async () => {
+        // Проверяем, есть ли токен (через cookie)
+        const hasToken = document.cookie.split(';').some(c => c.trim().startsWith('access_token='));
+        
+        if (hasToken) {
+            console.log('[API] Обнаружен токен при загрузке страницы, запускаем auto-refresh');
+            
+            // Сначала пробуем обновить токен (он может быть просрочен)
+            const refreshed = await API.tryRefreshToken();
+            
+            if (refreshed) {
+                console.log('[API] ✅ Токен успешно обновлен при загрузке');
+                // Запускаем периодическое обновление
+                API.startAutoRefresh();
+            } else {
+                console.warn('[API] ⚠️ Не удалось обновить токен при загрузке - возможно сессия истекла');
+                // Не удаляем токен сразу - пусть пользователь попробует сделать запрос
+                // и тогда система перенаправит его на логин если нужно
+            }
+        } else {
+            console.log('[API] Токен не найден при загрузке страницы');
+        }
+    }, 500); // Небольшая задержка для инициализации baseUrls
+});
