@@ -903,7 +903,8 @@ var AudioModule = {
         try {
             console.log('📤 Публикуем видео-трек:', videoTrack.id);
             
-            // Создаем комбинированный поток (аудио + видео)
+            // В Janus VideoRoom для добавления видео к существующей публикации
+            // нужно использовать configure с новым offer, включающим оба потока
             const combinedStream = new MediaStream();
             
             // Добавляем аудио-треки из localStream
@@ -928,14 +929,20 @@ var AudioModule = {
                 success: (jsep) => {
                     console.log('✅ Offer создан для видео:', jsep);
                     
-                    // Отправляем configure с видео
+                    // Отправляем configure с видео - это обновит существующую публикацию
                     this.publisherHandle.send({
                         message: {
                             request: 'configure',
                             video: true,
                             audio: this.localStream && this.localStream.getAudioTracks().length > 0
                         },
-                        jsep: jsep
+                        jsep: jsep,
+                        success: (result) => {
+                            console.log('✅ Видео успешно опубликовано:', result);
+                        },
+                        error: (error) => {
+                            console.error('❌ Ошибка публикации видео:', error);
+                        }
                     });
                 },
                 error: (error) => {
@@ -955,6 +962,18 @@ var AudioModule = {
         const publisherIdStr = String(publisherId);
         console.log(`📹 Обрабатываем удаленный видео-поток от ${publisherIdStr} (${displayName})`);
         
+        // Проверяем наличие видео-треков
+        const videoTracks = stream.getVideoTracks();
+        if (videoTracks.length === 0) {
+            console.warn(`⚠️ Нет видео-треков в потоке от ${publisherIdStr}`);
+            return;
+        }
+        
+        // Проверяем состояние треков
+        videoTracks.forEach(track => {
+            console.log(`🔍 Видео-трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
+        });
+        
         // Проверяем, есть ли уже видео для этого publisher
         if (this.remoteVideoStreams.has(publisherIdStr)) {
             console.log(`⚠️ Видео-поток для ${publisherIdStr} уже существует, обновляем...`);
@@ -967,6 +986,27 @@ var AudioModule = {
         videoElement.playsInline = true;
         videoElement.muted = true; // Видео без звука (аудио идет отдельно)
         videoElement.srcObject = stream;
+        
+        // Явно запускаем воспроизведение
+        videoElement.play().catch(error => {
+            console.error(`❌ Ошибка воспроизведения видео от ${publisherIdStr}:`, error);
+        });
+        
+        // Обработка событий трека
+        videoTracks.forEach(track => {
+            track.addEventListener('ended', () => {
+                console.log(`🔴 Видео-трек ${track.id} от ${publisherIdStr} завершен`);
+                this.removeRemoteVideoStream(publisherId);
+            });
+            
+            track.addEventListener('mute', () => {
+                console.warn(`⚠️ Видео-трек ${track.id} от ${publisherIdStr} стал muted`);
+            });
+            
+            track.addEventListener('unmute', () => {
+                console.log(`✅ Видео-трек ${track.id} от ${publisherIdStr} стал unmuted`);
+            });
+        });
         
         // Сохраняем данные
         this.remoteVideoStreams.set(publisherIdStr, {
@@ -1334,11 +1374,49 @@ var AudioModule = {
                     // Обрабатываем видео-треки
                     if (track.kind === 'video' && on) {
                         handle.remoteVideoTrack = track;
-                        console.log(`✅ Получен видео-трек от publisher ${publisherId}: ${track.id}`);
+                        console.log(`✅ Получен видео-трек от publisher ${publisherId}: ${track.id}, readyState=${track.readyState}, enabled=${track.enabled}, muted=${track.muted}`);
                         
-                        // Создаем поток из видео-трека
-                        const videoStream = new MediaStream([track]);
-                        this.handleRemoteVideoStream(videoStream, publisherId, displayName);
+                        // Если трек muted - ждем unmute
+                        if (track.muted) {
+                            console.log(`⏳ Видео-трек ${track.id} muted, ждем unmute для ${publisherId}...`);
+                            const unmuteHandler = () => {
+                                console.log(`🔊 Видео-трек ${track.id} unmuted для ${publisherId}`);
+                                track.removeEventListener('unmute', unmuteHandler);
+                                setTimeout(() => {
+                                    if (!track.muted && track.readyState === 'live') {
+                                        const videoStream = new MediaStream([track]);
+                                        this.handleRemoteVideoStream(videoStream, publisherId, displayName);
+                                    } else {
+                                        console.warn(`⚠️ Видео-трек ${track.id} все еще не активен после unmute`);
+                                    }
+                                }, 100);
+                            };
+                            track.addEventListener('unmute', unmuteHandler);
+                            
+                            // Проверка через таймаут на случай если событие уже произошло
+                            setTimeout(() => {
+                                if (!track.muted && track.readyState === 'live') {
+                                    console.log(`🔊 Видео-трек ${track.id} уже unmuted (таймаут) для ${publisherId}`);
+                                    track.removeEventListener('unmute', unmuteHandler);
+                                    const videoStream = new MediaStream([track]);
+                                    this.handleRemoteVideoStream(videoStream, publisherId, displayName);
+                                }
+                            }, 500);
+                        } else if (track.readyState === 'live') {
+                            // Трек уже активен, создаем поток сразу
+                            const videoStream = new MediaStream([track]);
+                            this.handleRemoteVideoStream(videoStream, publisherId, displayName);
+                        } else {
+                            // Ждем пока трек станет live
+                            console.log(`⏳ Видео-трек ${track.id} еще не live (readyState=${track.readyState}), ждем...`);
+                            const liveHandler = () => {
+                                console.log(`✅ Видео-трек ${track.id} стал live для ${publisherId}`);
+                                track.removeEventListener('live', liveHandler);
+                                const videoStream = new MediaStream([track]);
+                                this.handleRemoteVideoStream(videoStream, publisherId, displayName);
+                            };
+                            track.addEventListener('live', liveHandler);
+                        }
                     } else if (track.kind === 'video' && !on) {
                         // Видео-трек остановлен
                         console.log(`🔴 Видео-трек от publisher ${publisherId} остановлен`);

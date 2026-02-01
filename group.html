@@ -139,6 +139,21 @@
             overflow: hidden;
         }
         
+        .audio-channel-controls {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: var(--spacing-xs);
+            margin-top: var(--spacing-sm);
+        }
+        
+        .audio-channel-controls .join-audio-btn {
+            grid-column: 1 / -1;
+        }
+        
+        .audio-channel-controls .audio-watch-btn {
+            grid-column: 1 / -1;
+        }
+        
         .messages-container {
             flex: 1;
             overflow-y: auto;
@@ -1183,7 +1198,7 @@
                         ${channel.description ? `<div style="font-size: 12px; color: var(--text-secondary); margin-bottom: var(--spacing-sm);">${Utils.escapeHtml(channel.description)}</div>` : ''}
                         <div id="channelParticipants-${channel.id}" class="channel-participants" style="font-size: 12px; color: var(--text-secondary); margin-bottom: var(--spacing-sm);"></div>
                         <div id="participantsCount-${channel.id}" style="font-size: 12px; color: var(--text-secondary); margin-bottom: var(--spacing-sm);">0 участников</div>
-                        <div style="display: flex; gap: var(--spacing-sm); align-items: center;" class="audio-channel-controls">
+                        <div class="audio-channel-controls">
                             <button class="btn btn-sm btn-primary join-audio-btn" data-channel-id="${channel.id}" data-janus-room="${channel.janusRoomId}">Подключиться</button>
                         </div>
                         <!-- Список участников в канале -->
@@ -1254,12 +1269,13 @@
                 button.textContent = 'Подключиться';
                 button.closest('.audio-channel').classList.remove('active');
                 
-                // Убираем кнопки управления (mute и настройки)
+                // Убираем все кнопки управления
                 const channelCard = button.closest('.audio-channel');
-                const muteBtn = channelCard?.querySelector('.audio-mute-btn');
-                const settingsBtn = channelCard?.querySelector('.audio-settings-btn');
-                if (muteBtn) muteBtn.remove();
-                if (settingsBtn) settingsBtn.remove();
+                const controlsContainer = channelCard?.querySelector('.audio-channel-controls');
+                if (controlsContainer) {
+                    // Удаляем все кнопки кроме кнопки подключения
+                    controlsContainer.querySelectorAll('.audio-mute-btn, .audio-settings-btn, .audio-screen-share-btn, .audio-webcam-btn, .audio-watch-btn').forEach(btn => btn.remove());
+                }
                 
                 // Скрываем список участников в карточке канала
                 document.querySelectorAll('.audio-participants-list').forEach(el => {
