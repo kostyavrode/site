@@ -1119,6 +1119,15 @@ var AudioModule = {
                 
                 // Запрашиваем список publishers после присоединения
                 this.requestPublishersList();
+                
+                // Запускаем периодический запрос списка publishers для обнаружения видео
+                this.startPublishersListPolling();
+            }
+            
+            // Ответ на запрос list
+            if (event.videoroom === 'success' && event.list) {
+                console.log('📋 Получен список publishers:', event.list.length);
+                this.handlePublishersList(event.list);
             }
             
             // Новые publishers
@@ -2373,6 +2382,71 @@ var AudioModule = {
         } else {
             console.warn('⚠️ publisherHandle или roomId не доступен');
         }
+    },
+    
+    // Запустить периодический опрос списка publishers (для обнаружения видео)
+    startPublishersListPolling() {
+        // Останавливаем предыдущий интервал, если есть
+        if (this.participantsUpdateInterval) {
+            clearInterval(this.participantsUpdateInterval);
+        }
+        
+        // Запрашиваем список каждые 2 секунды
+        this.participantsUpdateInterval = setInterval(() => {
+            this.requestPublishersList();
+        }, 2000);
+        
+        console.log('🔄 Запущен периодический опрос списка publishers');
+    },
+    
+    // Обработать список publishers (проверить наличие видео)
+    handlePublishersList(publishersList) {
+        if (!publishersList || !Array.isArray(publishersList)) {
+            return;
+        }
+        
+        publishersList.forEach(publisher => {
+            // Пропускаем себя
+            if (publisher.id === this.participantId) {
+                return;
+            }
+            
+            const publisherIdStr = String(publisher.id);
+            
+            // Проверяем, есть ли у publisher видео
+            const hasVideo = publisher.streams && publisher.streams.some(stream => stream.type === 'video');
+            
+            if (hasVideo) {
+                // Проверяем, подписаны ли мы уже на этого publisher
+                if (!this.subscriberHandles.has(publisherIdStr)) {
+                    console.log(`📹 Обнаружен publisher ${publisher.id} с видео, подписываемся...`);
+                    this.subscribeToPublisher(publisher);
+                } else {
+                    // Проверяем, есть ли уже видео-поток
+                    if (!this.remoteVideoStreams.has(publisherIdStr)) {
+                        console.log(`📹 Publisher ${publisher.id} имеет видео, но поток еще не получен. Проверяем handle...`);
+                        
+                        // Проверяем handle на наличие видео-треков
+                        const handle = this.subscriberHandles.get(publisherIdStr);
+                        if (handle && handle.webrtcStuff && handle.webrtcStuff.pc) {
+                            const pc = handle.webrtcStuff.pc;
+                            const receivers = pc.getReceivers();
+                            
+                            // Ищем видео-треки в receivers
+                            const videoReceivers = receivers.filter(r => r.track && r.track.kind === 'video');
+                            if (videoReceivers.length > 0) {
+                                console.log(`✅ Найден видео-трек в receivers для ${publisherIdStr}, обрабатываем...`);
+                                const videoStream = new MediaStream();
+                                videoReceivers.forEach(r => videoStream.addTrack(r.track));
+                                this.handleRemoteVideoStream(videoStream, publisher.id, publisher.display || `Publisher ${publisher.id}`);
+                            } else {
+                                console.log(`⏳ Видео-трек для ${publisherIdStr} еще не появился в receivers, ждем...`);
+                            }
+                        }
+                    }
+                }
+            }
+        });
     },
 
     // Старые методы удалены - используются новые методы для Videoroom
