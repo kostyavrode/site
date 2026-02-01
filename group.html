@@ -1394,6 +1394,9 @@
                                 await audioModule.stopVideo();
                                 screenShareBtn.style.opacity = '1';
                                 screenShareBtn.style.backgroundColor = '';
+                                // Обновляем UI
+                                updateWatchButtonVisibility();
+                                if (videoOverlayVisible) updateVideoOverlay();
                                 Utils.showSuccess('🖥️ Демонстрация экрана остановлена');
                             } else {
                                 // Запускаем screen share
@@ -1401,6 +1404,14 @@
                                 if (success) {
                                     screenShareBtn.style.opacity = '1';
                                     screenShareBtn.style.backgroundColor = 'var(--accent-green)';
+                                    // Сбрасываем стиль кнопки webcam
+                                    const webcamBtn = controlsContainer.querySelector('.audio-webcam-btn');
+                                    if (webcamBtn) {
+                                        webcamBtn.style.backgroundColor = '';
+                                    }
+                                    // Обновляем UI
+                                    updateWatchButtonVisibility();
+                                    if (videoOverlayVisible) updateVideoOverlay();
                                     Utils.showSuccess('🖥️ Демонстрация экрана запущена');
                                 } else {
                                     Utils.showError('❌ Не удалось запустить демонстрацию экрана');
@@ -1425,6 +1436,9 @@
                                 await audioModule.stopVideo();
                                 webcamBtn.style.opacity = '1';
                                 webcamBtn.style.backgroundColor = '';
+                                // Обновляем UI
+                                updateWatchButtonVisibility();
+                                if (videoOverlayVisible) updateVideoOverlay();
                                 Utils.showSuccess('📷 Веб-камера отключена');
                             } else {
                                 // Запускаем камеру
@@ -1432,6 +1446,14 @@
                                 if (success) {
                                     webcamBtn.style.opacity = '1';
                                     webcamBtn.style.backgroundColor = 'var(--accent-green)';
+                                    // Сбрасываем стиль кнопки screen share
+                                    const screenShareBtn = controlsContainer.querySelector('.audio-screen-share-btn');
+                                    if (screenShareBtn) {
+                                        screenShareBtn.style.backgroundColor = '';
+                                    }
+                                    // Обновляем UI
+                                    updateWatchButtonVisibility();
+                                    if (videoOverlayVisible) updateVideoOverlay();
                                     Utils.showSuccess('📷 Веб-камера включена');
                                 } else {
                                     Utils.showError('❌ Не удалось включить веб-камеру');
@@ -1739,19 +1761,39 @@
             // Очищаем контейнер
             container.innerHTML = '';
             
-            // Получаем все видео-потоки
-            const videoStreams = Array.from(audioModule.remoteVideoStreams.entries());
+            // Собираем все видео-потоки (свои + чужие)
+            const allVideoStreams = [];
             
-            if (videoStreams.length === 0) {
+            // Добавляем свое видео, если есть
+            if (audioModule.localVideoStream && (audioModule.isScreenSharing || audioModule.isCameraEnabled)) {
+                allVideoStreams.push({
+                    id: 'local',
+                    stream: audioModule.localVideoStream,
+                    display: currentNickName + ' (Вы)',
+                    isLocal: true
+                });
+            }
+            
+            // Добавляем удаленные видео-потоки
+            audioModule.remoteVideoStreams.forEach((videoData, publisherId) => {
+                allVideoStreams.push({
+                    id: publisherId,
+                    stream: videoData.stream,
+                    display: videoData.display || 'Пользователь',
+                    isLocal: false
+                });
+            });
+            
+            if (allVideoStreams.length === 0) {
                 container.innerHTML = '<p style="color: var(--text-secondary); text-align: center; padding: 20px; grid-column: 1 / -1;">Нет активных видео-трансляций</p>';
                 return;
             }
             
             // Создаем grid для видео
-            videoStreams.forEach(([publisherId, videoData]) => {
+            allVideoStreams.forEach(videoData => {
                 const videoWrapper = document.createElement('div');
                 videoWrapper.className = 'video-wrapper';
-                videoWrapper.style.cssText = 'position: relative; background: var(--bg-secondary); border-radius: var(--border-radius); overflow: hidden; min-height: 200px;';
+                videoWrapper.style.cssText = 'position: relative; background: var(--bg-secondary); border-radius: var(--border-radius); overflow: hidden; min-height: 200px;' + (videoData.isLocal ? ' border: 2px solid var(--accent-green);' : '');
                 
                 // Создаем новый video элемент и привязываем к потоку
                 const videoElement = document.createElement('video');
@@ -1761,14 +1803,17 @@
                 videoElement.srcObject = videoData.stream;
                 videoElement.style.cssText = 'width: 100%; height: 100%; object-fit: contain;';
                 
-                // Обработка ошибок
-                videoElement.onerror = (e) => {
-                    console.error('Ошибка воспроизведения видео:', e);
-                };
+                // Для локального видео - зеркалируем
+                if (videoData.isLocal) {
+                    videoElement.style.transform = 'scaleX(-1)';
+                }
+                
+                // Запускаем воспроизведение
+                videoElement.play().catch(e => console.error('Ошибка воспроизведения:', e));
                 
                 const nameLabel = document.createElement('div');
                 nameLabel.className = 'video-name-label';
-                nameLabel.textContent = videoData.display || 'Пользователь';
+                nameLabel.textContent = videoData.display;
                 nameLabel.style.cssText = 'position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,0.7); color: white; padding: 8px; font-size: 12px; text-align: center;';
                 
                 videoWrapper.appendChild(videoElement);
@@ -1777,14 +1822,42 @@
             });
         }
         
+        // Проверить, есть ли активные видео-трансляции
+        function hasActiveVideoStreams() {
+            const audioModule = getAudioModule();
+            if (!audioModule) return false;
+            
+            // Свое видео
+            if (audioModule.localVideoStream && (audioModule.isScreenSharing || audioModule.isCameraEnabled)) {
+                return true;
+            }
+            
+            // Чужие видео
+            if (audioModule.remoteVideoStreams.size > 0) {
+                return true;
+            }
+            
+            return false;
+        }
+        
+        // Обновить видимость кнопки "Смотреть"
+        function updateWatchButtonVisibility() {
+            const hasVideo = hasActiveVideoStreams();
+            document.querySelectorAll('.audio-watch-btn').forEach(btn => {
+                if (hasVideo) {
+                    btn.classList.remove('hidden');
+                } else {
+                    btn.classList.add('hidden');
+                }
+            });
+        }
+        
         // Callback для добавления видео-потока
         window.onVideoStreamAdded = (publisherId, stream, displayName, videoElement) => {
             console.log('📹 Видео-поток добавлен:', publisherId, displayName);
             
-            // Показываем кнопку "Смотреть"
-            document.querySelectorAll('.audio-watch-btn').forEach(btn => {
-                btn.classList.remove('hidden');
-            });
+            // Обновляем видимость кнопки "Смотреть"
+            updateWatchButtonVisibility();
             
             // Обновляем overlay, если он видим
             if (videoOverlayVisible) {
@@ -1796,21 +1869,15 @@
         window.onVideoStreamRemoved = (publisherId) => {
             console.log('🔴 Видео-поток удален:', publisherId);
             
-            const audioModule = getAudioModule();
-            if (audioModule && audioModule.remoteVideoStreams.size === 0) {
-                // Скрываем кнопку "Смотреть" если нет видео
-                document.querySelectorAll('.audio-watch-btn').forEach(btn => {
-                    btn.classList.add('hidden');
-                });
-                
-                // Закрываем overlay если он открыт
-                if (videoOverlayVisible) {
-                    toggleVideoOverlay();
-                }
-            } else {
-                // Обновляем overlay
-                if (videoOverlayVisible) {
+            // Обновляем видимость кнопки "Смотреть"
+            updateWatchButtonVisibility();
+            
+            // Обновляем или закрываем overlay
+            if (videoOverlayVisible) {
+                if (hasActiveVideoStreams()) {
                     updateVideoOverlay();
+                } else {
+                    toggleVideoOverlay();
                 }
             }
         };

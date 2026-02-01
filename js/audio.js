@@ -858,21 +858,48 @@ var AudioModule = {
         try {
             console.log('🛑 Останавливаем видео...');
             
-            // Удаляем видео-трек из публикации
+            // Останавливаем видео-трек
             if (this.localVideoStream) {
-                const videoTrack = this.localVideoStream.getVideoTracks()[0];
-                if (videoTrack) {
-                    // Отправляем unpublish для видео
-                    this.publisherHandle.send({
-                        message: {
-                            request: 'unpublish',
-                            streams: [{ mid: videoTrack.id }]
-                        }
-                    });
-                    
-                    // Останавливаем трек
-                    videoTrack.stop();
-                }
+                this.localVideoStream.getTracks().forEach(track => {
+                    track.stop();
+                    console.log('🛑 Трек остановлен:', track.id);
+                });
+            }
+            
+            // Создаем новый offer только с аудио
+            if (this.localStream) {
+                this.publisherHandle.createOffer({
+                    media: {
+                        audioRecv: false,
+                        videoRecv: false,
+                        audioSend: true,
+                        videoSend: false,
+                        replaceAudio: true,
+                        removeVideo: true // Удаляем видео
+                    },
+                    stream: this.localStream,
+                    success: (jsep) => {
+                        console.log('✅ Offer создан без видео');
+                        
+                        // Отправляем configure без видео
+                        this.publisherHandle.send({
+                            message: {
+                                request: 'configure',
+                                video: false,
+                                audio: true
+                            },
+                            jsep: jsep
+                        });
+                    },
+                    error: (error) => {
+                        console.error('❌ Ошибка создания offer без видео:', error);
+                    }
+                });
+            }
+            
+            // Уведомляем UI об удалении своего видео
+            if (window.onVideoStreamRemoved && this.participantId) {
+                window.onVideoStreamRemoved(this.participantId);
             }
             
             this.localVideoStream = null;
@@ -903,42 +930,45 @@ var AudioModule = {
         try {
             console.log('📤 Публикуем видео-трек:', videoTrack.id);
             
-            // В Janus VideoRoom для добавления видео к существующей публикации
-            // нужно использовать configure с новым offer, включающим оба потока
+            // Создаем комбинированный поток с аудио и видео
             const combinedStream = new MediaStream();
             
             // Добавляем аудио-треки из localStream
             if (this.localStream) {
                 this.localStream.getAudioTracks().forEach(track => {
                     combinedStream.addTrack(track);
+                    console.log('📤 Добавлен аудио-трек:', track.id);
                 });
             }
             
             // Добавляем видео-трек
             combinedStream.addTrack(videoTrack);
+            console.log('📤 Добавлен видео-трек:', videoTrack.id);
             
-            // Создаем новый offer с обоими потоками
+            // Используем Janus.js createOffer для корректной работы
             this.publisherHandle.createOffer({
                 media: {
                     audioRecv: false,
                     videoRecv: false,
-                    audioSend: this.localStream && this.localStream.getAudioTracks().length > 0,
-                    videoSend: true // Включаем видео
+                    audioSend: true,
+                    videoSend: true,
+                    replaceAudio: true, // Заменяем аудио
+                    replaceVideo: true  // Заменяем/добавляем видео
                 },
-                stream: combinedStream, // Передаем комбинированный поток
+                stream: combinedStream,
                 success: (jsep) => {
-                    console.log('✅ Offer создан для видео:', jsep);
+                    console.log('✅ Offer создан для видео через Janus.js');
                     
-                    // Отправляем configure с видео - это обновит существующую публикацию
+                    // Отправляем configure
                     this.publisherHandle.send({
                         message: {
                             request: 'configure',
                             video: true,
-                            audio: this.localStream && this.localStream.getAudioTracks().length > 0
+                            audio: true
                         },
                         jsep: jsep,
                         success: (result) => {
-                            console.log('✅ Видео успешно опубликовано:', result);
+                            console.log('✅ Видео опубликовано, ответ:', result);
                         },
                         error: (error) => {
                             console.error('❌ Ошибка публикации видео:', error);
@@ -949,6 +979,11 @@ var AudioModule = {
                     console.error('❌ Ошибка создания offer для видео:', error);
                 }
             });
+            
+            // Уведомляем UI о своем видео
+            if (window.onVideoStreamAdded) {
+                window.onVideoStreamAdded(this.participantId, stream, this.displayName + ' (Вы)', null);
+            }
             
             return true;
         } catch (error) {
