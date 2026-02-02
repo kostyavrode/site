@@ -1068,15 +1068,47 @@ var AudioModule = {
             return;
         }
         
+        // Проверяем состояние треков - игнорируем ended треки
+        const activeTracks = videoTracks.filter(track => track.readyState !== 'ended');
+        if (activeTracks.length === 0) {
+            console.warn(`⚠️ Все видео-треки от ${publisherIdStr} уже ended, пропускаем обработку`);
+            return;
+        }
+        
         // Проверяем состояние треков
         videoTracks.forEach(track => {
             console.log(`🔍 Видео-трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
         });
         
         // Проверяем, есть ли уже видео для этого publisher
-        if (this.remoteVideoStreams.has(publisherIdStr)) {
-            console.log(`⚠️ Видео-поток для ${publisherIdStr} уже существует, обновляем...`);
-            this.removeRemoteVideoStream(publisherId);
+        const existingVideoData = this.remoteVideoStreams.get(publisherIdStr);
+        if (existingVideoData) {
+            // Проверяем, не тот ли это же трек
+            const existingTrack = existingVideoData.stream?.getVideoTracks()[0];
+            const newTrack = activeTracks[0];
+            
+            if (existingTrack && newTrack && existingTrack.id === newTrack.id && existingTrack.readyState === 'live') {
+                console.log(`✅ Видео-поток для ${publisherIdStr} уже обрабатывается с тем же треком, обновляем только srcObject`);
+                // Обновляем srcObject без пересоздания элемента
+                if (existingVideoData.videoElement) {
+                    existingVideoData.videoElement.srcObject = stream;
+                    // Пытаемся воспроизвести, если еще не воспроизводится
+                    if (existingVideoData.videoElement.paused) {
+                        existingVideoData.videoElement.play().catch(error => {
+                            // Игнорируем AbortError - это нормально при обновлении
+                            if (error.name !== 'AbortError') {
+                                console.error(`❌ Ошибка воспроизведения видео от ${publisherIdStr}:`, error);
+                            }
+                        });
+                    }
+                }
+                // Обновляем stream в данных
+                existingVideoData.stream = stream;
+                return;
+            } else {
+                console.log(`⚠️ Видео-поток для ${publisherIdStr} уже существует, но трек другой, обновляем...`);
+                this.removeRemoteVideoStream(publisherId);
+            }
         }
         
         // Создаем video элемент
@@ -1088,7 +1120,12 @@ var AudioModule = {
         
         // Явно запускаем воспроизведение
         videoElement.play().catch(error => {
-            console.error(`❌ Ошибка воспроизведения видео от ${publisherIdStr}:`, error);
+            // Игнорируем AbortError - это может произойти при быстром обновлении
+            if (error.name === 'AbortError') {
+                console.log(`ℹ️ Воспроизведение видео от ${publisherIdStr} прервано (возможно, элемент обновляется)`);
+            } else {
+                console.error(`❌ Ошибка воспроизведения видео от ${publisherIdStr}:`, error);
+            }
         });
         
         // Обработка событий трека
@@ -1978,14 +2015,22 @@ var AudioModule = {
                             // Трек уже активен, создаем поток сразу
                             const videoStream = new MediaStream([track]);
                             this.handleRemoteVideoStream(videoStream, publisherId, displayName);
+                        } else if (track.readyState === 'ended') {
+                            // Трек уже ended - не обрабатываем
+                            console.warn(`⚠️ Видео-трек ${track.id} уже ended, пропускаем обработку`);
                         } else {
                             // Ждем пока трек станет live
                             console.log(`⏳ Видео-трек ${track.id} еще не live (readyState=${track.readyState}), ждем...`);
                             const liveHandler = () => {
                                 console.log(`✅ Видео-трек ${track.id} стал live для ${publisherId}`);
                                 track.removeEventListener('live', liveHandler);
-                                const videoStream = new MediaStream([track]);
-                                this.handleRemoteVideoStream(videoStream, publisherId, displayName);
+                                // Проверяем, что трек еще не ended
+                                if (track.readyState === 'live') {
+                                    const videoStream = new MediaStream([track]);
+                                    this.handleRemoteVideoStream(videoStream, publisherId, displayName);
+                                } else {
+                                    console.warn(`⚠️ Видео-трек ${track.id} стал ${track.readyState} вместо live`);
+                                }
                             };
                             track.addEventListener('live', liveHandler);
                         }
@@ -2271,12 +2316,15 @@ var AudioModule = {
                                 
                                 console.log(`🔍 [webrtcState ${publisherIdStr}] Итого: аудио-треков=${remoteStream.getAudioTracks().length}, видео-треков=${videoStream.getVideoTracks().length}`);
                                 
-                                // Обрабатываем видео-поток, если есть
-                                if (videoStream.getVideoTracks().length > 0) {
-                                    console.log(`✅ [webrtcState ${publisherIdStr}] Создан видео-поток из receivers, треков: ${videoStream.getVideoTracks().length}`);
-                                    this.handleRemoteVideoStream(videoStream, publisherId, displayName);
+                                // Обрабатываем видео-поток, если есть активные треки
+                                const activeVideoTracks = videoStream.getVideoTracks().filter(track => track.readyState !== 'ended');
+                                if (activeVideoTracks.length > 0) {
+                                    // Создаем новый поток только с активными треками
+                                    const activeVideoStream = new MediaStream(activeVideoTracks);
+                                    console.log(`✅ [webrtcState ${publisherIdStr}] Создан видео-поток из receivers, активных треков: ${activeVideoTracks.length}`);
+                                    this.handleRemoteVideoStream(activeVideoStream, publisherId, displayName);
                                 } else {
-                                    console.log(`⚠️ [webrtcState ${publisherIdStr}] Видео-треков в receivers НЕТ`);
+                                    console.log(`⚠️ [webrtcState ${publisherIdStr}] Видео-треков в receivers НЕТ или все ended`);
                                     
                                     // Проверяем transceivers
                                     if (pc.getTransceivers) {
