@@ -2056,7 +2056,9 @@ var AudioModule = {
                 
                 // Альтернативный способ получения потока (старый API) - ПРИОРИТЕТНЫЙ
                 handle.onremotestream = (stream) => {
-                    console.log(`🔊 [onremotestream] Получен удаленный поток от publisher ${publisherId}, треков: ${stream.getAudioTracks().length}`);
+                    const audioTracks = stream.getAudioTracks();
+                    const videoTracks = stream.getVideoTracks();
+                    console.log(`🔊 [onremotestream] Получен удаленный поток от publisher ${publisherId}, аудио-треков: ${audioTracks.length}, видео-треков: ${videoTracks.length}`);
                     
                     // Проверяем статистику WebRTC
                     if (handle.webrtcStuff && handle.webrtcStuff.pc) {
@@ -2064,23 +2066,43 @@ var AudioModule = {
                         setTimeout(() => {
                             pc.getStats().then(stats => {
                                 console.log(`📊 [onremotestream] Статистика WebRTC для ${publisherId}:`);
-                                let hasInboundRtp = false;
+                                let hasInboundRtpAudio = false;
+                                let hasInboundRtpVideo = false;
                                 stats.forEach(report => {
-                                    if (report.type === 'inbound-rtp' && report.kind === 'audio') {
-                                        hasInboundRtp = true;
-                                        console.log(`📊 inbound-rtp (audio):`, {
-                                            bytesReceived: report.bytesReceived,
-                                            packetsReceived: report.packetsReceived,
-                                            packetsLost: report.packetsLost,
-                                            jitter: report.jitter,
-                                            audioLevel: report.audioLevel,
-                                            totalAudioEnergy: report.totalAudioEnergy
-                                        });
-                                        
-                                        if (report.bytesReceived === 0) {
-                                            console.error(`❌ КРИТИЧНО: Нет полученных байт для ${publisherId}! Отправитель не отправляет данные!`);
-                                        } else {
-                                            console.log(`✅ Получено ${report.bytesReceived} байт от ${publisherId}`);
+                                    if (report.type === 'inbound-rtp') {
+                                        if (report.kind === 'audio') {
+                                            hasInboundRtpAudio = true;
+                                            console.log(`📊 inbound-rtp (audio):`, {
+                                                bytesReceived: report.bytesReceived,
+                                                packetsReceived: report.packetsReceived,
+                                                packetsLost: report.packetsLost,
+                                                jitter: report.jitter,
+                                                audioLevel: report.audioLevel,
+                                                totalAudioEnergy: report.totalAudioEnergy
+                                            });
+                                            
+                                            if (report.bytesReceived === 0) {
+                                                console.error(`❌ КРИТИЧНО: Нет полученных байт для ${publisherId}! Отправитель не отправляет данные!`);
+                                            } else {
+                                                console.log(`✅ Получено ${report.bytesReceived} байт от ${publisherId}`);
+                                            }
+                                        } else if (report.kind === 'video') {
+                                            hasInboundRtpVideo = true;
+                                            console.log(`📹 inbound-rtp (video):`, {
+                                                bytesReceived: report.bytesReceived,
+                                                packetsReceived: report.packetsReceived,
+                                                packetsLost: report.packetsLost,
+                                                framesDecoded: report.framesDecoded,
+                                                framesDropped: report.framesDropped,
+                                                frameWidth: report.frameWidth,
+                                                frameHeight: report.frameHeight
+                                            });
+                                            
+                                            if (report.bytesReceived === 0) {
+                                                console.error(`❌ КРИТИЧНО: Нет полученных видео-байт для ${publisherId}! Отправитель не отправляет видео!`);
+                                            } else {
+                                                console.log(`✅ Получено ${report.bytesReceived} видео-байт от ${publisherId}`);
+                                            }
                                         }
                                     }
                                     if (report.type === 'transport') {
@@ -2093,8 +2115,11 @@ var AudioModule = {
                                     }
                                 });
                                 
-                                if (!hasInboundRtp) {
-                                    console.error(`❌ КРИТИЧНО: Нет inbound-rtp статистики для ${publisherId}!`);
+                                if (!hasInboundRtpAudio && audioTracks.length > 0) {
+                                    console.error(`❌ КРИТИЧНО: Нет inbound-rtp статистики для аудио ${publisherId}!`);
+                                }
+                                if (!hasInboundRtpVideo && videoTracks.length > 0) {
+                                    console.error(`❌ КРИТИЧНО: Нет inbound-rtp статистики для видео ${publisherId}!`);
                                 }
                             }).catch(e => {
                                 console.error(`❌ Ошибка получения статистики:`, e);
@@ -2103,8 +2128,11 @@ var AudioModule = {
                     }
                     
                     // Используем onremotestream как основной способ (более надежный)
-                    stream.getAudioTracks().forEach(track => {
-                        console.log(`🔍 [onremotestream] Трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
+                    audioTracks.forEach(track => {
+                        console.log(`🔍 [onremotestream] Аудио-трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
+                    });
+                    videoTracks.forEach(track => {
+                        console.log(`📹 [onremotestream] Видео-трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
                     });
                     
                     this.handleRemoteStream(stream, publisherId, displayName);
@@ -2122,11 +2150,16 @@ var AudioModule = {
                     
                     if (event.streams && event.streams.length > 0) {
                         const stream = event.streams[0];
+                        const audioTracks = stream.getAudioTracks();
+                        const videoTracks = stream.getVideoTracks();
                         console.log(`✅ [ontrack] Получен поток от publisher ${publisherIdStr}, id=${stream.id}`);
-                        console.log(`🔍 [ontrack] Треков в потоке: ${stream.getAudioTracks().length}`);
+                        console.log(`🔍 [ontrack] Аудио-треков в потоке: ${audioTracks.length}, видео-треков: ${videoTracks.length}`);
                         
-                        stream.getAudioTracks().forEach(track => {
-                            console.log(`🔍 [ontrack] Трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
+                        audioTracks.forEach(track => {
+                            console.log(`🔍 [ontrack] Аудио-трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
+                        });
+                        videoTracks.forEach(track => {
+                            console.log(`📹 [ontrack] Видео-трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
                         });
                         
                         // ВАЖНО: Сохраняем поток из ontrack - он уже связан с receiver
@@ -2137,7 +2170,7 @@ var AudioModule = {
                         this.handleRemoteStream(stream, publisherId, displayName);
                     } else if (event.track) {
                         // Если нет streams, но есть track - создаем поток из трека
-                        console.log(`⚠️ [ontrack] Нет streams, но есть track, создаем поток из трека`);
+                        console.log(`⚠️ [ontrack] Нет streams, но есть track (${event.track.kind}), создаем поток из трека`);
                         const stream = new MediaStream([event.track]);
                         handle.ontrackStream = stream;
                         console.log(`✅ [ontrack] Создан поток из track для ${publisherIdStr}`);
@@ -2305,18 +2338,38 @@ var AudioModule = {
         
         console.log(`🔊 handleRemoteStream вызван: publisherId=${publisherId} (строка: ${publisherIdStr}), displayName=${displayName}`);
         
-        // Проверяем состояние треков
+        // ВАЖНО: Проверяем видео-треки ПЕРВЫМИ, так как они могут быть без аудио
+        const videoTracks = stream.getVideoTracks();
+        if (videoTracks.length > 0) {
+            console.log(`📹 [handleRemoteStream] Обнаружены видео-треки (${videoTracks.length}) в потоке от ${publisherIdStr}, обрабатываем...`);
+            // Создаем отдельный поток для видео
+            const videoStream = new MediaStream(videoTracks);
+            this.handleRemoteVideoStream(videoStream, publisherId, displayName);
+        }
+        
+        // Проверяем состояние аудио-треков
         const audioTracks = stream.getAudioTracks();
         if (audioTracks.length === 0) {
-            console.warn(`⚠️ Нет аудио треков в потоке для ${publisherIdStr}`);
-                                return;
-                            }
+            console.log(`ℹ️ Нет аудио треков в потоке для ${publisherIdStr}, но видео уже обработано (если было)`);
+            // НЕ возвращаемся, если есть видео - продолжаем обработку
+            // Но если нет ни аудио, ни видео - возвращаемся
+            if (videoTracks.length === 0) {
+                console.warn(`⚠️ Нет ни аудио, ни видео треков в потоке для ${publisherIdStr}`);
+                return;
+            }
+            // Если есть только видео, просто выходим (аудио обрабатывать нечего)
+            return;
+        }
         
         // Проверяем, есть ли muted треки
         const mutedTracks = audioTracks.filter(track => track.muted);
         if (mutedTracks.length > 0) {
-            console.warn(`⚠️ Поток ${publisherIdStr} содержит muted треки, пропускаем до unmute`);
-            return;
+            console.warn(`⚠️ Поток ${publisherIdStr} содержит muted аудио-треки, пропускаем аудио до unmute (видео уже обработано)`);
+            // НЕ возвращаемся, если есть видео - продолжаем обработку видео
+            // Но если нет видео, возвращаемся
+            if (videoTracks.length === 0) {
+                return;
+            }
         }
         
         // Проверяем, есть ли уже источник для этого потока
