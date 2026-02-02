@@ -382,9 +382,42 @@ var AudioModule = {
             });
         } catch (error) {
             console.error('❌ Ошибка получения медиа:', error);
-            if (window.onAudioError) {
-                window.onAudioError(error.message || 'Ошибка доступа к микрофону');
+            
+            // Формируем понятное сообщение в зависимости от типа ошибки
+            let errorMessage = 'Ошибка доступа к микрофону';
+            let errorDetails = '';
+            
+            if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+                errorMessage = 'Доступ к микрофону заблокирован';
+                errorDetails = 'Пожалуйста, разрешите доступ к микрофону в настройках браузера. ' +
+                             'Обычно это значок замка или камеры в адресной строке браузера. ' +
+                             'После разрешения доступа обновите страницу.';
+            } else if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
+                errorMessage = 'Микрофон не найден';
+                errorDetails = 'Пожалуйста, подключите микрофон и обновите страницу.';
+            } else if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
+                errorMessage = 'Не удалось получить доступ к микрофону';
+                errorDetails = 'Возможно, микрофон используется другим приложением. ' +
+                             'Закройте другие приложения, использующие микрофон, и обновите страницу.';
+            } else if (error.name === 'OverconstrainedError' || error.name === 'ConstraintNotSatisfiedError') {
+                errorMessage = 'Микрофон не поддерживает требуемые настройки';
+                errorDetails = 'Попробуйте использовать другой микрофон или обновите драйверы.';
+            } else if (error.name === 'TypeError') {
+                errorMessage = 'Ошибка браузера';
+                errorDetails = 'Убедитесь, что используете современный браузер (Chrome, Firefox, Edge) и сайт открыт по HTTPS.';
+            } else {
+                errorMessage = error.message || 'Неизвестная ошибка доступа к микрофону';
+                errorDetails = 'Попробуйте обновить страницу или использовать другой браузер.';
             }
+            
+            console.error(`❌ ${errorMessage}:`, errorDetails);
+            
+            if (window.onAudioError) {
+                window.onAudioError(`${errorMessage}. ${errorDetails}`);
+            }
+            
+            // Также показываем alert для пользователя
+            alert(`${errorMessage}\n\n${errorDetails}`);
         }
     },
 
