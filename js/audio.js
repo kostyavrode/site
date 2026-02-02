@@ -1322,8 +1322,10 @@ var AudioModule = {
     async resubscribeToPublisherByNickname(nickname) {
         console.log(`🔄 Переподписываемся на publisher по nickname: ${nickname}`);
         
-        // Увеличиваем задержку до 4 секунд, чтобы Janus точно успел обновить информацию о видео
-        await new Promise(resolve => setTimeout(resolve, 4000));
+        // Увеличиваем задержку до 6 секунд, чтобы Janus точно успел обработать публикацию видео
+        // и обновить информацию о доступных потоках
+        console.log('⏳ Ждем 6 секунд перед переподпиской, чтобы Janus успел обработать видео...');
+        await new Promise(resolve => setTimeout(resolve, 6000));
         
         // ВАЖНО: Используем более простой подход - переподписываемся на ВСЕХ существующих publishers
         // Это гарантирует, что мы получим видео, даже если список publishers парсится неправильно

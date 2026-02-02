@@ -1933,6 +1933,16 @@
             if (data.channelId === AudioModule.channelId) {
                 console.log(`📹 Пользователь ${data.nickname} начал трансляцию ${data.videoType}`);
                 
+                // ВАЖНО: Проверяем, не мы ли сами начали трансляцию
+                // Если это мы, то не нужно переподписываться на себя
+                const isSelf = data.userId === currentUserId || data.nickname === currentNickName;
+                if (isSelf) {
+                    console.log(`✅ Это наша собственная трансляция, переподписка не нужна`);
+                    // Просто обновляем видимость кнопки
+                    updateWatchButtonVisibility();
+                    return;
+                }
+                
                 // Сохраняем информацию о видео-стриме (даже если поток еще не получен)
                 activeVideoStreamsBySignalR.set(data.userId, {
                     videoType: data.videoType,
