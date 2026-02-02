@@ -812,28 +812,53 @@ var AudioModule = {
                 settings: trackSettings
             });
             
+            // ВАЖНО: Проверяем label трека - камеры обычно имеют специфичные названия
+            const trackLabel = videoTrack.label.toLowerCase();
+            const cameraKeywords = ['camera', 'cam', 'webcam', 'video capture', 'camo', 'obs', 'virtual', 'droidcam'];
+            const isLabelCamera = cameraKeywords.some(keyword => trackLabel.includes(keyword));
+            
             // Проверяем, что это действительно экран
             if (trackSettings) {
-                const isScreen = trackSettings.displaySurface !== undefined || 
-                                (trackSettings.facingMode === undefined && trackSettings.deviceId === undefined);
-                const isCamera = trackSettings.facingMode !== undefined || 
-                               (trackSettings.displaySurface === undefined && trackSettings.deviceId !== undefined);
+                // Проверяем displaySurface - это основной индикатор screen share
+                const hasDisplaySurface = trackSettings.displaySurface !== undefined;
+                const hasFacingMode = trackSettings.facingMode !== undefined;
                 
-                if (isCamera) {
+                // Если есть displaySurface - это точно экран
+                // Если есть facingMode - это точно камера
+                // Если label содержит слова камеры - это камера
+                
+                if (hasFacingMode || isLabelCamera) {
                     console.error('❌ КРИТИЧНО: Получен поток от камеры вместо экрана!');
                     console.error('🔍 Настройки трека:', trackSettings);
+                    console.error('🔍 Label трека:', videoTrack.label);
+                    console.error('🔍 Причина:', hasFacingMode ? 'facingMode определен' : 'label содержит слова камеры');
                     // Останавливаем неправильный поток
                     videoTrack.stop();
-                    throw new Error('Получен поток от камеры вместо экрана. Убедитесь, что вы выбрали экран в диалоге браузера.');
+                    throw new Error(`Получен поток от камеры "${videoTrack.label}" вместо экрана. В диалоге браузера выберите "Экран" или "Окно", а не камеру.`);
                 }
                 
-                if (!isScreen && trackSettings.displaySurface === undefined) {
-                    console.warn('⚠️ Не удалось определить тип потока по настройкам, продолжаем...');
+                if (hasDisplaySurface) {
+                    console.log('✅ Подтверждено: это поток от экрана (displaySurface:', trackSettings.displaySurface, ')');
+                } else if (!isLabelCamera) {
+                    // Если нет displaySurface, но и label не указывает на камеру - возможно, это экран
+                    console.warn('⚠️ displaySurface не определен, но label не указывает на камеру, продолжаем...');
+                    console.warn('🔍 Label:', videoTrack.label);
                 } else {
-                    console.log('✅ Подтверждено: это поток от экрана (displaySurface:', trackSettings.displaySurface || 'определен', ')');
+                    // Label указывает на камеру, но нет displaySurface - это странно, но считаем камерой
+                    console.error('❌ Label указывает на камеру, но displaySurface не определен');
+                    videoTrack.stop();
+                    throw new Error(`Получен поток от камеры "${videoTrack.label}" вместо экрана.`);
                 }
             } else {
-                console.warn('⚠️ Не удалось получить настройки трека для проверки');
+                // Если не удалось получить настройки, проверяем только label
+                if (isLabelCamera) {
+                    console.error('❌ КРИТИЧНО: Label трека указывает на камеру:', videoTrack.label);
+                    videoTrack.stop();
+                    throw new Error(`Получен поток от камеры "${videoTrack.label}" вместо экрана. В диалоге браузера выберите "Экран" или "Окно".`);
+                } else {
+                    console.warn('⚠️ Не удалось получить настройки трека, но label не указывает на камеру, продолжаем...');
+                    console.warn('🔍 Label:', videoTrack.label);
+                }
             }
             
             // ВАЖНО: Сохраняем поток ДО публикации
@@ -1115,13 +1140,36 @@ var AudioModule = {
                 height: settings.height,
                 frameRate: settings.frameRate,
                 displaySurface: settings.displaySurface, // Должно быть 'monitor', 'window' или 'browser' для screen share
-                facingMode: settings.facingMode // Должно быть undefined для screen share
+                facingMode: settings.facingMode, // Должно быть undefined для screen share
+                deviceId: settings.deviceId,
+                label: videoTrack.label
             });
             
-            // Проверяем, что это действительно экран, а не камера
-            if (this.isScreenSharing && settings.displaySurface === undefined && settings.facingMode !== undefined) {
-                console.error('❌ КРИТИЧНО: Получен поток от камеры вместо экрана!');
-                console.error('🔍 Настройки трека указывают на камеру:', settings);
+            // ВАЖНО: Проверяем, что при screen sharing используется экран, а не камера
+            if (this.isScreenSharing) {
+                const trackLabel = videoTrack.label.toLowerCase();
+                const cameraKeywords = ['camera', 'cam', 'webcam', 'video capture', 'camo', 'obs', 'virtual', 'droidcam'];
+                const isLabelCamera = cameraKeywords.some(keyword => trackLabel.includes(keyword));
+                
+                if (settings.facingMode !== undefined || isLabelCamera) {
+                    console.error('❌ КРИТИЧНО: При screen sharing получен поток от камеры вместо экрана!');
+                    console.error('🔍 Настройки трека:', settings);
+                    console.error('🔍 Label трека:', videoTrack.label);
+                    console.error('🔍 Причина:', settings.facingMode !== undefined ? 'facingMode определен' : 'label содержит слова камеры');
+                    
+                    // Останавливаем неправильный поток
+                    videoTrack.stop();
+                    this.isScreenSharing = false;
+                    this.localVideoStream = null;
+                    
+                    throw new Error(`ОШИБКА: При демонстрации экрана получен поток от камеры "${videoTrack.label}". В диалоге браузера выберите "Экран" или "Окно", а не камеру.`);
+                }
+                
+                if (settings.displaySurface === undefined && !isLabelCamera) {
+                    console.warn('⚠️ displaySurface не определен для screen share, но label не указывает на камеру');
+                } else if (settings.displaySurface !== undefined) {
+                    console.log('✅ Подтверждено: это поток от экрана (displaySurface:', settings.displaySurface, ')');
+                }
             }
         }
         
