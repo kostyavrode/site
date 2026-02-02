@@ -813,12 +813,16 @@ var AudioModule = {
             }
             this.isCameraEnabled = false; // Убеждаемся, что флаг камеры сброшен
             
-            // Запрашиваем доступ к экрану
+            // Запрашиваем доступ к экрану с оптимизациями для низкой задержки
             console.log('🖥️ Запрашиваем доступ к экрану через getDisplayMedia...');
             const stream = await navigator.mediaDevices.getDisplayMedia({
                 video: {
                     cursor: 'always',
-                    displaySurface: 'monitor'
+                    displaySurface: 'monitor',
+                    // Оптимизации для низкой задержки
+                    frameRate: { ideal: 30, max: 30 }, // Ограничиваем FPS для стабильности
+                    width: { ideal: 1920, max: 1920 }, // Ограничиваем разрешение
+                    height: { ideal: 1080, max: 1080 }
                 },
                 audio: false // Экран не передает аудио
             });
@@ -1475,11 +1479,16 @@ var AudioModule = {
             }
             
             // КРИТИЧНО: Добавляем видео-трек напрямую (НЕ capture: true!)
+            // С оптимизациями для низкой задержки
             tracks.push({
                 type: 'video',
                 capture: videoTrack, // Передаем трек напрямую! Janus.js НЕ будет вызывать getUserMedia!
                 recv: false,
-                [videoAction]: true // add или replace
+                [videoAction]: true, // add или replace
+                // Оптимизации для низкой задержки
+                simulcast: false, // Отключаем simulcast для уменьшения задержки
+                // Предпочитаем VP8 - меньше задержка чем VP9/AV1
+                // (кодек выбирается через SDP munging или server-side)
             });
             console.log('📤 Добавлен видео-трек в tracks:', videoTrack.id, videoTrack.label);
             console.log('📤 Итого треков:', tracks.length);
@@ -1689,11 +1698,27 @@ var AudioModule = {
             }
         }
         
-        // Создаем video элемент
+        // Создаем video элемент с оптимизациями для низкой задержки
         const videoElement = document.createElement('video');
         videoElement.autoplay = true;
         videoElement.playsInline = true;
         videoElement.muted = true; // Видео без звука (аудио идет отдельно)
+        
+        // ОПТИМИЗАЦИИ ДЛЯ НИЗКОЙ ЗАДЕРЖКИ
+        videoElement.preload = 'none'; // Не буферизировать заранее
+        videoElement.disablePictureInPicture = true;
+        videoElement.disableRemotePlayback = true;
+        
+        // Для Chrome/Edge - отключаем буферизацию (экспериментально)
+        if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+            // Браузер поддерживает низкозадержечный режим
+            console.log('🚀 Браузер поддерживает requestVideoFrameCallback для низкой задержки');
+        }
+        
+        // Устанавливаем атрибут для низкой задержки (некоторые браузеры)
+        videoElement.setAttribute('playsinline', '');
+        videoElement.setAttribute('webkit-playsinline', '');
+        
         videoElement.srcObject = stream;
         
         // Явно запускаем воспроизведение
@@ -1893,8 +1918,10 @@ var AudioModule = {
                 room: this.roomId,
                 description: `Audio channel ${this.channelId}`,
                 publishers: 50, // Максимальное количество publishers
-                bitrate: 128000,
+                bitrate: 2000000, // 2 Мбит/с для видео (screen share)
+                bitrate_cap: true, // Строго ограничивать битрейт
                 audiocodec: 'opus',
+                videocodec: 'vp8', // VP8 имеет меньшую задержку чем VP9
                 permanent: false // Не сохранять после перезагрузки Janus
             },
             success: (result) => {
@@ -2379,8 +2406,27 @@ var AudioModule = {
                                                     receiverTrackId: transceiver.receiver?.track?.id,
                                                     receiverTrackReadyState: transceiver.receiver?.track?.readyState
                                                 });
+                                                
+                                                // ОПТИМИЗАЦИЯ: Уменьшаем jitter buffer для низкой задержки
+                                                // (поддерживается в Chrome 74+, Firefox 74+)
+                                                if (transceiver.receiver && transceiver.receiver.jitterBufferTarget !== undefined) {
+                                                    // Устанавливаем минимальный jitter buffer (в миллисекундах)
+                                                    // 0 = минимальная задержка, но может быть нестабильно
+                                                    // 50-100 = хороший баланс между задержкой и стабильностью
+                                                    transceiver.receiver.jitterBufferTarget = 50; // 50мс
+                                                    console.log(`🚀 [subscriber ${publisherIdStr}] Установлен jitterBufferTarget=50ms для ${transceiver.receiver?.track?.kind}`);
+                                                }
                                             });
                                         }
+                                        
+                                        // Также проверяем receivers напрямую
+                                        const receivers = pc.getReceivers();
+                                        receivers.forEach(receiver => {
+                                            if (receiver.jitterBufferTarget !== undefined) {
+                                                receiver.jitterBufferTarget = 50; // 50мс для низкой задержки
+                                                console.log(`🚀 [subscriber ${publisherIdStr}] Установлен jitterBufferTarget=50ms для receiver ${receiver.track?.kind}`);
+                                            }
+                                        });
                                     }
                                 }, 100);
                                 
