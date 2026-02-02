@@ -1317,6 +1317,9 @@ var AudioModule = {
     async resubscribeToPublisherByNickname(nickname) {
         console.log(`🔄 Переподписываемся на publisher по nickname: ${nickname}`);
         
+        // Сначала ждем немного, чтобы Janus успел обновить список publishers после публикации видео
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        
         // Запрашиваем список publishers
         return new Promise((resolve, reject) => {
             if (!this.publisherHandle || !this.roomId) {
@@ -1331,9 +1334,50 @@ var AudioModule = {
                     room: this.roomId
                 },
                 success: (result) => {
+                    console.log('📋 Получен список publishers для переподписки:', result);
+                    
                     if (result && result.list) {
-                        // Ищем publisher по display name
-                        const publisher = result.list.find(p => p.display === nickname);
+                        console.log(`📋 Всего publishers в списке: ${result.list.length}`);
+                        result.list.forEach((p, idx) => {
+                            console.log(`  [${idx}] ID: ${p.id}, display: "${p.display}", talking: ${p.talking}, streams: ${p.streams?.length || 0}`);
+                            if (p.streams) {
+                                p.streams.forEach((s, sIdx) => {
+                                    console.log(`    Stream ${sIdx}: type=${s.type}, codec=${s.codec}, video_codec=${s.video_codec}`);
+                                });
+                            }
+                        });
+                        
+                        // Ищем publisher по display name (точное совпадение)
+                        let publisher = result.list.find(p => p.display === nickname);
+                        
+                        // Если не нашли, пробуем найти по частичному совпадению (без учета регистра)
+                        if (!publisher) {
+                            const nicknameLower = nickname.toLowerCase().trim();
+                            publisher = result.list.find(p => {
+                                const displayLower = (p.display || '').toLowerCase().trim();
+                                return displayLower === nicknameLower || displayLower.includes(nicknameLower) || nicknameLower.includes(displayLower);
+                            });
+                        }
+                        
+                        // Если все еще не нашли, пробуем найти по существующим subscriberHandles
+                        // (если мы уже подписаны, значит publisher существует)
+                        if (!publisher) {
+                            console.log('🔍 Ищем publisher среди существующих подписок...');
+                            for (const [publisherIdStr, handle] of this.subscriberHandles.entries()) {
+                                const publisherId = parseInt(publisherIdStr);
+                                const existingPublisher = result.list.find(p => p.id === publisherId);
+                                if (existingPublisher) {
+                                    console.log(`🔍 Проверяем publisher ${publisherId} (${existingPublisher.display})...`);
+                                    // Проверяем, есть ли у этого publisher видео-стримы
+                                    if (existingPublisher.streams && existingPublisher.streams.some(s => s.type === 'video')) {
+                                        console.log(`✅ Найден publisher с видео: ${publisherId} (${existingPublisher.display})`);
+                                        publisher = existingPublisher;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        
                         if (publisher) {
                             console.log(`✅ Найден publisher для переподписки: ${publisher.id} (${publisher.display})`);
                             // Отписываемся от старой подписки
@@ -1359,6 +1403,7 @@ var AudioModule = {
                             }, 500); // Небольшая задержка для очистки
                         } else {
                             console.warn(`⚠️ Publisher с nickname "${nickname}" не найден в списке`);
+                            console.warn('📋 Доступные publishers:', result.list.map(p => ({ id: p.id, display: p.display })));
                             reject(new Error(`Publisher с nickname "${nickname}" не найден`));
                         }
                     } else {
@@ -1370,6 +1415,79 @@ var AudioModule = {
                     console.error('❌ Ошибка при запросе списка publishers для переподписки:', error);
                     reject(error);
                 }
+            });
+        });
+    },
+
+    // Переподписаться на всех publishers, у которых есть видео-стримы
+    async resubscribeAllPublishersWithVideo() {
+        console.log('🔄 Переподписываемся на всех publishers с видео...');
+        
+        // Ждем немного, чтобы Janus успел обновить список
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        return new Promise((resolve, reject) => {
+            if (!this.publisherHandle || !this.roomId) {
+                reject(new Error('publisherHandle или roomId не доступен'));
+                return;
+            }
+            
+            this.publisherHandle.send({
+                message: { 
+                    request: 'list',
+                    room: this.roomId
+                },
+                success: (result) => {
+                    if (result && result.list) {
+                        const publishersWithVideo = result.list.filter(p => {
+                            return p.streams && p.streams.some(s => s.type === 'video');
+                        });
+                        
+                        console.log(`📹 Найдено ${publishersWithVideo.length} publishers с видео`);
+                        
+                        if (publishersWithVideo.length === 0) {
+                            console.warn('⚠️ Publishers с видео не найдены');
+                            resolve([]);
+                            return;
+                        }
+                        
+                        // Переподписываемся на каждого publisher с видео
+                        const resubscribePromises = publishersWithVideo.map(publisher => {
+                            return new Promise((res, rej) => {
+                                const publisherIdStr = String(publisher.id);
+                                const oldHandle = this.subscriberHandles.get(publisherIdStr);
+                                
+                                if (oldHandle) {
+                                    console.log(`🔴 Отписываемся от старой подписки на ${publisherIdStr} (${publisher.display})`);
+                                    try {
+                                        oldHandle.detach();
+                                    } catch (e) {
+                                        console.warn(`Ошибка при отключении старой подписки:`, e);
+                                    }
+                                    this.subscriberHandles.delete(publisherIdStr);
+                                    this.streamVolumes.delete(publisherIdStr);
+                                    this.remoteStreams.delete(publisherIdStr);
+                                    this.removeRemoteVideoStream(publisher.id);
+                                }
+                                
+                                setTimeout(() => {
+                                    this.subscribeToPublisher(publisher);
+                                    res(publisher);
+                                }, 500);
+                            });
+                        });
+                        
+                        Promise.all(resubscribePromises)
+                            .then(publishers => {
+                                console.log(`✅ Переподписаны на ${publishers.length} publishers с видео`);
+                                resolve(publishers);
+                            })
+                            .catch(reject);
+                    } else {
+                        reject(new Error('Список publishers пуст'));
+                    }
+                },
+                error: reject
             });
         });
     },

@@ -1952,6 +1952,13 @@
                         console.log(`✅ Переподписка на ${data.nickname} завершена`);
                     } catch (error) {
                         console.error(`❌ Ошибка при переподписке на ${data.nickname}:`, error);
+                        // Если не удалось найти по nickname, пробуем переподписаться на всех publishers с видео
+                        console.log('🔄 Пробуем альтернативный подход: переподписка на всех publishers с видео...');
+                        try {
+                            await AudioModule.resubscribeAllPublishersWithVideo();
+                        } catch (altError) {
+                            console.error('❌ Альтернативный подход тоже не сработал:', altError);
+                        }
                     }
                 } else {
                     console.warn('⚠️ Метод resubscribeToPublisherByNickname не доступен');
