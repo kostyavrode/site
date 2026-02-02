@@ -1735,6 +1735,7 @@ var AudioModule = {
                                 console.log(`🔍 [webrtcState] Найдено ${receivers.length} receivers для ${publisherIdStr}`);
                                 
                                 const remoteStream = new MediaStream();
+                                const videoStream = new MediaStream();
                                 
                                 receivers.forEach((receiver, index) => {
                                     console.log(`🔍 [webrtcState] Receiver ${index}:`, {
@@ -1747,11 +1748,22 @@ var AudioModule = {
                                         } : 'null'
                                     });
                                     
-                                    if (receiver.track && receiver.track.kind === 'audio') {
-                                        console.log(`✅ [webrtcState] Добавляем трек ${receiver.track.id} в поток для ${publisherIdStr}`);
-                                        remoteStream.addTrack(receiver.track);
+                                    if (receiver.track) {
+                                        if (receiver.track.kind === 'audio') {
+                                            console.log(`✅ [webrtcState] Добавляем аудио-трек ${receiver.track.id} в поток для ${publisherIdStr}`);
+                                            remoteStream.addTrack(receiver.track);
+                                        } else if (receiver.track.kind === 'video') {
+                                            console.log(`✅ [webrtcState] Найден видео-трек ${receiver.track.id} для ${publisherIdStr}`);
+                                            videoStream.addTrack(receiver.track);
+                                        }
                                     }
                                 });
+                                
+                                // Обрабатываем видео-поток, если есть
+                                if (videoStream.getVideoTracks().length > 0) {
+                                    console.log(`✅ [webrtcState] Создан видео-поток из receivers для ${publisherIdStr}, треков: ${videoStream.getVideoTracks().length}`);
+                                    this.handleRemoteVideoStream(videoStream, publisherId, displayName);
+                                }
                                 
                                 console.log(`🔍 [webrtcState] Создан поток с ${remoteStream.getAudioTracks().length} треками для ${publisherIdStr}`);
                                 
