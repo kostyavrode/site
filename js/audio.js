@@ -763,10 +763,25 @@ var AudioModule = {
             
             // Останавливаем камеру, если она была включена
             if (this.isCameraEnabled) {
+                console.log('🛑 Останавливаем камеру перед запуском screen share...');
                 await this.stopVideo();
+                // Ждем немного, чтобы WebRTC успел обработать удаление видео
+                await new Promise(resolve => setTimeout(resolve, 300));
             }
             
+            // ВАЖНО: Убеждаемся, что предыдущий поток полностью очищен
+            if (this.localVideoStream) {
+                console.warn('⚠️ localVideoStream все еще существует, очищаем...');
+                this.localVideoStream.getTracks().forEach(track => {
+                    track.stop();
+                    console.log('🛑 Остановлен старый трек:', track.id);
+                });
+                this.localVideoStream = null;
+            }
+            this.isCameraEnabled = false; // Убеждаемся, что флаг камеры сброшен
+            
             // Запрашиваем доступ к экрану
+            console.log('🖥️ Запрашиваем доступ к экрану через getDisplayMedia...');
             const stream = await navigator.mediaDevices.getDisplayMedia({
                 video: {
                     cursor: 'always',
@@ -775,16 +790,65 @@ var AudioModule = {
                 audio: false // Экран не передает аудио
             });
             
+            // Проверяем, что получили именно экран, а не камеру
+            const videoTrack = stream.getVideoTracks()[0];
+            if (!videoTrack) {
+                throw new Error('Не получен видео-трек от экрана');
+            }
+            
+            // ВАЖНО: Проверяем настройки трека, чтобы убедиться, что это экран, а не камера
+            let trackSettings = null;
+            if (videoTrack.getSettings) {
+                trackSettings = videoTrack.getSettings();
+            } else if (videoTrack.getConstraints) {
+                trackSettings = videoTrack.getConstraints();
+            }
+            
+            console.log('🖥️ Получен поток от getDisplayMedia:', {
+                trackId: videoTrack.id,
+                label: videoTrack.label,
+                kind: videoTrack.kind,
+                readyState: videoTrack.readyState,
+                settings: trackSettings
+            });
+            
+            // Проверяем, что это действительно экран
+            if (trackSettings) {
+                const isScreen = trackSettings.displaySurface !== undefined || 
+                                (trackSettings.facingMode === undefined && trackSettings.deviceId === undefined);
+                const isCamera = trackSettings.facingMode !== undefined || 
+                               (trackSettings.displaySurface === undefined && trackSettings.deviceId !== undefined);
+                
+                if (isCamera) {
+                    console.error('❌ КРИТИЧНО: Получен поток от камеры вместо экрана!');
+                    console.error('🔍 Настройки трека:', trackSettings);
+                    // Останавливаем неправильный поток
+                    videoTrack.stop();
+                    throw new Error('Получен поток от камеры вместо экрана. Убедитесь, что вы выбрали экран в диалоге браузера.');
+                }
+                
+                if (!isScreen && trackSettings.displaySurface === undefined) {
+                    console.warn('⚠️ Не удалось определить тип потока по настройкам, продолжаем...');
+                } else {
+                    console.log('✅ Подтверждено: это поток от экрана (displaySurface:', trackSettings.displaySurface || 'определен', ')');
+                }
+            } else {
+                console.warn('⚠️ Не удалось получить настройки трека для проверки');
+            }
+            
+            // ВАЖНО: Сохраняем поток ДО публикации
             this.localVideoStream = stream;
             this.isScreenSharing = true;
+            this.isCameraEnabled = false; // Убеждаемся, что камера отключена
             
             // Обработка остановки пользователем через UI браузера
-            stream.getVideoTracks()[0].addEventListener('ended', () => {
+            videoTrack.addEventListener('ended', () => {
                 console.log('🖥️ Пользователь остановил демонстрацию экрана через UI браузера');
                 this.stopVideo();
             });
             
-            // Публикуем видео-трек
+            // Публикуем видео-трек (передаем именно поток от экрана)
+            console.log('📤 Публикуем поток от экрана, trackId:', videoTrack.id);
             await this.publishVideo(stream);
             
             // Уведомляем через SignalR о начале видео-трансляции
@@ -839,6 +903,7 @@ var AudioModule = {
             }
             
             // Запрашиваем доступ к камере
+            console.log('📷 Запрашиваем доступ к камере через getUserMedia...');
             const stream = await navigator.mediaDevices.getUserMedia({
                 video: {
                     width: { ideal: 1280 },
@@ -848,8 +913,39 @@ var AudioModule = {
                 audio: false // Аудио уже идет отдельно
             });
             
+            // Проверяем, что получили именно камеру
+            const videoTrack = stream.getVideoTracks()[0];
+            if (!videoTrack) {
+                throw new Error('Не получен видео-трек от камеры');
+            }
+            
+            // Проверяем настройки трека для диагностики
+            let trackSettings = null;
+            if (videoTrack.getSettings) {
+                trackSettings = videoTrack.getSettings();
+            }
+            
+            console.log('📷 Получен поток от камеры:', {
+                trackId: videoTrack.id,
+                label: videoTrack.label,
+                kind: videoTrack.kind,
+                readyState: videoTrack.readyState,
+                settings: trackSettings
+            });
+            
+            // ВАЖНО: Убеждаемся, что предыдущий поток полностью очищен
+            if (this.localVideoStream) {
+                console.warn('⚠️ localVideoStream все еще существует, очищаем...');
+                this.localVideoStream.getTracks().forEach(track => {
+                    track.stop();
+                    console.log('🛑 Остановлен старый трек:', track.id);
+                });
+                this.localVideoStream = null;
+            }
+            
             this.localVideoStream = stream;
             this.isCameraEnabled = true;
+            this.isScreenSharing = false; // Убеждаемся, что флаг screen share сброшен
             
             // Публикуем видео-трек
             await this.publishVideo(stream);
@@ -898,14 +994,38 @@ var AudioModule = {
         }
         
         try {
-            console.log('🛑 Останавливаем видео...');
+            const wasScreenSharing = this.isScreenSharing;
+            const wasCameraEnabled = this.isCameraEnabled;
             
-            // Останавливаем видео-трек
-            if (this.localVideoStream) {
-                this.localVideoStream.getTracks().forEach(track => {
-                    track.stop();
-                    console.log('🛑 Трек остановлен:', track.id);
+            console.log('🛑 Останавливаем видео...', {
+                wasScreenSharing: wasScreenSharing,
+                wasCameraEnabled: wasCameraEnabled
+            });
+            
+            // ВАЖНО: Сначала удаляем видео-треки из WebRTC, потом останавливаем локальные треки
+            // Удаляем видео-треки из WebRTC PeerConnection
+            if (this.publisherHandle.webrtcStuff && this.publisherHandle.webrtcStuff.pc) {
+                const pc = this.publisherHandle.webrtcStuff.pc;
+                const senders = pc.getSenders();
+                senders.forEach(sender => {
+                    if (sender.track && sender.track.kind === 'video') {
+                        console.log('🛑 Удаляем видео-трек из WebRTC sender:', sender.track.id);
+                        sender.replaceTrack(null).catch(err => {
+                            console.warn('⚠️ Ошибка при удалении видео-трека из sender:', err);
+                        });
+                    }
                 });
+            }
+            
+            // Останавливаем видео-трек локально
+            if (this.localVideoStream) {
+                const tracks = this.localVideoStream.getTracks();
+                console.log(`🛑 Останавливаем ${tracks.length} треков из localVideoStream`);
+                tracks.forEach(track => {
+                    track.stop();
+                    console.log('🛑 Трек остановлен:', track.id, track.kind);
+                });
+                this.localVideoStream = null;
             }
             
             // Создаем новый offer только с аудио
@@ -974,8 +1094,38 @@ var AudioModule = {
             return false;
         }
         
+        // ВАЖНО: Проверяем, что используем правильный поток
+        const isScreenShare = this.isScreenSharing && this.localVideoStream === stream;
+        const isCamera = this.isCameraEnabled && this.localVideoStream === stream;
+        
+        console.log('📤 Публикуем видео-трек:', {
+            trackId: videoTrack.id,
+            trackLabel: videoTrack.label,
+            trackKind: videoTrack.kind,
+            isScreenShare: isScreenShare,
+            isCamera: isCamera,
+            streamSource: isScreenShare ? 'screen' : (isCamera ? 'camera' : 'unknown')
+        });
+        
+        // Проверяем настройки трека для диагностики
+        if (videoTrack.getSettings) {
+            const settings = videoTrack.getSettings();
+            console.log('🔍 Настройки видео-трека:', {
+                width: settings.width,
+                height: settings.height,
+                frameRate: settings.frameRate,
+                displaySurface: settings.displaySurface, // Должно быть 'monitor', 'window' или 'browser' для screen share
+                facingMode: settings.facingMode // Должно быть undefined для screen share
+            });
+            
+            // Проверяем, что это действительно экран, а не камера
+            if (this.isScreenSharing && settings.displaySurface === undefined && settings.facingMode !== undefined) {
+                console.error('❌ КРИТИЧНО: Получен поток от камеры вместо экрана!');
+                console.error('🔍 Настройки трека указывают на камеру:', settings);
+            }
+        }
+        
         try {
-            console.log('📤 Публикуем видео-трек:', videoTrack.id);
             
             // Создаем комбинированный поток с аудио и видео
             const combinedStream = new MediaStream();
