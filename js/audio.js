@@ -1446,22 +1446,47 @@ var AudioModule = {
                 }
             }
             
-            // ВАЖНО: Если transceiver существует (даже без трека) - используем replaceVideo
-            // Если transceiver не существует - используем addVideo
-            const videoAction = hasVideoTransceiver ? 'replaceVideo' : 'addVideo';
+            // ВАЖНО: Проверяем наличие видео transceiver для выбора действия
+            const videoAction = hasVideoTransceiver ? 'replace' : 'add';
             console.log('🔍 Действие с видео:', videoAction, hasVideoTransceiver ? '(заменяем существующий transceiver)' : '(добавляем новый transceiver)');
             
-            // Используем Janus.js createOffer для корректной работы
+            // КРИТИЧНО: Используем новый tracks API Janus.js
+            // Передаем videoTrack напрямую в capture, чтобы Janus.js НЕ вызывал getUserMedia!
+            console.log('📤 ========== ИСПОЛЬЗУЕМ TRACKS API ==========');
+            console.log('📤 Передаем видео-трек напрямую (capture: videoTrack)');
+            console.log('📤 Track ID:', videoTrack.id);
+            console.log('📤 Track Label:', videoTrack.label);
+            console.log('📤 ============================================');
+            
+            // Получаем аудио-трек из localStream
+            const audioTrack = this.localStream ? this.localStream.getAudioTracks()[0] : null;
+            
+            // Формируем tracks для Janus.js
+            const tracks = [];
+            
+            // Добавляем аудио-трек
+            if (audioTrack) {
+                tracks.push({
+                    type: 'audio',
+                    capture: audioTrack, // Передаем трек напрямую!
+                    recv: false
+                });
+                console.log('📤 Добавлен аудио-трек в tracks:', audioTrack.id);
+            }
+            
+            // КРИТИЧНО: Добавляем видео-трек напрямую (НЕ capture: true!)
+            tracks.push({
+                type: 'video',
+                capture: videoTrack, // Передаем трек напрямую! Janus.js НЕ будет вызывать getUserMedia!
+                recv: false,
+                [videoAction]: true // add или replace
+            });
+            console.log('📤 Добавлен видео-трек в tracks:', videoTrack.id, videoTrack.label);
+            console.log('📤 Итого треков:', tracks.length);
+            
+            // Используем Janus.js createOffer с tracks API
             this.publisherHandle.createOffer({
-                media: {
-                    audioRecv: false,
-                    videoRecv: false,
-                    audioSend: true,
-                    videoSend: true,
-                    replaceAudio: true, // Заменяем аудио
-                    [videoAction]: true  // Заменяем или добавляем видео в зависимости от наличия transceiver
-                },
-                stream: combinedStream,
+                tracks: tracks, // Используем tracks вместо media!
                 success: (jsep) => {
                     console.log('✅ Offer создан для видео через Janus.js');
                     
