@@ -1441,6 +1441,25 @@ var AudioModule = {
                                 if (videoStream.getVideoTracks().length > 0) {
                                     console.log(`✅ [started] Создан видео-поток из receivers для ${publisherIdStr}, треков: ${videoStream.getVideoTracks().length}`);
                                     this.handleRemoteVideoStream(videoStream, publisherId, displayName);
+                                } else {
+                                    console.log(`⚠️ [started] Нет видео-треков в receivers для ${publisherIdStr}, но проверяем периодически...`);
+                                    // Проверяем периодически на наличие видео-треков (если publisher добавит видео позже)
+                                    let checkCount = 0;
+                                    const checkVideoInterval = setInterval(() => {
+                                        checkCount++;
+                                        const receivers = pc.getReceivers();
+                                        const videoReceivers = receivers.filter(r => r.track && r.track.kind === 'video');
+                                        if (videoReceivers.length > 0) {
+                                            console.log(`✅ [started] Найден видео-трек в receivers для ${publisherIdStr} после ${checkCount} проверок`);
+                                            const videoStream = new MediaStream();
+                                            videoReceivers.forEach(r => videoStream.addTrack(r.track));
+                                            this.handleRemoteVideoStream(videoStream, publisherId, displayName);
+                                            clearInterval(checkVideoInterval);
+                                        } else if (checkCount >= 20) { // Проверяем 20 раз (10 секунд)
+                                            console.log(`⏳ [started] Прекращаем проверку видео-треков для ${publisherIdStr} после ${checkCount} попыток`);
+                                            clearInterval(checkVideoInterval);
+                                        }
+                                    }, 500);
                                 }
                             }
                         }, 500);
@@ -1449,7 +1468,7 @@ var AudioModule = {
                 
                 // Обработка удаленного трека (новый API Janus.js)
                 handle.onremotetrack = (track, mid, on) => {
-                    console.log(`🔊 onremotetrack вызван: publisherId=${publisherId}, track.kind=${track.kind}, on=${on}, mid=${mid}, muted=${track.muted}`);
+                    console.log(`🔊 onremotetrack вызван: publisherId=${publisherId}, track.kind=${track.kind}, on=${on}, mid=${mid}, muted=${track.muted}, readyState=${track.readyState}, enabled=${track.enabled}`);
                     
                     // ВАЖНО: Сохраняем трек в handle для последующего использования
                     if (track.kind === 'audio' && on) {
