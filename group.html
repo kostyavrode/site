@@ -1736,6 +1736,10 @@
         
         let videoOverlayVisible = false;
         
+        // Map для отслеживания активных видео-стримов по SignalR уведомлениям
+        // Ключ: userId, значение: {videoType, nickname, timestamp}
+        const activeVideoStreamsBySignalR = new Map();
+        
         // Переключить видимость video overlay
         function toggleVideoOverlay() {
             const overlay = document.getElementById('videoOverlay');
@@ -1832,8 +1836,13 @@
                 return true;
             }
             
-            // Чужие видео
+            // Чужие видео (реальные потоки)
             if (audioModule.remoteVideoStreams.size > 0) {
+                return true;
+            }
+            
+            // Чужие видео (по SignalR уведомлениям, даже если поток еще не получен)
+            if (activeVideoStreamsBySignalR.size > 0) {
                 return true;
             }
             
@@ -1890,6 +1899,15 @@
             if (data.channelId === AudioModule.channelId) {
                 console.log(`📹 Пользователь ${data.nickname} начал трансляцию ${data.videoType}`);
                 
+                // Сохраняем информацию о видео-стриме (даже если поток еще не получен)
+                activeVideoStreamsBySignalR.set(data.userId, {
+                    videoType: data.videoType,
+                    nickname: data.nickname,
+                    timestamp: data.timestamp
+                });
+                
+                console.log('📹 Активные видео-стримы по SignalR:', activeVideoStreamsBySignalR.size);
+                
                 // Обновляем видимость кнопки "Смотреть"
                 updateWatchButtonVisibility();
                 
@@ -1911,6 +1929,11 @@
             if (data.channelId === AudioModule.channelId) {
                 console.log(`🔴 Пользователь ${data.userId} остановил трансляцию`);
                 
+                // Удаляем информацию о видео-стриме
+                activeVideoStreamsBySignalR.delete(data.userId);
+                
+                console.log('📹 Активные видео-стримы по SignalR:', activeVideoStreamsBySignalR.size);
+                
                 // Обновляем видимость кнопки "Смотреть"
                 updateWatchButtonVisibility();
             }
@@ -1922,17 +1945,30 @@
             
             // Проверяем, что это нужный канал
             if (data.channelId === AudioModule.channelId) {
+                // Очищаем старые данные
+                activeVideoStreamsBySignalR.clear();
+                
                 if (data.streams && data.streams.length > 0) {
                     console.log(`📹 В канале ${data.streams.length} активных видео-стримов`);
                     
-                    // Обновляем видимость кнопки "Смотреть"
-                    updateWatchButtonVisibility();
-                    
-                    // Показываем информацию о стримах
+                    // Сохраняем информацию о всех активных стримах
                     data.streams.forEach(stream => {
+                        // Нужно получить userId из stream, но если его нет, используем nickname как ключ
+                        const key = stream.userId || stream.nickname;
+                        activeVideoStreamsBySignalR.set(key, {
+                            videoType: stream.videoType,
+                            nickname: stream.nickname,
+                            timestamp: stream.timestamp
+                        });
+                        
                         const streamType = stream.videoType === 'screen' ? 'демонстрацию экрана' : 'веб-камеру';
                         console.log(`  - ${stream.nickname} показывает ${streamType}`);
                     });
+                    
+                    console.log('📹 Активные видео-стримы по SignalR:', activeVideoStreamsBySignalR.size);
+                    
+                    // Обновляем видимость кнопки "Смотреть"
+                    updateWatchButtonVisibility();
                 } else {
                     console.log('📹 В канале нет активных видео-стримов');
                 }
