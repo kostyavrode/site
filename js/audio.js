@@ -1313,6 +1313,67 @@ var AudioModule = {
         });
     },
 
+    // Переподписаться на publisher (для получения видео после того, как он начал транслировать)
+    async resubscribeToPublisherByNickname(nickname) {
+        console.log(`🔄 Переподписываемся на publisher по nickname: ${nickname}`);
+        
+        // Запрашиваем список publishers
+        return new Promise((resolve, reject) => {
+            if (!this.publisherHandle || !this.roomId) {
+                console.warn('⚠️ publisherHandle или roomId не доступен для переподписки');
+                reject(new Error('publisherHandle или roomId не доступен'));
+                return;
+            }
+            
+            this.publisherHandle.send({
+                message: { 
+                    request: 'list',
+                    room: this.roomId
+                },
+                success: (result) => {
+                    if (result && result.list) {
+                        // Ищем publisher по display name
+                        const publisher = result.list.find(p => p.display === nickname);
+                        if (publisher) {
+                            console.log(`✅ Найден publisher для переподписки: ${publisher.id} (${publisher.display})`);
+                            // Отписываемся от старой подписки
+                            const publisherIdStr = String(publisher.id);
+                            const oldHandle = this.subscriberHandles.get(publisherIdStr);
+                            if (oldHandle) {
+                                console.log(`🔴 Отписываемся от старой подписки на ${publisherIdStr}`);
+                                try {
+                                    oldHandle.detach();
+                                } catch (e) {
+                                    console.warn(`Ошибка при отключении старой подписки:`, e);
+                                }
+                                this.subscriberHandles.delete(publisherIdStr);
+                                // Очищаем связанные данные
+                                this.streamVolumes.delete(publisherIdStr);
+                                this.remoteStreams.delete(publisherIdStr);
+                                this.removeRemoteVideoStream(publisher.id);
+                            }
+                            // Подписываемся заново
+                            setTimeout(() => {
+                                this.subscribeToPublisher(publisher);
+                                resolve(publisher);
+                            }, 500); // Небольшая задержка для очистки
+                        } else {
+                            console.warn(`⚠️ Publisher с nickname "${nickname}" не найден в списке`);
+                            reject(new Error(`Publisher с nickname "${nickname}" не найден`));
+                        }
+                    } else {
+                        console.warn('⚠️ Список publishers пуст или не получен');
+                        reject(new Error('Список publishers пуст'));
+                    }
+                },
+                error: (error) => {
+                    console.error('❌ Ошибка при запросе списка publishers для переподписки:', error);
+                    reject(error);
+                }
+            });
+        });
+    },
+
     // Подписаться на поток другого publisher
     subscribeToPublisher(publisher) {
         const publisherId = publisher.id;

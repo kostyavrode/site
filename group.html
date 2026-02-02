@@ -1926,7 +1926,7 @@
         };
         
         // SignalR: Обработка уведомления о начале видео-трансляции
-        window.onVideoStreamStarted = (data) => {
+        window.onVideoStreamStarted = async (data) => {
             console.log('📹 SignalR: Видео-трансляция начата (ПОЛУЧЕНО):', data);
             
             // Проверяем, что это нужный канал
@@ -1941,6 +1941,21 @@
                 });
                 
                 console.log('📹 Активные видео-стримы по SignalR:', activeVideoStreamsBySignalR.size);
+                
+                // ВАЖНО: Переподписываемся на publisher, чтобы получить видео-трек
+                // Это необходимо, потому что если мы уже подписаны на publisher (для аудио),
+                // то Janus не обновляет SDP автоматически при добавлении видео
+                if (AudioModule && typeof AudioModule.resubscribeToPublisherByNickname === 'function') {
+                    try {
+                        console.log(`🔄 Переподписываемся на ${data.nickname} для получения видео...`);
+                        await AudioModule.resubscribeToPublisherByNickname(data.nickname);
+                        console.log(`✅ Переподписка на ${data.nickname} завершена`);
+                    } catch (error) {
+                        console.error(`❌ Ошибка при переподписке на ${data.nickname}:`, error);
+                    }
+                } else {
+                    console.warn('⚠️ Метод resubscribeToPublisherByNickname не доступен');
+                }
                 
                 // Обновляем видимость кнопки "Смотреть"
                 updateWatchButtonVisibility();
@@ -1974,7 +1989,7 @@
         };
         
         // SignalR: Обработка списка активных видео-стримов (при подключении)
-        window.onActiveVideoStreams = (data) => {
+        window.onActiveVideoStreams = async (data) => {
             console.log('📹 SignalR: Активные видео-стримы (ПОЛУЧЕНО):', data);
             
             // Проверяем, что это нужный канал
@@ -2000,6 +2015,20 @@
                     });
                     
                     console.log('📹 Активные видео-стримы по SignalR:', activeVideoStreamsBySignalR.size);
+                    
+                    // ВАЖНО: Переподписываемся на всех publishers, которые транслируют видео
+                    // Это нужно, если мы подключились к каналу, где уже идет трансляция
+                    if (AudioModule && typeof AudioModule.resubscribeToPublisherByNickname === 'function') {
+                        for (const stream of data.streams) {
+                            try {
+                                console.log(`🔄 Переподписываемся на ${stream.nickname} для получения видео (при подключении к каналу)...`);
+                                await AudioModule.resubscribeToPublisherByNickname(stream.nickname);
+                                console.log(`✅ Переподписка на ${stream.nickname} завершена`);
+                            } catch (error) {
+                                console.error(`❌ Ошибка при переподписке на ${stream.nickname}:`, error);
+                            }
+                        }
+                    }
                     
                     // Обновляем видимость кнопки "Смотреть"
                     updateWatchButtonVisibility();
