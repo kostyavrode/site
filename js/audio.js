@@ -32,6 +32,7 @@ var AudioModule = {
     streamVolumes: new Map(), // Map<PublisherId, {gainNode, source, volume, display}>
     remoteStreams: new Map(), // Map<PublisherId, MediaStream>
     pendingPublishers: new Map(), // Map<PublisherId, {id, display}> - publishers, на которых подписались, но поток ещё не получен
+    publisherPrivateIds: new Map(), // Map<PublisherId, private_id> - для переподписки
     
     // Управление видео (screen share / webcam)
     localVideoStream: null, // Локальный видео-поток (screen или camera)
