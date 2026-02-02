@@ -1856,21 +1856,6 @@
                     videoWrapper.appendChild(loadingDiv);
                 }
                 
-                // Для локального видео - зеркалируем
-                if (videoData.isLocal) {
-                    videoElement.style.transform = 'scaleX(-1)';
-                }
-                
-                // Запускаем воспроизведение
-                videoElement.play().catch(e => console.error('Ошибка воспроизведения:', e));
-                
-                const nameLabel = document.createElement('div');
-                nameLabel.className = 'video-name-label';
-                nameLabel.textContent = videoData.display;
-                nameLabel.style.cssText = 'position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,0.7); color: white; padding: 8px; font-size: 12px; text-align: center;';
-                
-                videoWrapper.appendChild(videoElement);
-                videoWrapper.appendChild(nameLabel);
                 container.appendChild(videoWrapper);
             });
         }
