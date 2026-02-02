@@ -611,7 +611,7 @@ var AudioModule = {
     // Отключиться
     async disconnect() {
         // Уведомляем через SignalR об остановке видео-трансляции (если была активна)
-        if ((this.isScreenSharing || this.isCameraEnabled) && window.Chat && this.channelId) {
+        if ((this.isScreenSharing || this.isCameraEnabled) && typeof Chat !== 'undefined' && Chat && this.channelId) {
             await Chat.stopVideoStream(this.channelId);
         }
         
@@ -788,14 +788,21 @@ var AudioModule = {
             
             // Уведомляем через SignalR о начале видео-трансляции
             console.log('🔔 Отправляем SignalR уведомление о screen share...', {
-                hasChatModule: !!window.Chat,
+                hasChatModule: typeof Chat !== 'undefined',
+                chatConnectionState: typeof Chat !== 'undefined' ? Chat.connection?.state : 'N/A',
                 channelId: this.channelId
             });
-            if (window.Chat && this.channelId) {
-                await Chat.startVideoStream(this.channelId, 'screen');
+            if (typeof Chat !== 'undefined' && Chat && this.channelId) {
+                if (Chat.connection && Chat.connection.state === signalR.HubConnectionState.Connected) {
+                    await Chat.startVideoStream(this.channelId, 'screen');
+                } else {
+                    console.warn('⚠️ SignalR не подключен, не могу отправить уведомление:', {
+                        connectionState: Chat.connection?.state
+                    });
+                }
             } else {
                 console.warn('⚠️ Не могу отправить SignalR уведомление:', {
-                    hasChatModule: !!window.Chat,
+                    hasChatModule: typeof Chat !== 'undefined',
                     channelId: this.channelId
                 });
             }
@@ -848,14 +855,21 @@ var AudioModule = {
             
             // Уведомляем через SignalR о начале видео-трансляции
             console.log('🔔 Отправляем SignalR уведомление о camera...', {
-                hasChatModule: !!window.Chat,
+                hasChatModule: typeof Chat !== 'undefined',
+                chatConnectionState: typeof Chat !== 'undefined' ? Chat.connection?.state : 'N/A',
                 channelId: this.channelId
             });
-            if (window.Chat && this.channelId) {
-                await Chat.startVideoStream(this.channelId, 'camera');
+            if (typeof Chat !== 'undefined' && Chat && this.channelId) {
+                if (Chat.connection && Chat.connection.state === signalR.HubConnectionState.Connected) {
+                    await Chat.startVideoStream(this.channelId, 'camera');
+                } else {
+                    console.warn('⚠️ SignalR не подключен, не могу отправить уведомление:', {
+                        connectionState: Chat.connection?.state
+                    });
+                }
             } else {
                 console.warn('⚠️ Не могу отправить SignalR уведомление:', {
-                    hasChatModule: !!window.Chat,
+                    hasChatModule: typeof Chat !== 'undefined',
                     channelId: this.channelId
                 });
             }
@@ -925,7 +939,7 @@ var AudioModule = {
             }
             
             // Уведомляем через SignalR об остановке видео-трансляции
-            if (window.Chat && this.channelId) {
+            if (typeof Chat !== 'undefined' && Chat && this.channelId) {
                 await Chat.stopVideoStream(this.channelId);
             }
             
@@ -1153,7 +1167,7 @@ var AudioModule = {
                 this.requestPublishersList();
                 
                 // Запрашиваем активные видео-стримы через SignalR
-                if (window.Chat && this.channelId) {
+                if (typeof Chat !== 'undefined' && Chat && this.channelId) {
                     await Chat.getActiveVideoStreams(this.channelId);
                 }
             }
