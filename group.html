@@ -1884,7 +1884,7 @@
         
         // SignalR: Обработка уведомления о начале видео-трансляции
         window.onVideoStreamStarted = (data) => {
-            console.log('📹 SignalR: Видео-трансляция начата:', data);
+            console.log('📹 SignalR: Видео-трансляция начата (ПОЛУЧЕНО):', data);
             
             // Проверяем, что это нужный канал
             if (data.channelId === AudioModule.channelId) {
@@ -1905,7 +1905,7 @@
         
         // SignalR: Обработка уведомления об остановке видео-трансляции
         window.onVideoStreamStopped = (data) => {
-            console.log('🔴 SignalR: Видео-трансляция остановлена:', data);
+            console.log('🔴 SignalR: Видео-трансляция остановлена (ПОЛУЧЕНО):', data);
             
             // Проверяем, что это нужный канал
             if (data.channelId === AudioModule.channelId) {
@@ -1918,7 +1918,7 @@
         
         // SignalR: Обработка списка активных видео-стримов (при подключении)
         window.onActiveVideoStreams = (data) => {
-            console.log('📹 SignalR: Активные видео-стримы:', data);
+            console.log('📹 SignalR: Активные видео-стримы (ПОЛУЧЕНО):', data);
             
             // Проверяем, что это нужный канал
             if (data.channelId === AudioModule.channelId) {

@@ -787,8 +787,17 @@ var AudioModule = {
             await this.publishVideo(stream);
             
             // Уведомляем через SignalR о начале видео-трансляции
+            console.log('🔔 Отправляем SignalR уведомление о screen share...', {
+                hasChatModule: !!window.Chat,
+                channelId: this.channelId
+            });
             if (window.Chat && this.channelId) {
                 await Chat.startVideoStream(this.channelId, 'screen');
+            } else {
+                console.warn('⚠️ Не могу отправить SignalR уведомление:', {
+                    hasChatModule: !!window.Chat,
+                    channelId: this.channelId
+                });
             }
             
             console.log('✅ Демонстрация экрана запущена');
@@ -838,8 +847,17 @@ var AudioModule = {
             await this.publishVideo(stream);
             
             // Уведомляем через SignalR о начале видео-трансляции
+            console.log('🔔 Отправляем SignalR уведомление о camera...', {
+                hasChatModule: !!window.Chat,
+                channelId: this.channelId
+            });
             if (window.Chat && this.channelId) {
                 await Chat.startVideoStream(this.channelId, 'camera');
+            } else {
+                console.warn('⚠️ Не могу отправить SignalR уведомление:', {
+                    hasChatModule: !!window.Chat,
+                    channelId: this.channelId
+                });
             }
             
             console.log('✅ Веб-камера запущена');
