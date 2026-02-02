@@ -1322,8 +1322,8 @@ var AudioModule = {
     async resubscribeToPublisherByNickname(nickname) {
         console.log(`🔄 Переподписываемся на publisher по nickname: ${nickname}`);
         
-        // Сначала ждем немного, чтобы Janus успел обновить список publishers после публикации видео
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        // Увеличиваем задержку до 4 секунд, чтобы Janus точно успел обновить информацию о видео
+        await new Promise(resolve => setTimeout(resolve, 4000));
         
         // ВАЖНО: Используем более простой подход - переподписываемся на ВСЕХ существующих publishers
         // Это гарантирует, что мы получим видео, даже если список publishers парсится неправильно
@@ -1337,7 +1337,7 @@ var AudioModule = {
             return Promise.reject(new Error('Нет существующих подписок'));
         }
         
-        // Переподписываемся на каждого publisher
+        // Переподписываемся на каждого publisher с повторными попытками
         const resubscribePromises = publisherIdsToResubscribe.map(publisherIdStr => {
             return new Promise((resolve, reject) => {
                 const publisherId = parseInt(publisherIdStr);
@@ -1347,74 +1347,83 @@ var AudioModule = {
                     return;
                 }
                 
-                console.log(`🔴 Отписываемся от старой подписки на ${publisherIdStr}...`);
-                const oldHandle = this.subscriberHandles.get(publisherIdStr);
-                if (oldHandle) {
-                    try {
-                        oldHandle.detach();
-                    } catch (e) {
-                        console.warn(`Ошибка при отключении старой подписки:`, e);
-                    }
-                    this.subscriberHandles.delete(publisherIdStr);
-                    // Очищаем связанные данные
-                    this.streamVolumes.delete(publisherIdStr);
-                    this.remoteStreams.delete(publisherIdStr);
-                    this.removeRemoteVideoStream(publisherId);
-                }
-                
-                // Запрашиваем список publishers для получения полной информации
-                setTimeout(() => {
-                    if (!this.publisherHandle || !this.roomId) {
-                        reject(new Error('publisherHandle или roomId не доступен'));
-                        return;
+                const attemptResubscribe = (attemptNumber = 1, maxAttempts = 3) => {
+                    console.log(`🔄 Попытка ${attemptNumber}/${maxAttempts} переподписки на ${publisherIdStr}...`);
+                    
+                    console.log(`🔴 Отписываемся от старой подписки на ${publisherIdStr}...`);
+                    const oldHandle = this.subscriberHandles.get(publisherIdStr);
+                    if (oldHandle) {
+                        try {
+                            oldHandle.detach();
+                        } catch (e) {
+                            console.warn(`Ошибка при отключении старой подписки:`, e);
+                        }
+                        this.subscriberHandles.delete(publisherIdStr);
+                        // Очищаем связанные данные
+                        this.streamVolumes.delete(publisherIdStr);
+                        this.remoteStreams.delete(publisherIdStr);
+                        this.removeRemoteVideoStream(publisherId);
                     }
                     
-                    this.publisherHandle.send({
-                        message: { 
-                            request: 'list',
-                            room: this.roomId
-                        },
-                        success: (result) => {
-                            console.log(`📋 Получен список publishers для publisherId ${publisherId}:`, result);
-                            
-                            // Пытаемся найти publisher в списке
-                            let publisher = null;
-                            if (result && result.list) {
-                                // Пробуем разные варианты структуры данных
-                                publisher = result.list.find(p => {
-                                    // Вариант 1: прямой доступ к полям
-                                    if (p && (p.id === publisherId || String(p.id) === publisherIdStr)) {
-                                        return true;
-                                    }
-                                    // Вариант 2: если это массив массивов
-                                    if (Array.isArray(p) && p.length > 0) {
-                                        const pId = p[0] || p.id || p.publisher_id;
-                                        return pId === publisherId || String(pId) === publisherIdStr;
-                                    }
-                                    return false;
-                                });
-                                
-                                // Если не нашли, создаем минимальный объект publisher
-                                if (!publisher) {
-                                    console.log(`⚠️ Publisher ${publisherId} не найден в списке, создаем минимальный объект`);
-                                    publisher = {
-                                        id: publisherId,
-                                        display: nickname || `Publisher ${publisherId}`,
-                                        private_id: null // Будет получено при подписке
-                                    };
-                                } else {
-                                    // Нормализуем структуру
-                                    if (Array.isArray(publisher)) {
-                                        publisher = {
-                                            id: publisher[0] || publisherId,
-                                            display: publisher[1] || publisher.display || nickname || `Publisher ${publisherId}`,
-                                            private_id: publisher[2] || publisher.private_id || null
-                                        };
-                                    }
-                                    // Убеждаемся, что id правильный
-                                    publisher.id = publisherId;
-                                }
+                    // Запрашиваем список publishers для получения полной информации
+                    setTimeout(() => {
+                        if (!this.publisherHandle || !this.roomId) {
+                            if (attemptNumber < maxAttempts) {
+                                setTimeout(() => attemptResubscribe(attemptNumber + 1, maxAttempts), 2000);
                             } else {
+                                reject(new Error('publisherHandle или roomId не доступен'));
+                            }
+                            return;
+                        }
+                        
+                        this.publisherHandle.send({
+                            message: { 
+                                request: 'list',
+                                room: this.roomId
+                            },
+                            success: (result) => {
+                                console.log(`📋 Получен список publishers для publisherId ${publisherId}:`, result);
+                                
+                                // Пытаемся найти publisher в списке
+                                let publisher = null;
+                                if (result && result.list) {
+                                    // Пробуем разные варианты структуры данных
+                                    publisher = result.list.find(p => {
+                                        // Вариант 1: прямой доступ к полям
+                                        if (p && (p.id === publisherId || String(p.id) === publisherIdStr)) {
+                                            return true;
+                                        }
+                                        // Вариант 2: если это массив массивов
+                                        if (Array.isArray(p) && p.length > 0) {
+                                            const pId = p[0] || p.id || p.publisher_id;
+                                            return pId === publisherId || String(pId) === publisherIdStr;
+                                        }
+                                        return false;
+                                    });
+                                    
+                                    // Если не нашли, создаем минимальный объект publisher
+                                    if (!publisher) {
+                                        console.log(`⚠️ Publisher ${publisherId} не найден в списке, создаем минимальный объект`);
+                                        // Используем сохраненный private_id, если он есть
+                                        const savedPrivateId = this.publisherPrivateIds.get(publisherIdStr);
+                                        publisher = {
+                                            id: publisherId,
+                                            display: nickname || `Publisher ${publisherId}`,
+                                            private_id: savedPrivateId || null
+                                        };
+                                    } else {
+                                        // Нормализуем структуру
+                                        if (Array.isArray(publisher)) {
+                                            publisher = {
+                                                id: publisher[0] || publisherId,
+                                                display: publisher[1] || publisher.display || nickname || `Publisher ${publisherId}`,
+                                                private_id: publisher[2] || publisher.private_id || null
+                                            };
+                                        }
+                                        // Убеждаемся, что id правильный
+                                        publisher.id = publisherId;
+                                    }
+                                } else {
                                     // Если список не получен, создаем минимальный объект
                                     // Используем сохраненный private_id, если он есть
                                     const savedPrivateId = this.publisherPrivateIds.get(publisherIdStr);
@@ -1423,27 +1432,88 @@ var AudioModule = {
                                         display: nickname || `Publisher ${publisherId}`,
                                         private_id: savedPrivateId || null
                                     };
+                                }
+                                
+                                console.log(`✅ Переподписываемся на publisher ${publisher.id} (${publisher.display})...`);
+                                
+                                // Сохраняем callback для проверки, получили ли мы видео
+                                const originalOnMessage = this.subscriberHandles.get(publisherIdStr)?.onmessage;
+                                const checkVideoInOffer = (handle, attemptNum) => {
+                                    const originalOnMsg = handle.onmessage;
+                                    handle.onmessage = (msg, jsep) => {
+                                        // Вызываем оригинальный обработчик
+                                        if (originalOnMsg) {
+                                            originalOnMsg.call(handle, msg, jsep);
+                                        }
+                                        
+                                        // Проверяем, есть ли видео в offer
+                                        if (jsep && jsep.type === 'offer' && jsep.sdp) {
+                                            const hasVideo = jsep.sdp.includes('m=video') || jsep.sdp.includes('video');
+                                            console.log(`🔍 [Попытка ${attemptNum}] SDP offer после переподписки: hasVideo=${hasVideo}`);
+                                            
+                                            if (!hasVideo && attemptNum < maxAttempts) {
+                                                console.log(`⚠️ Видео не найдено в offer, повторяем попытку через 3 секунды...`);
+                                                setTimeout(() => {
+                                                    // Отписываемся и пробуем снова
+                                                    if (this.subscriberHandles.has(publisherIdStr)) {
+                                                        const h = this.subscriberHandles.get(publisherIdStr);
+                                                        if (h) {
+                                                            try {
+                                                                h.detach();
+                                                            } catch (e) {
+                                                                console.warn(`Ошибка при отключении:`, e);
+                                                            }
+                                                        }
+                                                        this.subscriberHandles.delete(publisherIdStr);
+                                                    }
+                                                    attemptResubscribe(attemptNum + 1, maxAttempts);
+                                                }, 3000);
+                                                return; // Не вызываем resolve, ждем следующей попытки
+                                            } else if (hasVideo) {
+                                                console.log(`✅ Видео найдено в offer после переподписки!`);
+                                            }
+                                        }
+                                    };
+                                };
+                                
+                                this.subscribeToPublisher(publisher);
+                                
+                                // Устанавливаем проверку видео в offer после небольшой задержки
+                                setTimeout(() => {
+                                    const handle = this.subscriberHandles.get(publisherIdStr);
+                                    if (handle) {
+                                        checkVideoInOffer(handle, attemptNumber);
+                                    }
+                                }, 100);
+                                
+                                // Разрешаем promise только если это последняя попытка или если мы уверены, что получили видео
+                                if (attemptNumber === maxAttempts) {
+                                    resolve(publisher);
+                                }
+                            },
+                            error: (error) => {
+                                console.error(`❌ Ошибка при запросе списка для ${publisherId}:`, error);
+                                if (attemptNumber < maxAttempts) {
+                                    setTimeout(() => attemptResubscribe(attemptNumber + 1, maxAttempts), 2000);
+                                } else {
+                                    // Все равно пытаемся подписаться с минимальными данными
+                                    // Используем сохраненный private_id, если он есть
+                                    const savedPrivateId = this.publisherPrivateIds.get(publisherIdStr);
+                                    const publisher = {
+                                        id: publisherId,
+                                        display: nickname || `Publisher ${publisherId}`,
+                                        private_id: savedPrivateId || null
+                                    };
+                                    this.subscribeToPublisher(publisher);
+                                    resolve(publisher);
+                                }
                             }
-                            
-                            console.log(`✅ Переподписываемся на publisher ${publisher.id} (${publisher.display})...`);
-                            this.subscribeToPublisher(publisher);
-                            resolve(publisher);
-                        },
-                        error: (error) => {
-                            console.error(`❌ Ошибка при запросе списка для ${publisherId}:`, error);
-                            // Все равно пытаемся подписаться с минимальными данными
-                            // Используем сохраненный private_id, если он есть
-                            const savedPrivateId = this.publisherPrivateIds.get(publisherIdStr);
-                            const publisher = {
-                                id: publisherId,
-                                display: nickname || `Publisher ${publisherId}`,
-                                private_id: savedPrivateId || null
-                            };
-                            this.subscribeToPublisher(publisher);
-                            resolve(publisher);
-                        }
-                    });
-                }, 500);
+                        });
+                    }, 500);
+                };
+                
+                // Начинаем первую попытку
+                attemptResubscribe();
             });
         });
         
