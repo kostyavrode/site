@@ -1074,12 +1074,23 @@ var AudioModule = {
                 const senders = pc.getSenders();
                 const videoSenders = senders.filter(sender => sender.track && sender.track.kind === 'video');
                 console.log(`🛑 Найдено ${videoSenders.length} видео-треков в PeerConnection для удаления`);
-                videoSenders.forEach(sender => {
+                
+                // Удаляем все видео-треки синхронно
+                const removePromises = videoSenders.map(async (sender) => {
                     console.log('🛑 Удаляем видео-трек из WebRTC sender:', sender.track.id, sender.track.label);
-                    sender.replaceTrack(null).catch(err => {
+                    try {
+                        await sender.replaceTrack(null);
+                        // Останавливаем трек после удаления
+                        if (sender.track && sender.track.stop) {
+                            sender.track.stop();
+                        }
+                    } catch (err) {
                         console.warn('⚠️ Ошибка при удалении видео-трека из sender:', err);
-                    });
+                    }
                 });
+                
+                // Ждем удаления всех треков
+                await Promise.all(removePromises);
                 
                 // ВАЖНО: Также проверяем transceivers и останавливаем их треки
                 if (pc.getTransceivers) {
@@ -1087,10 +1098,16 @@ var AudioModule = {
                     transceivers.forEach(transceiver => {
                         if (transceiver.sender && transceiver.sender.track && transceiver.sender.track.kind === 'video') {
                             console.log('🛑 Останавливаем видео-трек из transceiver:', transceiver.sender.track.id);
-                            transceiver.sender.track.stop();
+                            try {
+                                transceiver.sender.track.stop();
+                            } catch (err) {
+                                console.warn('⚠️ Ошибка при остановке трека из transceiver:', err);
+                            }
                         }
                     });
                 }
+                
+                console.log('✅ Все видео-треки удалены из PeerConnection');
             }
             
             // Останавливаем видео-трек локально
@@ -1295,26 +1312,52 @@ var AudioModule = {
             combinedStream.addTrack(videoTrack);
             console.log('📤 Добавлен видео-трек:', videoTrack.id);
             
-            // КРИТИЧНО: Проверяем, есть ли уже видео transceiver в PeerConnection
-            // Если есть - используем replaceVideo, если нет - addVideo
+            // КРИТИЧНО: Удаляем ВСЕ старые видео-треки из PeerConnection перед публикацией нового
+            // Это гарантирует, что отправляется только один видео-трек (выбранный пользователем)
             let hasVideoTransceiver = false;
             if (this.publisherHandle.webrtcStuff && this.publisherHandle.webrtcStuff.pc) {
                 const pc = this.publisherHandle.webrtcStuff.pc;
                 const senders = pc.getSenders();
-                hasVideoTransceiver = senders.some(sender => sender.track && sender.track.kind === 'video');
+                const videoSenders = senders.filter(sender => sender.track && sender.track.kind === 'video');
+                hasVideoTransceiver = videoSenders.length > 0;
+                
                 console.log('🔍 Проверка видео transceiver:', {
                     hasVideoTransceiver: hasVideoTransceiver,
                     sendersCount: senders.length,
-                    videoSenders: senders.filter(s => s.track && s.track.kind === 'video').map(s => ({
+                    videoSendersCount: videoSenders.length,
+                    videoSenders: videoSenders.map(s => ({
                         trackId: s.track.id,
                         trackLabel: s.track.label,
-                        trackKind: s.track.kind
+                        trackKind: s.track.kind,
+                        trackReadyState: s.track.readyState
                     }))
                 });
+                
+                // КРИТИЧНО: Удаляем ВСЕ старые видео-треки из PeerConnection
+                if (videoSenders.length > 0) {
+                    console.log(`🛑 Удаляем ${videoSenders.length} старых видео-треков из PeerConnection...`);
+                    for (const sender of videoSenders) {
+                        console.log(`🛑 Удаляем видео-трек: ${sender.track.id} (${sender.track.label})`);
+                        try {
+                            // Заменяем трек на null, что удаляет его из PeerConnection
+                            await sender.replaceTrack(null);
+                            // Останавливаем трек
+                            if (sender.track && sender.track.stop) {
+                                sender.track.stop();
+                            }
+                        } catch (err) {
+                            console.warn(`⚠️ Ошибка при удалении видео-трека ${sender.track.id}:`, err);
+                        }
+                    }
+                    console.log('✅ Все старые видео-треки удалены из PeerConnection');
+                    // Ждем немного, чтобы WebRTC успел обработать удаление
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                }
             }
             
-            // ВАЖНО: Если видео transceiver уже существует - ЗАМЕНЯЕМ его, а не добавляем новый
-            // Это гарантирует, что отправляется только один видео-трек (выбранный пользователем)
+            // ВАЖНО: После удаления старых треков всегда используем addVideo
+            // (или replaceVideo, если transceiver все еще существует после удаления)
+            // Но обычно после удаления transceiver не должно быть, поэтому используем addVideo
             const videoAction = hasVideoTransceiver ? 'replaceVideo' : 'addVideo';
             console.log('🔍 Действие с видео:', videoAction, hasVideoTransceiver ? '(заменяем существующий)' : '(добавляем новый)');
             
