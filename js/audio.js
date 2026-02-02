@@ -1308,9 +1308,32 @@ var AudioModule = {
                 });
             }
             
-            // Добавляем видео-трек
+            // КРИТИЧНО: Проверяем, что в combinedStream НЕТ других видео-треков
+            const existingVideoTracks = combinedStream.getVideoTracks();
+            if (existingVideoTracks.length > 0) {
+                console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: В combinedStream уже есть видео-треки перед добавлением нового!');
+                existingVideoTracks.forEach(track => {
+                    console.error('❌ Существующий видео-трек:', track.id, track.label);
+                    combinedStream.removeTrack(track);
+                });
+            }
+            
+            // Добавляем ТОЛЬКО выбранный видео-трек
             combinedStream.addTrack(videoTrack);
-            console.log('📤 Добавлен видео-трек:', videoTrack.id);
+            console.log('📤 Добавлен видео-трек:', videoTrack.id, videoTrack.label);
+            
+            // КРИТИЧНО: Проверяем, что в combinedStream только один видео-трек (наш)
+            const finalVideoTracks = combinedStream.getVideoTracks();
+            if (finalVideoTracks.length !== 1 || finalVideoTracks[0] !== videoTrack) {
+                console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: В combinedStream неправильное количество видео-треков!');
+                console.error('❌ Ожидался 1 трек:', videoTrack.id);
+                console.error('❌ Найдено треков:', finalVideoTracks.length);
+                finalVideoTracks.forEach(track => {
+                    console.error('❌ Трек в combinedStream:', track.id, track.label, track === videoTrack ? '(правильный)' : '(НЕПРАВИЛЬНЫЙ!)');
+                });
+                throw new Error('ОШИБКА: В combinedStream неправильное количество видео-треков!');
+            }
+            console.log('✅ Подтверждено: в combinedStream только правильный видео-трек:', videoTrack.id);
             
             // КРИТИЧНО: Удаляем ВСЕ старые видео-треки из PeerConnection перед публикацией нового
             // Это гарантирует, что отправляется только один видео-трек (выбранный пользователем)
@@ -1351,15 +1374,49 @@ var AudioModule = {
                     }
                     console.log('✅ Все старые видео-треки удалены из PeerConnection');
                     // Ждем немного, чтобы WebRTC успел обработать удаление
-                    await new Promise(resolve => setTimeout(resolve, 100));
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                    
+                    // КРИТИЧНО: Проверяем, остались ли видео-треки после удаления
+                    const remainingSenders = pc.getSenders();
+                    const remainingVideoSenders = remainingSenders.filter(sender => sender.track && sender.track.kind === 'video');
+                    if (remainingVideoSenders.length > 0) {
+                        console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: После удаления остались видео-треки!');
+                        remainingVideoSenders.forEach(sender => {
+                            console.error('❌ Оставшийся трек:', sender.track.id, sender.track.label);
+                        });
+                        // Пытаемся удалить еще раз
+                        for (const sender of remainingVideoSenders) {
+                            try {
+                                await sender.replaceTrack(null);
+                                if (sender.track && sender.track.stop) {
+                                    sender.track.stop();
+                                }
+                            } catch (err) {
+                                console.warn('⚠️ Ошибка при повторном удалении:', err);
+                            }
+                        }
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                    }
+                    
+                    // Проверяем transceivers
+                    const transceivers = pc.getTransceivers();
+                    const videoTransceivers = transceivers.filter(t => t.sender && t.sender.track && t.sender.track.kind === 'video');
+                    if (videoTransceivers.length > 0) {
+                        console.log('🔍 Найдено видео transceivers после удаления:', videoTransceivers.length);
+                        // Если transceiver существует, но без трека - используем replaceVideo
+                        hasVideoTransceiver = videoTransceivers.some(t => t.sender.track !== null);
+                        console.log('🔍 Есть активный трек в transceiver:', hasVideoTransceiver);
+                    } else {
+                        hasVideoTransceiver = false;
+                        console.log('🔍 Видео transceivers не найдены после удаления');
+                    }
                 }
             }
             
-            // ВАЖНО: После удаления старых треков всегда используем addVideo
-            // (или replaceVideo, если transceiver все еще существует после удаления)
-            // Но обычно после удаления transceiver не должно быть, поэтому используем addVideo
+            // ВАЖНО: Если transceiver существует (даже без трека) - используем replaceVideo
+            // Если transceiver не существует - используем addVideo
             const videoAction = hasVideoTransceiver ? 'replaceVideo' : 'addVideo';
-            console.log('🔍 Действие с видео:', videoAction, hasVideoTransceiver ? '(заменяем существующий)' : '(добавляем новый)');
+            console.log('🔍 Действие с видео:', videoAction, hasVideoTransceiver ? '(заменяем существующий transceiver)' : '(добавляем новый transceiver)');
             
             // Используем Janus.js createOffer для корректной работы
             this.publisherHandle.createOffer({
@@ -1374,6 +1431,46 @@ var AudioModule = {
                 stream: combinedStream,
                 success: (jsep) => {
                     console.log('✅ Offer создан для видео через Janus.js');
+                    
+                    // КРИТИЧНО: Проверяем, что в PeerConnection находится ТОЛЬКО правильный трек
+                    if (this.publisherHandle.webrtcStuff && this.publisherHandle.webrtcStuff.pc) {
+                        const pc = this.publisherHandle.webrtcStuff.pc;
+                        const senders = pc.getSenders();
+                        const videoSenders = senders.filter(sender => sender.track && sender.track.kind === 'video');
+                        
+                        console.log('🔍 ========== ПРОВЕРКА ПОСЛЕ СОЗДАНИЯ OFFER ==========');
+                        console.log('🔍 Видео-треков в PeerConnection:', videoSenders.length);
+                        console.log('🔍 Ожидаемый трек ID:', videoTrack.id);
+                        console.log('🔍 Ожидаемый трек Label:', videoTrack.label);
+                        
+                        videoSenders.forEach((sender, index) => {
+                            const track = sender.track;
+                            const isCorrectTrack = track.id === videoTrack.id || track === videoTrack;
+                            console.log(`🔍 Sender ${index}:`, {
+                                trackId: track.id,
+                                trackLabel: track.label,
+                                isCorrectTrack: isCorrectTrack,
+                                status: isCorrectTrack ? '✅ ПРАВИЛЬНЫЙ' : '❌ НЕПРАВИЛЬНЫЙ!'
+                            });
+                            
+                            if (!isCorrectTrack) {
+                                console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: В PeerConnection находится НЕПРАВИЛЬНЫЙ видео-трек!');
+                                console.error('❌ Ожидался:', videoTrack.id, videoTrack.label);
+                                console.error('❌ Найден:', track.id, track.label);
+                            }
+                        });
+                        
+                        if (videoSenders.length === 0) {
+                            console.warn('⚠️ В PeerConnection нет видео-треков после создания offer');
+                        } else if (videoSenders.length > 1) {
+                            console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: В PeerConnection больше одного видео-трека!');
+                        } else if (videoSenders[0].track.id !== videoTrack.id && videoSenders[0].track !== videoTrack) {
+                            console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: В PeerConnection находится НЕПРАВИЛЬНЫЙ видео-трек!');
+                        } else {
+                            console.log('✅ Подтверждено: в PeerConnection находится правильный видео-трек');
+                        }
+                        console.log('🔍 ============================================');
+                    }
                     
                     // Проверяем SDP offer на наличие видео
                     if (jsep && jsep.sdp) {
