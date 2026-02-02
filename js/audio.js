@@ -876,6 +876,15 @@ var AudioModule = {
             this.isScreenSharing = true;
             this.isCameraEnabled = false; // Убеждаемся, что камера отключена
             
+            // КРИТИЧНО: Проверяем, что сохранили правильный поток
+            const savedVideoTrack = this.localVideoStream.getVideoTracks()[0];
+            if (savedVideoTrack !== videoTrack) {
+                console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: Сохраненный трек не совпадает с полученным!');
+                console.error('❌ Полученный трек:', videoTrack.id, videoTrack.label);
+                console.error('❌ Сохраненный трек:', savedVideoTrack?.id, savedVideoTrack?.label);
+                throw new Error('Ошибка: сохраненный трек не совпадает с полученным');
+            }
+            
             // Обработка остановки пользователем через UI браузера
             videoTrack.addEventListener('ended', () => {
                 console.log('🖥️ Пользователь остановил демонстрацию экрана через UI браузера');
@@ -889,6 +898,7 @@ var AudioModule = {
             console.log('📤 isScreenSharing:', this.isScreenSharing);
             console.log('📤 isCameraEnabled:', this.isCameraEnabled);
             console.log('📤 localVideoStream === stream:', this.localVideoStream === stream);
+            console.log('📤 localVideoStream.getVideoTracks()[0] === videoTrack:', this.localVideoStream.getVideoTracks()[0] === videoTrack);
             console.log('📤 ===============================================');
             await this.publishVideo(stream);
             
@@ -2248,6 +2258,38 @@ var AudioModule = {
                         console.log(`📹 [subscriber ${publisherIdStr}] ВИДЕО-ТРЕК ПОЛУЧЕН! Обрабатываем...`);
                         handle.remoteVideoTrack = track;
                         console.log(`✅ Получен видео-трек от publisher ${publisherId}: ${track.id}, readyState=${track.readyState}, enabled=${track.enabled}, muted=${track.muted}`);
+                        
+                        // КРИТИЧНО: Проверяем настройки трека, чтобы понять, что это - экран или камера
+                        if (track.getSettings) {
+                            const settings = track.getSettings();
+                            console.log(`🔍 ========== НАСТРОЙКИ ПОЛУЧЕННОГО ВИДЕО-ТРЕКА (подписчик) ==========`);
+                            console.log(`🔍 Publisher ID: ${publisherId}`);
+                            console.log(`🔍 Track ID: ${track.id}`);
+                            console.log(`🔍 Track Label: ${track.label}`);
+                            console.log(`🔍 displaySurface: ${settings.displaySurface} (должно быть "monitor", "window" или "browser" для screen share)`);
+                            console.log(`🔍 facingMode: ${settings.facingMode} (должно быть undefined для screen share)`);
+                            console.log(`🔍 deviceId: ${settings.deviceId}`);
+                            console.log(`🔍 width: ${settings.width}, height: ${settings.height}`);
+                            console.log(`🔍 frameRate: ${settings.frameRate}`);
+                            
+                            // Определяем тип трека
+                            const trackLabel = track.label.toLowerCase();
+                            const cameraKeywords = ['camera', 'cam', 'webcam', 'video capture', 'camo', 'obs', 'virtual', 'droidcam'];
+                            const isLabelCamera = cameraKeywords.some(keyword => trackLabel.includes(keyword));
+                            const hasDisplaySurface = settings.displaySurface !== undefined;
+                            const hasFacingMode = settings.facingMode !== undefined;
+                            
+                            if (hasDisplaySurface) {
+                                console.log(`✅ ЭТО ЭКРАН (displaySurface=${settings.displaySurface})`);
+                            } else if (hasFacingMode || isLabelCamera) {
+                                console.log(`❌ ЭТО КАМЕРА! (facingMode=${settings.facingMode}, label содержит камеру=${isLabelCamera})`);
+                            } else {
+                                console.log(`⚠️ Не удалось определить тип трека (нет displaySurface и facingMode)`);
+                            }
+                            console.log(`🔍 ============================================================`);
+                        } else {
+                            console.warn(`⚠️ track.getSettings() не доступен для трека ${track.id}`);
+                        }
                         
                         // Если трек muted - ждем unmute
                         if (track.muted) {
