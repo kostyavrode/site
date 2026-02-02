@@ -804,18 +804,28 @@ var AudioModule = {
                 trackSettings = videoTrack.getConstraints();
             }
             
-            console.log('🖥️ Получен поток от getDisplayMedia:', {
-                trackId: videoTrack.id,
-                label: videoTrack.label,
-                kind: videoTrack.kind,
-                readyState: videoTrack.readyState,
-                settings: trackSettings
-            });
+            // КРИТИЧНО: Логируем ВСЕ детали потока для диагностики
+            console.log('🖥️ ========== ПОЛУЧЕН ПОТОК ОТ getDisplayMedia ==========');
+            console.log('🖥️ Track ID:', videoTrack.id);
+            console.log('🖥️ Track Label:', videoTrack.label);
+            console.log('🖥️ Track Kind:', videoTrack.kind);
+            console.log('🖥️ Track ReadyState:', videoTrack.readyState);
+            console.log('🖥️ Track Settings:', trackSettings);
+            console.log('🖥️ Track Enabled:', videoTrack.enabled);
+            console.log('🖥️ Track Muted:', videoTrack.muted);
+            console.log('🖥️ ====================================================');
             
             // ВАЖНО: Проверяем label трека - камеры обычно имеют специфичные названия
             const trackLabel = videoTrack.label.toLowerCase();
             const cameraKeywords = ['camera', 'cam', 'webcam', 'video capture', 'camo', 'obs', 'virtual', 'droidcam'];
             const isLabelCamera = cameraKeywords.some(keyword => trackLabel.includes(keyword));
+            
+            console.log('🔍 Проверка label:', {
+                originalLabel: videoTrack.label,
+                lowerLabel: trackLabel,
+                isLabelCamera: isLabelCamera,
+                matchedKeywords: cameraKeywords.filter(keyword => trackLabel.includes(keyword))
+            });
             
             // Проверяем, что это действительно экран
             if (trackSettings) {
@@ -873,7 +883,13 @@ var AudioModule = {
             });
             
             // Публикуем видео-трек (передаем именно поток от экрана)
-            console.log('📤 Публикуем поток от экрана, trackId:', videoTrack.id);
+            console.log('📤 ========== ПУБЛИКУЕМ ПОТОК ОТ ЭКРАНА ==========');
+            console.log('📤 Track ID:', videoTrack.id);
+            console.log('📤 Track Label:', videoTrack.label);
+            console.log('📤 isScreenSharing:', this.isScreenSharing);
+            console.log('📤 isCameraEnabled:', this.isCameraEnabled);
+            console.log('📤 localVideoStream === stream:', this.localVideoStream === stream);
+            console.log('📤 ===============================================');
             await this.publishVideo(stream);
             
             // Уведомляем через SignalR о начале видео-трансляции
@@ -903,6 +919,20 @@ var AudioModule = {
             console.error('❌ Ошибка при запуске демонстрации экрана:', error);
             this.isScreenSharing = false;
             this.localVideoStream = null;
+            
+            // Обрабатываем специфичные ошибки
+            if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+                console.error('❌ Пользователь отклонил запрос на доступ к экрану');
+                // Можно показать уведомление пользователю
+                if (window.alert) {
+                    alert('Для демонстрации экрана необходимо разрешить доступ к экрану в диалоге браузера.');
+                }
+            } else if (error.name === 'NotFoundError') {
+                console.error('❌ Не найдено устройство для захвата экрана');
+            } else if (error.name === 'NotReadableError') {
+                console.error('❌ Устройство захвата экрана уже используется другим приложением');
+            }
+            
             return false;
         }
     },
@@ -1132,30 +1162,49 @@ var AudioModule = {
             streamSource: isScreenShare ? 'screen' : (isCamera ? 'camera' : 'unknown')
         });
         
-        // Проверяем настройки трека для диагностики
+        // КРИТИЧНО: Проверяем настройки трека для диагностики
+        console.log('🔍 ========== ПРОВЕРКА ТРЕКА В publishVideo ==========');
+        console.log('🔍 isScreenSharing:', this.isScreenSharing);
+        console.log('🔍 isCameraEnabled:', this.isCameraEnabled);
+        console.log('🔍 localVideoStream === stream:', this.localVideoStream === stream);
+        console.log('🔍 Track ID:', videoTrack.id);
+        console.log('🔍 Track Label:', videoTrack.label);
+        
         if (videoTrack.getSettings) {
             const settings = videoTrack.getSettings();
-            console.log('🔍 Настройки видео-трека:', {
-                width: settings.width,
-                height: settings.height,
-                frameRate: settings.frameRate,
-                displaySurface: settings.displaySurface, // Должно быть 'monitor', 'window' или 'browser' для screen share
-                facingMode: settings.facingMode, // Должно быть undefined для screen share
-                deviceId: settings.deviceId,
-                label: videoTrack.label
-            });
+            console.log('🔍 ========== НАСТРОЙКИ ВИДЕО-ТРЕКА ==========');
+            console.log('🔍 width:', settings.width);
+            console.log('🔍 height:', settings.height);
+            console.log('🔍 frameRate:', settings.frameRate);
+            console.log('🔍 displaySurface:', settings.displaySurface, '(должно быть "monitor", "window" или "browser" для screen share)');
+            console.log('🔍 facingMode:', settings.facingMode, '(должно быть undefined для screen share)');
+            console.log('🔍 deviceId:', settings.deviceId);
+            console.log('🔍 label:', videoTrack.label);
+            console.log('🔍 ============================================');
             
             // ВАЖНО: Проверяем, что при screen sharing используется экран, а не камера
             if (this.isScreenSharing) {
+                console.log('🔍 ========== ПРОВЕРКА ДЛЯ SCREEN SHARING ==========');
                 const trackLabel = videoTrack.label.toLowerCase();
                 const cameraKeywords = ['camera', 'cam', 'webcam', 'video capture', 'camo', 'obs', 'virtual', 'droidcam'];
                 const isLabelCamera = cameraKeywords.some(keyword => trackLabel.includes(keyword));
                 
+                console.log('🔍 Проверка label:', {
+                    originalLabel: videoTrack.label,
+                    lowerLabel: trackLabel,
+                    isLabelCamera: isLabelCamera,
+                    matchedKeywords: cameraKeywords.filter(keyword => trackLabel.includes(keyword))
+                });
+                console.log('🔍 Проверка facingMode:', settings.facingMode !== undefined);
+                console.log('🔍 Проверка displaySurface:', settings.displaySurface !== undefined, '=', settings.displaySurface);
+                
                 if (settings.facingMode !== undefined || isLabelCamera) {
-                    console.error('❌ КРИТИЧНО: При screen sharing получен поток от камеры вместо экрана!');
-                    console.error('🔍 Настройки трека:', settings);
-                    console.error('🔍 Label трека:', videoTrack.label);
-                    console.error('🔍 Причина:', settings.facingMode !== undefined ? 'facingMode определен' : 'label содержит слова камеры');
+                    console.error('❌ ========== КРИТИЧЕСКАЯ ОШИБКА ==========');
+                    console.error('❌ При screen sharing получен поток от камеры вместо экрана!');
+                    console.error('❌ Настройки трека:', settings);
+                    console.error('❌ Label трека:', videoTrack.label);
+                    console.error('❌ Причина:', settings.facingMode !== undefined ? 'facingMode определен' : 'label содержит слова камеры');
+                    console.error('❌ ===========================================');
                     
                     // Останавливаем неправильный поток
                     videoTrack.stop();
@@ -1170,8 +1219,12 @@ var AudioModule = {
                 } else if (settings.displaySurface !== undefined) {
                     console.log('✅ Подтверждено: это поток от экрана (displaySurface:', settings.displaySurface, ')');
                 }
+                console.log('🔍 ============================================');
             }
+        } else {
+            console.warn('⚠️ videoTrack.getSettings() не доступен!');
         }
+        console.log('🔍 ============================================');
         
         try {
             
@@ -1630,6 +1683,19 @@ var AudioModule = {
                     const oldHandle = this.subscriberHandles.get(publisherIdStr);
                     if (oldHandle) {
                         try {
+                            // ВАЖНО: Останавливаем все треки перед отключением handle
+                            if (oldHandle.webrtcStuff && oldHandle.webrtcStuff.pc) {
+                                const pc = oldHandle.webrtcStuff.pc;
+                                const receivers = pc.getReceivers();
+                                console.log(`🛑 Останавливаем ${receivers.length} receivers перед отключением handle...`);
+                                receivers.forEach(receiver => {
+                                    if (receiver.track) {
+                                        console.log(`🛑 Останавливаем трек ${receiver.track.id} (${receiver.track.kind})`);
+                                        receiver.track.stop();
+                                    }
+                                });
+                            }
+                            
                             oldHandle.detach();
                         } catch (e) {
                             console.warn(`Ошибка при отключении старой подписки:`, e);
@@ -2515,12 +2581,66 @@ var AudioModule = {
                                 console.log(`🔍 [webrtcState ${publisherIdStr}] Итого: аудио-треков=${remoteStream.getAudioTracks().length}, видео-треков=${videoStream.getVideoTracks().length}`);
                                 
                                 // Обрабатываем видео-поток, если есть активные треки
-                                const activeVideoTracks = videoStream.getVideoTracks().filter(track => track.readyState !== 'ended');
+                                const allVideoTracks = videoStream.getVideoTracks();
+                                const activeVideoTracks = allVideoTracks.filter(track => track.readyState !== 'ended');
+                                
                                 if (activeVideoTracks.length > 0) {
-                                    // Создаем новый поток только с активными треками
-                                    const activeVideoStream = new MediaStream(activeVideoTracks);
-                                    console.log(`✅ [webrtcState ${publisherIdStr}] Создан видео-поток из receivers, активных треков: ${activeVideoTracks.length}`);
-                                    this.handleRemoteVideoStream(activeVideoStream, publisherId, displayName);
+                                    // ВАЖНО: Если несколько видео-треков, выбираем самый активный (не muted, live)
+                                    let selectedVideoTrack = null;
+                                    
+                                    if (activeVideoTracks.length === 1) {
+                                        selectedVideoTrack = activeVideoTracks[0];
+                                    } else {
+                                        // Выбираем трек, который не muted и live
+                                        const unmutedLiveTracks = activeVideoTracks.filter(track => 
+                                            !track.muted && track.readyState === 'live' && track.enabled
+                                        );
+                                        
+                                        if (unmutedLiveTracks.length > 0) {
+                                            // Если несколько unmuted треков, выбираем первый (обычно это самый новый)
+                                            selectedVideoTrack = unmutedLiveTracks[0];
+                                            console.log(`🔍 [webrtcState ${publisherIdStr}] Найдено ${unmutedLiveTracks.length} unmuted треков, выбираем: ${selectedVideoTrack.id}`);
+                                            
+                                            // Останавливаем остальные треки, чтобы избежать конфликтов
+                                            unmutedLiveTracks.slice(1).forEach(track => {
+                                                console.log(`🛑 [webrtcState ${publisherIdStr}] Останавливаем дублирующий видео-трек: ${track.id}`);
+                                                track.stop();
+                                            });
+                                        } else {
+                                            // Если все muted, выбираем первый live трек
+                                            const liveTracks = activeVideoTracks.filter(track => track.readyState === 'live');
+                                            if (liveTracks.length > 0) {
+                                                selectedVideoTrack = liveTracks[0];
+                                                console.log(`🔍 [webrtcState ${publisherIdStr}] Все треки muted, выбираем первый live: ${selectedVideoTrack.id}`);
+                                                
+                                                // Останавливаем остальные
+                                                liveTracks.slice(1).forEach(track => {
+                                                    console.log(`🛑 [webrtcState ${publisherIdStr}] Останавливаем дублирующий видео-трек: ${track.id}`);
+                                                    track.stop();
+                                                });
+                                            } else {
+                                                selectedVideoTrack = activeVideoTracks[0];
+                                                console.log(`⚠️ [webrtcState ${publisherIdStr}] Выбираем первый активный трек: ${selectedVideoTrack.id}`);
+                                            }
+                                        }
+                                        
+                                        // Останавливаем все остальные треки
+                                        activeVideoTracks.forEach(track => {
+                                            if (track !== selectedVideoTrack) {
+                                                console.log(`🛑 [webrtcState ${publisherIdStr}] Останавливаем старый/дублирующий видео-трек: ${track.id}`);
+                                                track.stop();
+                                            }
+                                        });
+                                    }
+                                    
+                                    if (selectedVideoTrack) {
+                                        // Создаем новый поток только с выбранным треком
+                                        const activeVideoStream = new MediaStream([selectedVideoTrack]);
+                                        console.log(`✅ [webrtcState ${publisherIdStr}] Создан видео-поток из receivers, выбран трек: ${selectedVideoTrack.id} (из ${activeVideoTracks.length} активных)`);
+                                        this.handleRemoteVideoStream(activeVideoStream, publisherId, displayName);
+                                    } else {
+                                        console.log(`⚠️ [webrtcState ${publisherIdStr}] Не удалось выбрать видео-трек из ${activeVideoTracks.length} активных`);
+                                    }
                                 } else {
                                     console.log(`⚠️ [webrtcState ${publisherIdStr}] Видео-треков в receivers НЕТ или все ended`);
                                     
