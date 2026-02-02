@@ -1264,6 +1264,8 @@
                 if (audioModule) {
                     await audioModule.disconnect();
                 }
+                // Очищаем информацию о видео-стримах при отключении
+                activeVideoStreamsBySignalR.clear();
                 currentAudioChannel = null;
                 currentParticipantId = null;
                 button.textContent = 'Подключиться';
