@@ -1180,6 +1180,10 @@ var AudioModule = {
                 event.publishers.forEach(publisher => {
                     // Пропускаем себя
                     if (publisher.id !== this.participantId) {
+                        // Сохраняем private_id для будущей переподписки
+                        if (publisher.private_id) {
+                            this.publisherPrivateIds.set(String(publisher.id), publisher.private_id);
+                        }
                         // Добавляем в pending list для UI
                         this.pendingPublishers.set(String(publisher.id), {
                             id: publisher.id,
