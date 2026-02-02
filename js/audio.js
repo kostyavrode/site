@@ -1122,7 +1122,7 @@ var AudioModule = {
     },
 
     // Обработка сообщений от Publisher handle
-    handlePublisherMessage(msg, jsep) {
+    async handlePublisherMessage(msg, jsep) {
         console.log('📨 Получено сообщение от Publisher:', msg);
         
         // Обработка JSEP answer от сервера
