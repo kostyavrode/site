@@ -1357,7 +1357,28 @@ var AudioModule = {
                 
                 // Обработка сообщений
                 handle.onmessage = (msg, jsep) => {
+                    console.log(`📨 [subscriber ${publisherIdStr}] onmessage вызван:`, {
+                        hasJsep: !!jsep,
+                        jsepType: jsep?.type,
+                        msgPlugindata: msg.plugindata?.data,
+                        msgVideoroom: msg.videoroom
+                    });
+                    
                     if (jsep) {
+                        console.log(`📨 [subscriber ${publisherIdStr}] Получен JSEP offer, создаем answer с videoRecv: true`);
+                        
+                        // Проверяем SDP offer на наличие видео
+                        if (jsep.sdp) {
+                            const hasVideoInOffer = jsep.sdp.includes('m=video') || jsep.sdp.includes('video');
+                            const hasAudioInOffer = jsep.sdp.includes('m=audio') || jsep.sdp.includes('audio');
+                            console.log(`🔍 [subscriber ${publisherIdStr}] SDP offer анализ:`, {
+                                hasVideo: hasVideoInOffer,
+                                hasAudio: hasAudioInOffer,
+                                sdpLength: jsep.sdp.length,
+                                sdpPreview: jsep.sdp.substring(0, 200)
+                            });
+                        }
+                        
                         // Получили offer от сервера
                         handle.createAnswer({
                             jsep: jsep,
@@ -1368,43 +1389,107 @@ var AudioModule = {
                                 videoSend: false 
                             },
                             success: (answerJsep) => {
+                                console.log(`✅ [subscriber ${publisherIdStr}] Answer создан успешно`);
+                                
+                                // Проверяем SDP answer на наличие видео
+                                if (answerJsep.sdp) {
+                                    const hasVideoInAnswer = answerJsep.sdp.includes('m=video') || answerJsep.sdp.includes('video');
+                                    const hasAudioInAnswer = answerJsep.sdp.includes('m=audio') || answerJsep.sdp.includes('audio');
+                                    console.log(`🔍 [subscriber ${publisherIdStr}] SDP answer анализ:`, {
+                                        hasVideo: hasVideoInAnswer,
+                                        hasAudio: hasAudioInAnswer,
+                                        sdpLength: answerJsep.sdp.length,
+                                        sdpPreview: answerJsep.sdp.substring(0, 200)
+                                    });
+                                }
+                                
+                                // Проверяем transceivers после создания answer
+                                setTimeout(() => {
+                                    if (handle.webrtcStuff && handle.webrtcStuff.pc) {
+                                        const pc = handle.webrtcStuff.pc;
+                                        if (pc.getTransceivers) {
+                                            const transceivers = pc.getTransceivers();
+                                            console.log(`🔍 [subscriber ${publisherIdStr}] Transceivers после создания answer: ${transceivers.length}`);
+                                            transceivers.forEach((transceiver, idx) => {
+                                                console.log(`🔍 [subscriber ${publisherIdStr}] Transceiver ${idx}:`, {
+                                                    kind: transceiver.receiver?.track?.kind,
+                                                    direction: transceiver.direction,
+                                                    currentDirection: transceiver.currentDirection,
+                                                    receiverTrackId: transceiver.receiver?.track?.id,
+                                                    receiverTrackReadyState: transceiver.receiver?.track?.readyState
+                                                });
+                                            });
+                                        }
+                                    }
+                                }, 100);
+                                
                                 handle.send({
                                     message: { request: 'start' },
                                     jsep: answerJsep
                                 });
                             },
                             error: (error) => {
-                                console.error(`❌ Ошибка создания answer для ${publisherId}:`, error);
+                                console.error(`❌ [subscriber ${publisherIdStr}] Ошибка создания answer:`, error);
                             }
                         });
                     }
                     
                     // Когда поток начался (как в инструкции) - ВАЖНО: используем это как основной способ
                     if (msg.plugindata && msg.plugindata.data && msg.plugindata.data.started === 'ok') {
-                        console.log(`✅ Поток от publisher ${publisherIdStr} начался (started=ok)`);
+                        console.log(`✅ [subscriber ${publisherIdStr}] Поток начался (started=ok)`, {
+                            msgData: msg.plugindata.data,
+                            streams: msg.plugindata.data.streams
+                        });
+                        
                         // Получаем поток из RTCPeerConnection (как в инструкции)
                         setTimeout(() => {
                             const pc = handle.webrtcStuff.pc;
                             if (pc) {
+                                console.log(`🔍 [started ${publisherIdStr}] PC найден, проверяем receivers и transceivers...`);
                                 // Проверяем статистику соединения
                                 pc.getStats().then(stats => {
+                                    console.log(`📊 [started ${publisherIdStr}] Получено ${stats.size} статистических отчетов`);
+                                    
+                                    let audioReports = 0;
+                                    let videoReports = 0;
+                                    
                                     stats.forEach(report => {
-                                        if (report.type === 'inbound-rtp' && report.kind === 'audio') {
-                                            console.log(`📊 [started] Статистика аудио для ${publisherIdStr}:`, {
-                                                bytesReceived: report.bytesReceived,
-                                                packetsReceived: report.packetsReceived,
-                                                packetsLost: report.packetsLost,
-                                                jitter: report.jitter,
-                                                audioLevel: report.audioLevel
-                                            });
-                                            
-                                            if (report.bytesReceived === 0) {
-                                                console.warn(`⚠️ Нет полученных байт для ${publisherIdStr}!`);
-                } else {
-                                                console.log(`✅ [started] Получено ${report.bytesReceived} байт для ${publisherIdStr}`);
+                                        if (report.type === 'inbound-rtp') {
+                                            if (report.kind === 'audio') {
+                                                audioReports++;
+                                                console.log(`📊 [started ${publisherIdStr}] Статистика аудио:`, {
+                                                    bytesReceived: report.bytesReceived,
+                                                    packetsReceived: report.packetsReceived,
+                                                    packetsLost: report.packetsLost,
+                                                    jitter: report.jitter,
+                                                    audioLevel: report.audioLevel
+                                                });
+                                                
+                                                if (report.bytesReceived === 0) {
+                                                    console.warn(`⚠️ [started ${publisherIdStr}] Нет полученных байт для аудио!`);
+                                                } else {
+                                                    console.log(`✅ [started ${publisherIdStr}] Получено ${report.bytesReceived} байт для аудио`);
+                                                }
+                                            } else if (report.kind === 'video') {
+                                                videoReports++;
+                                                console.log(`📹 [started ${publisherIdStr}] ВИДЕО СТАТИСТИКА НАЙДЕНА!`, {
+                                                    bytesReceived: report.bytesReceived,
+                                                    packetsReceived: report.packetsReceived,
+                                                    packetsLost: report.packetsLost,
+                                                    framesDecoded: report.framesDecoded,
+                                                    framesDropped: report.framesDropped,
+                                                    frameWidth: report.frameWidth,
+                                                    frameHeight: report.frameHeight
+                                                });
                                             }
                                         }
                                     });
+                                    
+                                    console.log(`📊 [started ${publisherIdStr}] Итого: audio reports=${audioReports}, video reports=${videoReports}`);
+                                    
+                                    if (videoReports === 0) {
+                                        console.warn(`⚠️ [started ${publisherIdStr}] НЕТ ВИДЕО СТАТИСТИКИ! Это означает, что видео-трек не передается через WebRTC`);
+                                    }
                                 });
                                 
                                 const receivers = pc.getReceivers();
@@ -1439,24 +1524,62 @@ var AudioModule = {
                                 
                                 // Обрабатываем видео-поток
                                 if (videoStream.getVideoTracks().length > 0) {
-                                    console.log(`✅ [started] Создан видео-поток из receivers для ${publisherIdStr}, треков: ${videoStream.getVideoTracks().length}`);
+                                    console.log(`✅ [started ${publisherIdStr}] Создан видео-поток из receivers, треков: ${videoStream.getVideoTracks().length}`);
                                     this.handleRemoteVideoStream(videoStream, publisherId, displayName);
                                 } else {
-                                    console.log(`⚠️ [started] Нет видео-треков в receivers для ${publisherIdStr}, но проверяем периодически...`);
+                                    console.log(`⚠️ [started ${publisherIdStr}] Нет видео-треков в receivers, проверяем transceivers...`);
+                                    
+                                    // Проверяем transceivers
+                                    if (pc.getTransceivers) {
+                                        const transceivers = pc.getTransceivers();
+                                        console.log(`🔍 [started ${publisherIdStr}] Найдено ${transceivers.length} transceivers`);
+                                        transceivers.forEach((transceiver, idx) => {
+                                            console.log(`🔍 [started ${publisherIdStr}] Transceiver ${idx}:`, {
+                                                kind: transceiver.receiver?.track?.kind,
+                                                direction: transceiver.direction,
+                                                currentDirection: transceiver.currentDirection,
+                                                receiverTrackId: transceiver.receiver?.track?.id,
+                                                receiverTrackReadyState: transceiver.receiver?.track?.readyState,
+                                                receiverTrackEnabled: transceiver.receiver?.track?.enabled,
+                                                receiverTrackMuted: transceiver.receiver?.track?.muted
+                                            });
+                                        });
+                                    }
+                                    
                                     // Проверяем периодически на наличие видео-треков (если publisher добавит видео позже)
                                     let checkCount = 0;
                                     const checkVideoInterval = setInterval(() => {
                                         checkCount++;
                                         const receivers = pc.getReceivers();
                                         const videoReceivers = receivers.filter(r => r.track && r.track.kind === 'video');
+                                        
+                                        console.log(`🔍 [started ${publisherIdStr}] Проверка ${checkCount}: receivers=${receivers.length}, videoReceivers=${videoReceivers.length}`);
+                                        
                                         if (videoReceivers.length > 0) {
-                                            console.log(`✅ [started] Найден видео-трек в receivers для ${publisherIdStr} после ${checkCount} проверок`);
+                                            console.log(`✅ [started ${publisherIdStr}] Найден видео-трек в receivers после ${checkCount} проверок!`);
                                             const videoStream = new MediaStream();
-                                            videoReceivers.forEach(r => videoStream.addTrack(r.track));
+                                            videoReceivers.forEach(r => {
+                                                console.log(`📹 [started ${publisherIdStr}] Добавляем видео-трек: ${r.track.id}, readyState=${r.track.readyState}`);
+                                                videoStream.addTrack(r.track);
+                                            });
                                             this.handleRemoteVideoStream(videoStream, publisherId, displayName);
                                             clearInterval(checkVideoInterval);
                                         } else if (checkCount >= 20) { // Проверяем 20 раз (10 секунд)
-                                            console.log(`⏳ [started] Прекращаем проверку видео-треков для ${publisherIdStr} после ${checkCount} попыток`);
+                                            console.log(`⏳ [started ${publisherIdStr}] Прекращаем проверку видео-треков после ${checkCount} попыток`);
+                                            
+                                            // Финальная проверка transceivers
+                                            if (pc.getTransceivers) {
+                                                const transceivers = pc.getTransceivers();
+                                                console.log(`🔍 [started ${publisherIdStr}] Финальная проверка: ${transceivers.length} transceivers`);
+                                                transceivers.forEach((transceiver, idx) => {
+                                                    console.log(`🔍 [started ${publisherIdStr}] Transceiver ${idx}:`, {
+                                                        kind: transceiver.receiver?.track?.kind,
+                                                        direction: transceiver.direction,
+                                                        currentDirection: transceiver.currentDirection
+                                                    });
+                                                });
+                                            }
+                                            
                                             clearInterval(checkVideoInterval);
                                         }
                                     }, 500);
@@ -1468,16 +1591,27 @@ var AudioModule = {
                 
                 // Обработка удаленного трека (новый API Janus.js)
                 handle.onremotetrack = (track, mid, on) => {
-                    console.log(`🔊 onremotetrack вызван: publisherId=${publisherId}, track.kind=${track.kind}, on=${on}, mid=${mid}, muted=${track.muted}, readyState=${track.readyState}, enabled=${track.enabled}`);
+                    console.log(`🔊 [subscriber ${publisherIdStr}] onremotetrack вызван:`, {
+                        publisherId: publisherId,
+                        trackKind: track.kind,
+                        trackId: track.id,
+                        on: on,
+                        mid: mid,
+                        muted: track.muted,
+                        readyState: track.readyState,
+                        enabled: track.enabled,
+                        label: track.label
+                    });
                     
                     // ВАЖНО: Сохраняем трек в handle для последующего использования
                     if (track.kind === 'audio' && on) {
                         handle.remoteAudioTrack = track;
-                        console.log(`✅ Сохранен remoteAudioTrack в handle: ${track.id}`);
+                        console.log(`✅ [subscriber ${publisherIdStr}] Сохранен remoteAudioTrack в handle: ${track.id}`);
                     }
                     
                     // Обрабатываем видео-треки
                     if (track.kind === 'video' && on) {
+                        console.log(`📹 [subscriber ${publisherIdStr}] ВИДЕО-ТРЕК ПОЛУЧЕН! Обрабатываем...`);
                         handle.remoteVideoTrack = track;
                         console.log(`✅ Получен видео-трек от publisher ${publisherId}: ${track.id}, readyState=${track.readyState}, enabled=${track.enabled}, muted=${track.muted}`);
                         
@@ -1737,32 +1871,61 @@ var AudioModule = {
                                 const remoteStream = new MediaStream();
                                 const videoStream = new MediaStream();
                                 
+                                console.log(`🔍 [webrtcState ${publisherIdStr}] Проверяем ${receivers.length} receivers на наличие видео-треков...`);
+                                
                                 receivers.forEach((receiver, index) => {
-                                    console.log(`🔍 [webrtcState] Receiver ${index}:`, {
-                                        track: receiver.track ? {
-                                            id: receiver.track.id,
-                                            kind: receiver.track.kind,
-                                            enabled: receiver.track.enabled,
-                                            muted: receiver.track.muted,
-                                            readyState: receiver.track.readyState
-                                        } : 'null'
+                                    const trackInfo = receiver.track ? {
+                                        id: receiver.track.id,
+                                        kind: receiver.track.kind,
+                                        enabled: receiver.track.enabled,
+                                        muted: receiver.track.muted,
+                                        readyState: receiver.track.readyState,
+                                        label: receiver.track.label
+                                    } : null;
+                                    
+                                    console.log(`🔍 [webrtcState ${publisherIdStr}] Receiver ${index}:`, {
+                                        track: trackInfo,
+                                        receiverId: receiver.id
                                     });
                                     
                                     if (receiver.track) {
                                         if (receiver.track.kind === 'audio') {
-                                            console.log(`✅ [webrtcState] Добавляем аудио-трек ${receiver.track.id} в поток для ${publisherIdStr}`);
+                                            console.log(`✅ [webrtcState ${publisherIdStr}] Добавляем аудио-трек ${receiver.track.id} в поток`);
                                             remoteStream.addTrack(receiver.track);
                                         } else if (receiver.track.kind === 'video') {
-                                            console.log(`✅ [webrtcState] Найден видео-трек ${receiver.track.id} для ${publisherIdStr}`);
+                                            console.log(`📹 [webrtcState ${publisherIdStr}] ВИДЕО-ТРЕК НАЙДЕН В RECEIVERS! ${receiver.track.id}`);
                                             videoStream.addTrack(receiver.track);
+                                        } else {
+                                            console.log(`⚠️ [webrtcState ${publisherIdStr}] Неизвестный тип трека: ${receiver.track.kind}`);
                                         }
+                                    } else {
+                                        console.log(`⚠️ [webrtcState ${publisherIdStr}] Receiver ${index} не имеет трека`);
                                     }
                                 });
                                 
+                                console.log(`🔍 [webrtcState ${publisherIdStr}] Итого: аудио-треков=${remoteStream.getAudioTracks().length}, видео-треков=${videoStream.getVideoTracks().length}`);
+                                
                                 // Обрабатываем видео-поток, если есть
                                 if (videoStream.getVideoTracks().length > 0) {
-                                    console.log(`✅ [webrtcState] Создан видео-поток из receivers для ${publisherIdStr}, треков: ${videoStream.getVideoTracks().length}`);
+                                    console.log(`✅ [webrtcState ${publisherIdStr}] Создан видео-поток из receivers, треков: ${videoStream.getVideoTracks().length}`);
                                     this.handleRemoteVideoStream(videoStream, publisherId, displayName);
+                                } else {
+                                    console.log(`⚠️ [webrtcState ${publisherIdStr}] Видео-треков в receivers НЕТ`);
+                                    
+                                    // Проверяем transceivers
+                                    if (pc.getTransceivers) {
+                                        const transceivers = pc.getTransceivers();
+                                        console.log(`🔍 [webrtcState ${publisherIdStr}] Проверяем ${transceivers.length} transceivers...`);
+                                        transceivers.forEach((transceiver, idx) => {
+                                            console.log(`🔍 [webrtcState ${publisherIdStr}] Transceiver ${idx}:`, {
+                                                kind: transceiver.receiver?.track?.kind,
+                                                direction: transceiver.direction,
+                                                currentDirection: transceiver.currentDirection,
+                                                receiverTrackId: transceiver.receiver?.track?.id,
+                                                receiverTrackReadyState: transceiver.receiver?.track?.readyState
+                                            });
+                                        });
+                                    }
                                 }
                                 
                                 console.log(`🔍 [webrtcState] Создан поток с ${remoteStream.getAudioTracks().length} треками для ${publisherIdStr}`);
