@@ -1881,6 +1881,63 @@
                 }
             }
         };
+        
+        // SignalR: Обработка уведомления о начале видео-трансляции
+        window.onVideoStreamStarted = (data) => {
+            console.log('📹 SignalR: Видео-трансляция начата:', data);
+            
+            // Проверяем, что это нужный канал
+            if (data.channelId === AudioModule.channelId) {
+                console.log(`📹 Пользователь ${data.nickname} начал трансляцию ${data.videoType}`);
+                
+                // Обновляем видимость кнопки "Смотреть"
+                updateWatchButtonVisibility();
+                
+                // Показываем уведомление пользователю
+                const message = data.videoType === 'screen' 
+                    ? `${data.nickname} начал демонстрацию экрана`
+                    : `${data.nickname} включил веб-камеру`;
+                
+                // Можно добавить визуальное уведомление (тост)
+                console.log('💬', message);
+            }
+        };
+        
+        // SignalR: Обработка уведомления об остановке видео-трансляции
+        window.onVideoStreamStopped = (data) => {
+            console.log('🔴 SignalR: Видео-трансляция остановлена:', data);
+            
+            // Проверяем, что это нужный канал
+            if (data.channelId === AudioModule.channelId) {
+                console.log(`🔴 Пользователь ${data.userId} остановил трансляцию`);
+                
+                // Обновляем видимость кнопки "Смотреть"
+                updateWatchButtonVisibility();
+            }
+        };
+        
+        // SignalR: Обработка списка активных видео-стримов (при подключении)
+        window.onActiveVideoStreams = (data) => {
+            console.log('📹 SignalR: Активные видео-стримы:', data);
+            
+            // Проверяем, что это нужный канал
+            if (data.channelId === AudioModule.channelId) {
+                if (data.streams && data.streams.length > 0) {
+                    console.log(`📹 В канале ${data.streams.length} активных видео-стримов`);
+                    
+                    // Обновляем видимость кнопки "Смотреть"
+                    updateWatchButtonVisibility();
+                    
+                    // Показываем информацию о стримах
+                    data.streams.forEach(stream => {
+                        const streamType = stream.videoType === 'screen' ? 'демонстрацию экрана' : 'веб-камеру';
+                        console.log(`  - ${stream.nickname} показывает ${streamType}`);
+                    });
+                } else {
+                    console.log('📹 В канале нет активных видео-стримов');
+                }
+            }
+        };
     </script>
     
     <!-- Video Overlay -->
