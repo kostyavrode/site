@@ -993,6 +993,7 @@ var AudioModule = {
             console.log('📤 Добавлен видео-трек:', videoTrack.id);
             
             // Используем Janus.js createOffer для корректной работы
+            // ВАЖНО: Используем addVideo вместо replaceVideo, так как изначально видео не было
             this.publisherHandle.createOffer({
                 media: {
                     audioRecv: false,
@@ -1000,11 +1001,20 @@ var AudioModule = {
                     audioSend: true,
                     videoSend: true,
                     replaceAudio: true, // Заменяем аудио
-                    replaceVideo: true  // Заменяем/добавляем видео
+                    addVideo: true  // Добавляем видео (не replaceVideo, так как видео transceiver еще не существует)
                 },
                 stream: combinedStream,
                 success: (jsep) => {
                     console.log('✅ Offer создан для видео через Janus.js');
+                    
+                    // Проверяем SDP offer на наличие видео
+                    if (jsep && jsep.sdp) {
+                        const hasVideoInOffer = jsep.sdp.includes('m=video') || jsep.sdp.includes('video');
+                        console.log(`🔍 [publishVideo] SDP offer анализ: hasVideo=${hasVideoInOffer}`);
+                        if (!hasVideoInOffer) {
+                            console.error('❌ КРИТИЧНО: Видео отсутствует в SDP offer!');
+                        }
+                    }
                     
                     // Отправляем configure
                     this.publisherHandle.send({
@@ -1016,6 +1026,13 @@ var AudioModule = {
                         jsep: jsep,
                         success: (result) => {
                             console.log('✅ Видео опубликовано, ответ:', result);
+                            
+                            // Проверяем, что видео действительно опубликовано
+                            if (result && result.videoroom === 'event' && result.configured === 'ok') {
+                                console.log('✅ Видео успешно сконфигурировано в Janus');
+                            } else {
+                                console.warn('⚠️ Неожиданный ответ от Janus при публикации видео:', result);
+                            }
                         },
                         error: (error) => {
                             console.error('❌ Ошибка публикации видео:', error);
@@ -1196,6 +1213,28 @@ var AudioModule = {
                 
                 // Обновляем UI - используем комбинированный список (себя + streamVolumes + pending)
                 this.notifyParticipantsUpdate();
+            }
+            
+            // Событие 'configured' - конфигурация медиа завершена
+            if (event.videoroom === 'event' && event.configured === 'ok') {
+                console.log('✅ Publisher сконфигурирован:', {
+                    audio_codec: event.audio_codec,
+                    video_codec: event.video_codec,
+                    streams: event.streams,
+                    streamsCount: event.streams ? event.streams.length : 0
+                });
+                
+                // Проверяем, что видео действительно опубликовано
+                if (event.streams && event.streams.length > 0) {
+                    const hasVideoStream = event.streams.some(stream => 
+                        stream.type === 'video' || stream.video === true
+                    );
+                    if (hasVideoStream) {
+                        console.log('✅ Видео-поток подтвержден в Janus');
+                    } else {
+                        console.warn('⚠️ Видео-поток не найден в streams, хотя должен быть опубликован');
+                    }
+                }
             }
             
             // Удаленные publishers
