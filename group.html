@@ -1776,18 +1776,42 @@
                     id: 'local',
                     stream: audioModule.localVideoStream,
                     display: currentNickName + ' (Вы)',
-                    isLocal: true
+                    isLocal: true,
+                    hasStream: true
                 });
             }
             
-            // Добавляем удаленные видео-потоки
+            // Добавляем удаленные видео-потоки (реальные потоки)
             audioModule.remoteVideoStreams.forEach((videoData, publisherId) => {
                 allVideoStreams.push({
                     id: publisherId,
                     stream: videoData.stream,
                     display: videoData.display || 'Пользователь',
-                    isLocal: false
+                    isLocal: false,
+                    hasStream: true
                 });
+            });
+            
+            // Добавляем видео-стримы из SignalR (даже если поток еще не получен)
+            activeVideoStreamsBySignalR.forEach((streamInfo, userId) => {
+                // Проверяем, не добавлен ли уже этот стрим как реальный поток
+                const alreadyAdded = allVideoStreams.some(vs => vs.id === userId || vs.userId === userId);
+                if (!alreadyAdded) {
+                    // Находим publisherId по userId (нужно найти в списке участников)
+                    const participants = audioModule.getFullParticipantsList ? audioModule.getFullParticipantsList() : [];
+                    const participant = participants.find(p => p.userId === userId);
+                    if (participant) {
+                        allVideoStreams.push({
+                            id: participant.participantId || userId,
+                            userId: userId,
+                            stream: null, // Поток еще не получен
+                            display: streamInfo.nickname || 'Пользователь',
+                            isLocal: false,
+                            hasStream: false, // Поток еще загружается
+                            videoType: streamInfo.videoType
+                        });
+                    }
+                }
             });
             
             if (allVideoStreams.length === 0) {
@@ -1801,13 +1825,36 @@
                 videoWrapper.className = 'video-wrapper';
                 videoWrapper.style.cssText = 'position: relative; background: var(--bg-secondary); border-radius: var(--border-radius); overflow: hidden; min-height: 200px;' + (videoData.isLocal ? ' border: 2px solid var(--accent-green);' : '');
                 
-                // Создаем новый video элемент и привязываем к потоку
-                const videoElement = document.createElement('video');
-                videoElement.autoplay = true;
-                videoElement.playsInline = true;
-                videoElement.muted = true;
-                videoElement.srcObject = videoData.stream;
-                videoElement.style.cssText = 'width: 100%; height: 100%; object-fit: contain;';
+                if (videoData.hasStream && videoData.stream) {
+                    // Создаем новый video элемент и привязываем к потоку
+                    const videoElement = document.createElement('video');
+                    videoElement.autoplay = true;
+                    videoElement.playsInline = true;
+                    videoElement.muted = true;
+                    videoElement.srcObject = videoData.stream;
+                    videoElement.style.cssText = 'width: 100%; height: 100%; object-fit: contain;';
+                    
+                    // Для локального видео - зеркальное отображение
+                    if (videoData.isLocal && videoData.videoType === 'camera') {
+                        videoElement.style.transform = 'scaleX(-1)';
+                    }
+                    
+                    videoElement.onerror = (error) => {
+                        console.error('❌ Ошибка воспроизведения видео:', error);
+                    };
+                    
+                    videoWrapper.appendChild(videoElement);
+                } else {
+                    // Поток еще не получен - показываем сообщение о загрузке
+                    const loadingDiv = document.createElement('div');
+                    loadingDiv.style.cssText = 'display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 20px; color: var(--text-secondary);';
+                    loadingDiv.innerHTML = `
+                        <div style="font-size: 24px; margin-bottom: 10px;">⏳</div>
+                        <div style="font-weight: bold; margin-bottom: 5px;">${videoData.display}</div>
+                        <div style="font-size: 14px;">Загрузка ${videoData.videoType === 'screen' ? 'демонстрации экрана' : 'веб-камеры'}...</div>
+                    `;
+                    videoWrapper.appendChild(loadingDiv);
+                }
                 
                 // Для локального видео - зеркалируем
                 if (videoData.isLocal) {
