@@ -1072,14 +1072,25 @@ var AudioModule = {
             if (this.publisherHandle.webrtcStuff && this.publisherHandle.webrtcStuff.pc) {
                 const pc = this.publisherHandle.webrtcStuff.pc;
                 const senders = pc.getSenders();
-                senders.forEach(sender => {
-                    if (sender.track && sender.track.kind === 'video') {
-                        console.log('🛑 Удаляем видео-трек из WebRTC sender:', sender.track.id);
-                        sender.replaceTrack(null).catch(err => {
-                            console.warn('⚠️ Ошибка при удалении видео-трека из sender:', err);
-                        });
-                    }
+                const videoSenders = senders.filter(sender => sender.track && sender.track.kind === 'video');
+                console.log(`🛑 Найдено ${videoSenders.length} видео-треков в PeerConnection для удаления`);
+                videoSenders.forEach(sender => {
+                    console.log('🛑 Удаляем видео-трек из WebRTC sender:', sender.track.id, sender.track.label);
+                    sender.replaceTrack(null).catch(err => {
+                        console.warn('⚠️ Ошибка при удалении видео-трека из sender:', err);
+                    });
                 });
+                
+                // ВАЖНО: Также проверяем transceivers и останавливаем их треки
+                if (pc.getTransceivers) {
+                    const transceivers = pc.getTransceivers();
+                    transceivers.forEach(transceiver => {
+                        if (transceiver.sender && transceiver.sender.track && transceiver.sender.track.kind === 'video') {
+                            console.log('🛑 Останавливаем видео-трек из transceiver:', transceiver.sender.track.id);
+                            transceiver.sender.track.stop();
+                        }
+                    });
+                }
             }
             
             // Останавливаем видео-трек локально
@@ -1163,14 +1174,45 @@ var AudioModule = {
         const isScreenShare = this.isScreenSharing && this.localVideoStream === stream;
         const isCamera = this.isCameraEnabled && this.localVideoStream === stream;
         
-        console.log('📤 Публикуем видео-трек:', {
-            trackId: videoTrack.id,
-            trackLabel: videoTrack.label,
-            trackKind: videoTrack.kind,
-            isScreenShare: isScreenShare,
-            isCamera: isCamera,
-            streamSource: isScreenShare ? 'screen' : (isCamera ? 'camera' : 'unknown')
-        });
+        console.log('📤 ========== ПУБЛИКАЦИЯ ВИДЕО-ТРЕКА ==========');
+        console.log('📤 Track ID:', videoTrack.id);
+        console.log('📤 Track Label:', videoTrack.label);
+        console.log('📤 isScreenSharing:', this.isScreenSharing);
+        console.log('📤 isCameraEnabled:', this.isCameraEnabled);
+        console.log('📤 localVideoStream === stream:', this.localVideoStream === stream);
+        console.log('📤 isScreenShare:', isScreenShare);
+        console.log('📤 isCamera:', isCamera);
+        console.log('📤 streamSource:', isScreenShare ? 'screen' : (isCamera ? 'camera' : 'unknown'));
+        
+        // КРИТИЧНО: Проверяем настройки трека ПЕРЕД публикацией
+        if (videoTrack.getSettings) {
+            try {
+                const settings = videoTrack.getSettings();
+                console.log('📤 displaySurface:', settings.displaySurface);
+                console.log('📤 facingMode:', settings.facingMode);
+                console.log('📤 deviceId:', settings.deviceId);
+                
+                if (this.isScreenSharing) {
+                    if (settings.displaySurface !== undefined) {
+                        console.log('✅ ПУБЛИКУЕМ ЭКРАН (displaySurface=' + settings.displaySurface + ')');
+                    } else if (settings.facingMode !== undefined) {
+                        console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: При screen sharing публикуется камера! (facingMode=' + settings.facingMode + ')');
+                    } else {
+                        const trackLabel = videoTrack.label.toLowerCase();
+                        const cameraKeywords = ['camera', 'cam', 'webcam', 'video capture', 'camo', 'obs', 'virtual', 'droidcam'];
+                        const isLabelCamera = cameraKeywords.some(keyword => trackLabel.includes(keyword));
+                        if (isLabelCamera) {
+                            console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: При screen sharing публикуется камера! (label=' + videoTrack.label + ')');
+                        } else {
+                            console.warn('⚠️ Не удалось определить тип трека, но label не указывает на камеру');
+                        }
+                    }
+                }
+            } catch (e) {
+                console.warn('⚠️ Ошибка при получении настроек трека:', e);
+            }
+        }
+        console.log('📤 ============================================');
         
         // КРИТИЧНО: Проверяем настройки трека для диагностики
         console.log('🔍 ========== ПРОВЕРКА ТРЕКА В publishVideo ==========');
@@ -1253,8 +1295,30 @@ var AudioModule = {
             combinedStream.addTrack(videoTrack);
             console.log('📤 Добавлен видео-трек:', videoTrack.id);
             
+            // КРИТИЧНО: Проверяем, есть ли уже видео transceiver в PeerConnection
+            // Если есть - используем replaceVideo, если нет - addVideo
+            let hasVideoTransceiver = false;
+            if (this.publisherHandle.webrtcStuff && this.publisherHandle.webrtcStuff.pc) {
+                const pc = this.publisherHandle.webrtcStuff.pc;
+                const senders = pc.getSenders();
+                hasVideoTransceiver = senders.some(sender => sender.track && sender.track.kind === 'video');
+                console.log('🔍 Проверка видео transceiver:', {
+                    hasVideoTransceiver: hasVideoTransceiver,
+                    sendersCount: senders.length,
+                    videoSenders: senders.filter(s => s.track && s.track.kind === 'video').map(s => ({
+                        trackId: s.track.id,
+                        trackLabel: s.track.label,
+                        trackKind: s.track.kind
+                    }))
+                });
+            }
+            
+            // ВАЖНО: Если видео transceiver уже существует - ЗАМЕНЯЕМ его, а не добавляем новый
+            // Это гарантирует, что отправляется только один видео-трек (выбранный пользователем)
+            const videoAction = hasVideoTransceiver ? 'replaceVideo' : 'addVideo';
+            console.log('🔍 Действие с видео:', videoAction, hasVideoTransceiver ? '(заменяем существующий)' : '(добавляем новый)');
+            
             // Используем Janus.js createOffer для корректной работы
-            // ВАЖНО: Используем addVideo вместо replaceVideo, так как изначально видео не было
             this.publisherHandle.createOffer({
                 media: {
                     audioRecv: false,
@@ -1262,7 +1326,7 @@ var AudioModule = {
                     audioSend: true,
                     videoSend: true,
                     replaceAudio: true, // Заменяем аудио
-                    addVideo: true  // Добавляем видео (не replaceVideo, так как видео transceiver еще не существует)
+                    [videoAction]: true  // Заменяем или добавляем видео в зависимости от наличия transceiver
                 },
                 stream: combinedStream,
                 success: (jsep) => {
@@ -1339,6 +1403,61 @@ var AudioModule = {
         // Проверяем состояние треков
         videoTracks.forEach(track => {
             console.log(`🔍 Видео-трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
+            
+            // КРИТИЧНО: Проверяем тип трека (экран или камера) для remote tracks
+            console.log(`🔍 ========== ПРОВЕРКА ТИПА ВИДЕО-ТРЕКА (подписчик) ==========`);
+            console.log(`🔍 Publisher ID: ${publisherIdStr}`);
+            console.log(`🔍 Track ID: ${track.id}`);
+            console.log(`🔍 Track Label: ${track.label}`);
+            
+            // Для remote tracks getSettings() может не работать, используем альтернативные способы
+            let trackType = 'unknown';
+            if (track.getSettings) {
+                try {
+                    const settings = track.getSettings();
+                    console.log(`🔍 displaySurface: ${settings.displaySurface}`);
+                    console.log(`🔍 facingMode: ${settings.facingMode}`);
+                    console.log(`🔍 deviceId: ${settings.deviceId}`);
+                    
+                    if (settings.displaySurface !== undefined) {
+                        trackType = 'screen';
+                        console.log(`✅ ЭТО ЭКРАН (displaySurface=${settings.displaySurface})`);
+                    } else if (settings.facingMode !== undefined) {
+                        trackType = 'camera';
+                        console.log(`❌ ЭТО КАМЕРА (facingMode=${settings.facingMode})`);
+                    } else {
+                        // Проверяем по label
+                        const trackLabel = track.label.toLowerCase();
+                        const cameraKeywords = ['camera', 'cam', 'webcam', 'video capture', 'camo', 'obs', 'virtual', 'droidcam'];
+                        const isLabelCamera = cameraKeywords.some(keyword => trackLabel.includes(keyword));
+                        if (isLabelCamera) {
+                            trackType = 'camera';
+                            console.log(`❌ ЭТО КАМЕРА (label содержит слова камеры)`);
+                        } else {
+                            trackType = 'unknown';
+                            console.log(`⚠️ Не удалось определить тип трека`);
+                        }
+                    }
+                } catch (e) {
+                    console.warn(`⚠️ Ошибка при получении настроек трека:`, e);
+                }
+            } else {
+                // Если getSettings() не доступен, проверяем только по label
+                const trackLabel = track.label.toLowerCase();
+                const cameraKeywords = ['camera', 'cam', 'webcam', 'video capture', 'camo', 'obs', 'virtual', 'droidcam'];
+                const isLabelCamera = cameraKeywords.some(keyword => trackLabel.includes(keyword));
+                if (isLabelCamera) {
+                    trackType = 'camera';
+                    console.log(`❌ ЭТО КАМЕРА (label содержит слова камеры: ${trackLabel})`);
+                } else if (trackLabel.includes('screen') || trackLabel.includes('display') || trackLabel.includes('window')) {
+                    trackType = 'screen';
+                    console.log(`✅ ЭТО ЭКРАН (label содержит слова экрана: ${trackLabel})`);
+                } else {
+                    trackType = 'unknown';
+                    console.log(`⚠️ Не удалось определить тип трека по label: ${trackLabel}`);
+                }
+            }
+            console.log(`🔍 ============================================================`);
         });
         
         // Проверяем, есть ли уже видео для этого publisher
