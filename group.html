@@ -1942,30 +1942,32 @@
                 
                 console.log('📹 Активные видео-стримы по SignalR:', activeVideoStreamsBySignalR.size);
                 
+                // ВАЖНО: Обновляем видимость кнопки "Смотреть" СРАЗУ, не дожидаясь переподписки
+                updateWatchButtonVisibility();
+                
                 // ВАЖНО: Переподписываемся на publisher, чтобы получить видео-трек
                 // Это необходимо, потому что если мы уже подписаны на publisher (для аудио),
                 // то Janus не обновляет SDP автоматически при добавлении видео
+                // Делаем это асинхронно, чтобы не блокировать UI
                 if (AudioModule && typeof AudioModule.resubscribeToPublisherByNickname === 'function') {
-                    try {
-                        console.log(`🔄 Переподписываемся на ${data.nickname} для получения видео...`);
-                        await AudioModule.resubscribeToPublisherByNickname(data.nickname);
+                    // Запускаем переподписку асинхронно, не блокируя UI
+                    AudioModule.resubscribeToPublisherByNickname(data.nickname).then(() => {
                         console.log(`✅ Переподписка на ${data.nickname} завершена`);
-                    } catch (error) {
+                        // Обновляем кнопку еще раз после переподписки
+                        updateWatchButtonVisibility();
+                    }).catch((error) => {
                         console.error(`❌ Ошибка при переподписке на ${data.nickname}:`, error);
                         // Если не удалось найти по nickname, пробуем переподписаться на всех publishers с видео
                         console.log('🔄 Пробуем альтернативный подход: переподписка на всех publishers с видео...');
-                        try {
-                            await AudioModule.resubscribeAllPublishersWithVideo();
-                        } catch (altError) {
+                        AudioModule.resubscribeAllPublishersWithVideo().then(() => {
+                            updateWatchButtonVisibility();
+                        }).catch((altError) => {
                             console.error('❌ Альтернативный подход тоже не сработал:', altError);
-                        }
-                    }
+                        });
+                    });
                 } else {
                     console.warn('⚠️ Метод resubscribeToPublisherByNickname не доступен');
                 }
-                
-                // Обновляем видимость кнопки "Смотреть"
-                updateWatchButtonVisibility();
                 
                 // Показываем уведомление пользователю
                 const message = data.videoType === 'screen' 
