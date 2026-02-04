@@ -895,11 +895,22 @@
                 // Проверяем, является ли это нами - несколько способов определения:
                 // 1. По флагу isMe (установленному в getFullParticipantsList)
                 // 2. По participantId (если он установлен)
-                // 3. По displayName (сравниваем с текущим никнеймом)
-                const isYouById = participant.id && currentParticipantId && participant.id.toString() === currentParticipantId.toString();
+                // 3. По participantId из AudioModule (страховочный метод)
+                // 4. По displayName (сравниваем с текущим никнеймом)
+                const audioModule = getAudioModule();
+                const effectiveParticipantId = currentParticipantId || (audioModule ? audioModule.participantId : null);
+                
+                const isYouById = participant.id && effectiveParticipantId && participant.id.toString() === effectiveParticipantId.toString();
                 const isYouByFlag = participant.isMe === true;
                 const isYouByName = currentNickName && name.toLowerCase().trim() === currentNickName.toLowerCase().trim();
                 const isYou = isYouById || isYouByFlag || isYouByName;
+                
+                // Логируем для диагностики (только если есть проблемы)
+                if (!isYou && !isYouById && !isYouByFlag && !isYouByName) {
+                    // Это не мы, значит должен быть ползунок
+                } else if (isYou) {
+                    // Это мы, ползунка не будет
+                }
                 
                 const volumeKey = `${currentAudioChannel}-${participantId}`;
                 
@@ -1002,6 +1013,52 @@
             await audioModule.setParticipantVolume(participantId, volume);
         }
         
+        // Страховочная функция: проверяет наличие ползунков и создает их при необходимости
+        function ensureVolumeSliders() {
+            if (!currentAudioChannel) return;
+            
+            const audioModule = getAudioModule();
+            if (!audioModule || !audioModule.streamVolumes) return;
+            
+            const effectiveParticipantId = currentParticipantId || (audioModule ? audioModule.participantId : null);
+            
+            // Проверяем, есть ли участники без ползунков
+            const container = document.getElementById('audioParticipantsList');
+            if (!container) return;
+            
+            let missingSliders = false;
+            
+            audioModule.streamVolumes.forEach((data, participantIdStr) => {
+                // Проверяем, это не мы
+                if (effectiveParticipantId && participantIdStr === effectiveParticipantId.toString()) {
+                    return; // Пропускаем себя
+                }
+                
+                const volumeKey = `${currentAudioChannel}-${participantIdStr}`;
+                const existingSlider = document.getElementById(`volume-${volumeKey}`);
+                
+                if (!existingSlider) {
+                    console.warn(`⚠️ Ползунок отсутствует для участника ${participantIdStr}`);
+                    missingSliders = true;
+                }
+            });
+            
+            // Если есть участники без ползунков, перерисовываем UI
+            if (missingSliders) {
+                console.log('🔄 Обнаружены участники без ползунков, перерисовываем...');
+                const participants = audioModule.getFullParticipantsList ? audioModule.getFullParticipantsList() : [];
+                if (participants.length > 0) {
+                    displayAudioParticipants(participants);
+                }
+            }
+        }
+        
+        // Запускаем проверку ползунков через 2 секунды после загрузки и каждые 5 секунд
+        setTimeout(() => {
+            ensureVolumeSliders();
+            setInterval(ensureVolumeSliders, 5000);
+        }, 2000);
+        
         // Хранилище участников по каналам: Map<channelId, Map<participantId, participant>>
         const channelParticipantsMap = new Map();
         
@@ -1041,32 +1098,47 @@
             console.log('🔄 Обновление UI участников:', participants);
             console.log('🔍 currentAudioChannel:', currentAudioChannel);
             console.log('🔍 participantId:', participantId);
+            console.log('🔍 currentParticipantId (до):', currentParticipantId);
+            
+            // Сохраняем старое значение для проверки изменения
+            const oldParticipantId = currentParticipantId;
             
             if (participantId !== undefined && participantId !== null) {
                 currentParticipantId = participantId;
                 console.log('✅ participantId установлен из параметра:', currentParticipantId);
             } else if (!currentParticipantId && participants && Array.isArray(participants) && participants.length > 0) {
+                // Страховка: пробуем получить participantId из AudioModule
                 const audioModule = getAudioModule();
-                const displayNameToFind = audioModule?.displayName || currentNickName;
-                console.log('🔍 Ищем себя в списке по displayName:', displayNameToFind);
-                
-                const self = participants.find(p => {
-                    const pDisplay = (p.display || p.displayName || '').trim().toLowerCase();
-                    const myDisplay = displayNameToFind.trim().toLowerCase();
-                    return pDisplay === myDisplay;
-                });
-                
-                if (self && self.id) {
-                    currentParticipantId = self.id;
-                    console.log('✅ Найден свой participantId из списка:', currentParticipantId);
-                    if (audioModule) {
-                        audioModule.participantId = self.id;
-                    }
+                if (audioModule && audioModule.participantId) {
+                    currentParticipantId = audioModule.participantId;
+                    console.log('✅ participantId получен из AudioModule:', currentParticipantId);
                 } else {
-                    console.warn('⚠️ Не удалось найти себя в списке участников. DisplayName для поиска:', displayNameToFind);
-                    console.warn('⚠️ Участники в списке:', participants.map(p => ({ id: p.id, display: p.display || p.displayName })));
+                    // Ищем по displayName
+                    const displayNameToFind = audioModule?.displayName || currentNickName;
+                    console.log('🔍 Ищем себя в списке по displayName:', displayNameToFind);
+                    
+                    const self = participants.find(p => {
+                        const pDisplay = (p.display || p.displayName || '').trim().toLowerCase();
+                        const myDisplay = displayNameToFind.trim().toLowerCase();
+                        return pDisplay === myDisplay;
+                    });
+                    
+                    if (self && self.id) {
+                        currentParticipantId = self.id;
+                        console.log('✅ Найден свой participantId из списка:', currentParticipantId);
+                        if (audioModule) {
+                            audioModule.participantId = self.id;
+                        }
+                    } else {
+                        console.warn('⚠️ Не удалось найти себя в списке участников. DisplayName для поиска:', displayNameToFind);
+                        console.warn('⚠️ Участники в списке:', participants.map(p => ({ id: p.id, display: p.display || p.displayName })));
+                    }
                 }
             }
+            
+            // Если participantId только что установился (был null, стал не null),
+            // нужно перерисовать UI, чтобы правильно определить "isYou" и показать ползунки
+            const needsRerender = (oldParticipantId === null && currentParticipantId !== null);
 
             if (participants && Array.isArray(participants)) {
                 participantsMap.clear();
@@ -1081,6 +1153,16 @@
             // Обновляем счетчик в карточке канала
             if (currentAudioChannel) {
                 updateChannelParticipantsDisplay(currentAudioChannel);
+                
+                // ВАЖНО: Если participantId только что установился, перерисовываем участников
+                // чтобы правильно определить "isYou" и показать ползунки громкости
+                if (needsRerender && participants && Array.isArray(participants)) {
+                    console.log('🔄 Перерисовываем участников после установки participantId');
+                    // Небольшая задержка, чтобы DOM успел обновиться
+                    setTimeout(() => {
+                        displayAudioParticipants(participants);
+                    }, 100);
+                }
             } else {
                 console.warn('⚠️ currentAudioChannel не установлен, не могу обновить счетчик');
                 const section = document.getElementById('audioParticipantsSection');
