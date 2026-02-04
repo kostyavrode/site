@@ -1937,6 +1937,26 @@
         window.onVideoStreamRemoved = (publisherId) => {
             console.log('🔴 Видео-поток удален:', publisherId);
             
+            const publisherIdStr = String(publisherId);
+            
+            // Удаляем из SignalR map (по разным ключам - может быть participantId или odlUserId)
+            activeVideoStreamsBySignalR.forEach((value, key) => {
+                if (String(key) === publisherIdStr || String(value.participantId) === publisherIdStr) {
+                    activeVideoStreamsBySignalR.delete(key);
+                    console.log('🔴 Удален из activeVideoStreamsBySignalR:', key);
+                }
+            });
+            
+            // Проверяем, не наш ли это поток - обновляем стили кнопок
+            const audioModule = getAudioModule();
+            if (audioModule && String(audioModule.participantId) === publisherIdStr) {
+                console.log('🔴 Удален собственный видео-поток, сбрасываем стили кнопок');
+                // Сбрасываем стили кнопок
+                document.querySelectorAll('.audio-screen-share-btn, .audio-webcam-btn').forEach(btn => {
+                    btn.style.backgroundColor = '';
+                });
+            }
+            
             // Обновляем видимость кнопки "Смотреть"
             updateWatchButtonVisibility();
             
@@ -1945,6 +1965,7 @@
                 if (hasActiveVideoStreams()) {
                     updateVideoOverlay();
                 } else {
+                    console.log('🔴 Нет активных видео-потоков, закрываем overlay');
                     toggleVideoOverlay();
                 }
             }

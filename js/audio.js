@@ -700,19 +700,60 @@ var AudioModule = {
             this.publisherHandle = null;
         }
         
-        // Останавливаем локальный поток
+        // ВАЖНО: Останавливаем ВСЕ треки из PeerConnection перед закрытием
+        // Это гарантирует освобождение микрофона и камеры
+        if (this.publisherHandle && this.publisherHandle.webrtcStuff && this.publisherHandle.webrtcStuff.pc) {
+            const pc = this.publisherHandle.webrtcStuff.pc;
+            console.log('🛑 Останавливаем все треки из PeerConnection...');
+            
+            // Останавливаем треки из senders
+            const senders = pc.getSenders();
+            senders.forEach(sender => {
+                if (sender.track) {
+                    console.log('🛑 Останавливаем трек из sender:', sender.track.id, sender.track.kind, sender.track.label);
+                    sender.track.stop();
+                }
+            });
+            
+            // Останавливаем треки из transceivers
+            if (pc.getTransceivers) {
+                pc.getTransceivers().forEach(transceiver => {
+                    if (transceiver.sender && transceiver.sender.track) {
+                        console.log('🛑 Останавливаем трек из transceiver sender:', transceiver.sender.track.id);
+                        transceiver.sender.track.stop();
+                    }
+                });
+            }
+        }
+        
+        // Останавливаем локальный поток (микрофон)
         if (this.localStream) {
-            this.localStream.getTracks().forEach(track => track.stop());
+            console.log('🛑 Останавливаем localStream (микрофон)...');
+            this.localStream.getTracks().forEach(track => {
+                console.log('🛑 Останавливаем трек:', track.id, track.kind, track.label);
+                track.stop();
+            });
             this.localStream = null;
         }
         
         // Останавливаем видео-поток
         if (this.localVideoStream) {
-            this.localVideoStream.getTracks().forEach(track => track.stop());
+            console.log('🛑 Останавливаем localVideoStream при disconnect...');
+            this.localVideoStream.getTracks().forEach(track => {
+                console.log('🛑 Останавливаем трек:', track.id, track.kind, track.label);
+                track.stop();
+            });
             this.localVideoStream = null;
         }
         this.isScreenSharing = false;
         this.isCameraEnabled = false;
+        
+        // Уведомляем UI об удалении своего видео
+        if (window.onVideoStreamRemoved && this.participantId) {
+            window.onVideoStreamRemoved(this.participantId);
+        }
+        
+        console.log('✅ Все медиа-треки остановлены');
         
         // Очищаем удаленные видео-потоки
         this.remoteVideoStreams.forEach((videoData, publisherId) => {
@@ -1085,13 +1126,18 @@ var AudioModule = {
     
     // Остановить видео (screen share или webcam)
     async stopVideo() {
-        if (!this.isScreenSharing && !this.isCameraEnabled) {
+        // ВАЖНО: Разрешаем остановку даже если флаги не установлены (для очистки)
+        const hasVideoStream = this.localVideoStream !== null;
+        const hasFlags = this.isScreenSharing || this.isCameraEnabled;
+        
+        if (!hasVideoStream && !hasFlags) {
             console.warn('⚠️ Видео не активно');
             return false;
         }
         
-        if (!this.publisherHandle) {
-            console.error('❌ Publisher handle не найден');
+        // Если нет publisherHandle, но есть локальный поток - все равно останавливаем
+        if (!this.publisherHandle && !hasVideoStream) {
+            console.error('❌ Publisher handle не найден и нет локального потока');
             return false;
         }
         
@@ -1101,8 +1147,13 @@ var AudioModule = {
             
             console.log('🛑 Останавливаем видео...', {
                 wasScreenSharing: wasScreenSharing,
-                wasCameraEnabled: wasCameraEnabled
+                wasCameraEnabled: wasCameraEnabled,
+                hasVideoStream: hasVideoStream
             });
+            
+            // СРАЗУ сбрасываем флаги, чтобы можно было перезапустить
+            this.isScreenSharing = false;
+            this.isCameraEnabled = false;
             
             // ВАЖНО: Сначала удаляем видео-треки из WebRTC, потом останавливаем локальные треки
             // Удаляем видео-треки из WebRTC PeerConnection
@@ -1191,7 +1242,12 @@ var AudioModule = {
             
             // Уведомляем через SignalR об остановке видео-трансляции
             if (typeof Chat !== 'undefined' && Chat && this.channelId) {
-                await Chat.stopVideoStream(this.channelId);
+                try {
+                    await Chat.stopVideoStream(this.channelId);
+                    console.log('✅ SignalR уведомление об остановке видео отправлено');
+                } catch (e) {
+                    console.warn('⚠️ Ошибка отправки SignalR уведомления:', e);
+                }
             }
             
             // Уведомляем UI об удалении своего видео
@@ -1199,14 +1255,17 @@ var AudioModule = {
                 window.onVideoStreamRemoved(this.participantId);
             }
             
+            // Убеждаемся, что все очищено (флаги уже сброшены в начале)
             this.localVideoStream = null;
-            this.isScreenSharing = false;
-            this.isCameraEnabled = false;
             
-            console.log('✅ Видео остановлено');
+            console.log('✅ Видео остановлено, флаги сброшены, можно перезапустить');
             return true;
         } catch (error) {
             console.error('❌ Ошибка при остановке видео:', error);
+            // Сбрасываем флаги даже при ошибке
+            this.isScreenSharing = false;
+            this.isCameraEnabled = false;
+            this.localVideoStream = null;
             return false;
         }
     },
