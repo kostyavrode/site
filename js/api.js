@@ -223,6 +223,35 @@ const API = {
             this._refreshInterval = null;
             console.log('Stopped automatic token refresh');
         }
+    },
+    
+    // Время последнего обновления токена
+    _lastRefreshTime: null,
+    
+    // Обновить токен если прошло достаточно времени с последнего обновления
+    async refreshIfNeeded() {
+        const now = Date.now();
+        const MIN_REFRESH_INTERVAL = 5 * 60 * 1000; // 5 минут минимум между обновлениями
+        const MAX_TOKEN_AGE = 25 * 60 * 1000; // Обновляем если токену > 25 минут
+        
+        // Если недавно обновляли - пропускаем
+        if (this._lastRefreshTime && (now - this._lastRefreshTime) < MIN_REFRESH_INTERVAL) {
+            console.log('[API] Токен обновлялся недавно, пропускаем');
+            return true;
+        }
+        
+        // Если прошло много времени - обновляем
+        if (!this._lastRefreshTime || (now - this._lastRefreshTime) > MAX_TOKEN_AGE) {
+            console.log('[API] Требуется обновление токена (прошло времени с последнего обновления:', 
+                this._lastRefreshTime ? Math.round((now - this._lastRefreshTime) / 1000 / 60) + ' мин' : 'никогда', ')');
+            const refreshed = await this.tryRefreshToken();
+            if (refreshed) {
+                this._lastRefreshTime = now;
+            }
+            return refreshed;
+        }
+        
+        return true;
     }
 };
 
@@ -260,6 +289,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             
             if (refreshed) {
                 console.log('[API] ✅ Токен успешно обновлен при загрузке');
+                API._lastRefreshTime = Date.now();
                 // Запускаем периодическое обновление
                 API.startAutoRefresh();
             } else {
@@ -271,4 +301,34 @@ document.addEventListener('DOMContentLoaded', async () => {
             console.log('[API] Токен не найден при загрузке страницы');
         }
     }, 500); // Небольшая задержка для инициализации baseUrls
+});
+
+// ВАЖНО: Обновляем токен когда пользователь возвращается на вкладку
+// Браузер может "замораживать" неактивные вкладки и setInterval не сработает
+document.addEventListener('visibilitychange', async () => {
+    if (document.visibilityState === 'visible') {
+        const hasToken = document.cookie.split(';').some(c => c.trim().startsWith('access_token='));
+        if (hasToken) {
+            console.log('[API] Вкладка стала активной, проверяем токен...');
+            await API.refreshIfNeeded();
+        }
+    }
+});
+
+// Также обновляем токен при любой активности пользователя (каждые 10 минут максимум)
+let lastActivityRefresh = 0;
+const ACTIVITY_REFRESH_INTERVAL = 10 * 60 * 1000; // 10 минут
+
+['click', 'keydown', 'scroll', 'mousemove'].forEach(eventType => {
+    document.addEventListener(eventType, async () => {
+        const now = Date.now();
+        if (now - lastActivityRefresh > ACTIVITY_REFRESH_INTERVAL) {
+            const hasToken = document.cookie.split(';').some(c => c.trim().startsWith('access_token='));
+            if (hasToken) {
+                lastActivityRefresh = now;
+                // Проверяем в фоне, не блокируя
+                API.refreshIfNeeded().catch(e => console.warn('[API] Ошибка обновления токена:', e));
+            }
+        }
+    }, { passive: true });
 });

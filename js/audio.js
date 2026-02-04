@@ -67,7 +67,14 @@ var AudioModule = {
             throw new Error('Библиотека Janus не загружена. Проверьте подключение к интернету и обновите страницу.');
         }
         
-        const janusUrl = 'wss://audio-kostya.online/janus-ws';
+        // Динамически определяем URL Janus на основе текущего домена
+        // http:// → ws://, https:// → wss://
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const host = window.location.hostname;
+        const port = window.location.port ? `:${window.location.port}` : '';
+        const janusUrl = `${protocol}//${host}${port}/janus-ws`;
+        
+        console.log('🔌 Janus URL:', janusUrl);
         
         return new Promise((resolve, reject) => {
             try {
