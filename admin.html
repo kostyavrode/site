@@ -137,22 +137,27 @@
 
         async function loadStats() {
             try {
-                // Инициализируем baseUrls если нужно
-                if (!API.baseUrls.notification) {
-                    const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
-                    const host = window.location.hostname;
-                    const port = window.location.port ? `:${window.location.port}` : '';
-                    const baseUrl = `${protocol}//${host}${port}`;
-                    const isProduction = host !== 'localhost' && host !== '127.0.0.1';
-                    
-                    if (isProduction) {
-                        API.baseUrls.notification = baseUrl;
-                    } else {
-                        API.baseUrls.notification = `${baseUrl.replace(/:\d+$/, '')}:5003`;
-                    }
+                // Определяем URL для API
+                const protocol = window.location.protocol;
+                const host = window.location.hostname;
+                const port = window.location.port ? `:${window.location.port}` : '';
+                const baseUrl = `${protocol}//${host}${port}`;
+                const isProduction = host !== 'localhost' && host !== '127.0.0.1';
+                
+                // Проверяем, находимся ли мы в тестовой среде (/test/)
+                const isTestEnv = window.location.pathname.startsWith('/test/');
+                const apiPrefix = isTestEnv ? '/test' : '';
+                
+                let statsUrl;
+                if (isProduction) {
+                    statsUrl = `${baseUrl}${apiPrefix}/api/Admin/stats`;
+                } else {
+                    // Локальная разработка - NotificationService на порту 5005
+                    statsUrl = `${baseUrl.replace(/:\d+$/, '')}:5005/api/Admin/stats`;
                 }
-
-                const stats = await API.get(`${API.baseUrls.notification}/api/Admin/stats`);
+                
+                console.log('📊 Fetching stats from:', statsUrl);
+                const stats = await API.get(statsUrl);
 
                 // Обновляем статистику
                 document.getElementById('total-connections').textContent = stats.totalConnections || 0;
