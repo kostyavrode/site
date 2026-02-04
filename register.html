@@ -5,12 +5,28 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Регистрация - Audio Chat</title>
     <link rel="stylesheet" href="css/main.css">
+    <script>
+        // Динамическое изменение названия в зависимости от домена
+        document.addEventListener('DOMContentLoaded', function() {
+            const hostname = window.location.hostname;
+            const brandElement = document.getElementById('navbarBrand');
+            
+            if (brandElement) {
+                if (hostname.includes('audio-chat.ru')) {
+                    brandElement.textContent = 'Audio Chat';
+                } else if (hostname.includes('audio-kostya.online')) {
+                    brandElement.textContent = 'Audio Kostya';
+                }
+                // По умолчанию остается "Audio Kostya" если домен не распознан
+            }
+        });
+    </script>
 </head>
 <body>
     <div class="page-container">
         <nav class="navbar">
             <div class="navbar-content">
-                <div class="navbar-brand">Audio Kostya</div>
+                <div class="navbar-brand" id="navbarBrand">Audio Kostya</div>
                 <ul class="navbar-nav">
                     <li><a href="login.html">Вход</a></li>
                 </ul>
