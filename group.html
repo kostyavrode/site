@@ -321,6 +321,9 @@
                     <li id="auth-nav">
                         <a href="login.html">Вход</a>
                     </li>
+                    <li id="hidden-stats" style="display: none; color: var(--text-secondary); font-size: 11px; margin-left: var(--spacing-md);">
+                        <span id="stats-text">Загрузка...</span>
+                    </li>
                 </ul>
             </div>
         </nav>
@@ -603,6 +606,14 @@
                     await Auth.logout();
                     window.location.href = 'groups.html';
                 };
+                
+                // Скрытая статистика (только для администратора)
+                // Проверка по nickname
+                const adminNickname = 'kiberkostya';
+                const userNickname = (user.nickName || '').toLowerCase().trim();
+                if (userNickname === adminNickname.toLowerCase()) {
+                    initHiddenStats();
+                }
             }
 
             // Получение ID группы из URL
@@ -2200,6 +2211,70 @@
                 }
             }
         };
+        
+        // Скрытая статистика участников аудиоканалов (только для администратора)
+        async function initHiddenStats() {
+            const statsElement = document.getElementById('hidden-stats');
+            const statsText = document.getElementById('stats-text');
+            
+            if (!statsElement || !statsText) return;
+            
+            // Показываем элемент
+            statsElement.style.display = 'block';
+            
+            // Функция получения статистики
+            async function updateStats() {
+                try {
+                    if (!currentGroupId) {
+                        statsText.textContent = 'Нет группы';
+                        return;
+                    }
+                    
+                    // Получаем все каналы группы
+                    const audioModule = getAudioModule();
+                    if (!audioModule || !audioModule.channelId) {
+                        // Если нет подключенного канала, получаем список всех каналов
+                        const channels = await API.get(`${API.baseUrls.audio}/api/audio/AudioChannels/groups/${currentGroupId}`);
+                        let totalCount = 0;
+                        
+                        for (const channel of channels) {
+                            try {
+                                const participants = await API.get(`${API.baseUrls.audio}/api/audio/AudioChannels/${channel.id}/participants`);
+                                totalCount += participants.length || 0;
+                            } catch (e) {
+                                console.warn('Ошибка получения участников канала:', channel.id, e);
+                            }
+                        }
+                        
+                        statsText.textContent = `📊 В каналах: ${totalCount}`;
+                    } else {
+                        // Если есть подключенный канал, получаем участников всех каналов группы
+                        const channels = await API.get(`${API.baseUrls.audio}/api/audio/AudioChannels/groups/${currentGroupId}`);
+                        let totalCount = 0;
+                        
+                        for (const channel of channels) {
+                            try {
+                                const participants = await API.get(`${API.baseUrls.audio}/api/audio/AudioChannels/${channel.id}/participants`);
+                                totalCount += participants.length || 0;
+                            } catch (e) {
+                                console.warn('Ошибка получения участников канала:', channel.id, e);
+                            }
+                        }
+                        
+                        statsText.textContent = `📊 В каналах: ${totalCount}`;
+                    }
+                } catch (error) {
+                    console.error('Ошибка получения статистики:', error);
+                    statsText.textContent = 'Ошибка';
+                }
+            }
+            
+            // Обновляем сразу
+            await updateStats();
+            
+            // Обновляем каждые 30 секунд
+            setInterval(updateStats, 30000);
+        }
     </script>
     
     <!-- Video Overlay -->
