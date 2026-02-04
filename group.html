@@ -229,28 +229,53 @@
             margin-top: var(--spacing-sm);
         }
         
+        /* Планшеты - скрываем участников, оставляем аудиоканалы */
         @media (max-width: 1200px) {
             .group-layout {
-                grid-template-columns: 250px 1fr;
-            }
-            .audio-channels {
-                display: none;
-            }
-        }
-        
-        /* Мобильные устройства */
-        @media (max-width: 768px) {
-            .group-layout {
-                grid-template-columns: 1fr;
+                grid-template-columns: 1fr 250px;
             }
             .sidebar {
                 display: none;
             }
             .audio-channels {
+                display: block;
+            }
+        }
+        
+        /* Мобильные устройства - аудиоканалы слева */
+        @media (max-width: 768px) {
+            .group-layout {
+                grid-template-columns: 200px 1fr;
+                gap: var(--spacing-sm);
+            }
+            .sidebar {
                 display: none;
             }
+            .audio-channels {
+                display: block;
+                order: -1; /* Перемещаем аудиоканалы влево */
+                border-right: 1px solid var(--border-color);
+                border-left: none;
+            }
+            .main-content {
+                order: 1;
+            }
             #mobileAudioBtn {
-                display: inline-block;
+                display: none; /* Кнопка не нужна, т.к. аудиоканалы видны */
+            }
+        }
+        
+        /* Очень маленькие экраны */
+        @media (max-width: 480px) {
+            .group-layout {
+                grid-template-columns: 150px 1fr;
+            }
+            .audio-channels h3 {
+                font-size: 14px;
+            }
+            .audio-channels .btn-sm {
+                padding: 2px 6px;
+                font-size: 10px;
             }
         }
         
@@ -260,7 +285,7 @@
             }
         }
         
-        /* Модальное окно аудиоканалов - скрыто по умолчанию */
+        /* Модальное окно аудиоканалов - больше не нужно на мобильных */
         .audio-channels-modal {
             display: none;
         }

@@ -819,10 +819,10 @@ var AudioModule = {
                 video: {
                     cursor: 'always',
                     displaySurface: 'monitor',
-                    // Оптимизации для низкой задержки
+                    // Оптимизации для низкой задержки - HD разрешение
                     frameRate: { ideal: 30, max: 30 }, // Ограничиваем FPS для стабильности
-                    width: { ideal: 1920, max: 1920 }, // Ограничиваем разрешение
-                    height: { ideal: 1080, max: 1080 }
+                    width: { ideal: 1280, max: 1280 }, // HD разрешение
+                    height: { ideal: 720, max: 720 }
                 },
                 audio: false // Экран не передает аудио
             });
