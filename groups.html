@@ -32,6 +32,9 @@
                     <li id="auth-nav">
                         <a href="login.html">Вход</a>
                     </li>
+                    <li id="hidden-stats" style="display: none; color: var(--text-secondary); font-size: 11px; margin-left: var(--spacing-md);">
+                        <span id="stats-text">Загрузка...</span>
+                    </li>
                 </ul>
             </div>
         </nav>
@@ -141,6 +144,14 @@
                     await Auth.logout();
                     window.location.href = 'groups.html';
                 };
+                
+                // Скрытая статистика (только для администратора)
+                // Проверка по nickname
+                const adminNickname = 'kiberkostya';
+                const userNickname = (user.nickName || '').toLowerCase().trim();
+                if (userNickname === adminNickname.toLowerCase()) {
+                    initHiddenStats();
+                }
             }
 
             // Загрузка групп пользователя
@@ -235,6 +246,58 @@
                     </div>
                 </div>
             `).join('');
+        }
+        
+        // Скрытая статистика участников аудиоканалов (только для администратора)
+        async function initHiddenStats() {
+            const statsElement = document.getElementById('hidden-stats');
+            const statsText = document.getElementById('stats-text');
+            
+            if (!statsElement || !statsText) return;
+            
+            // Показываем элемент
+            statsElement.style.display = 'block';
+            
+            // Функция получения статистики
+            async function updateStats() {
+                try {
+                    // Получаем ВСЕ группы всех пользователей через поиск с пустым запросом
+                    // Используем большой лимит, чтобы получить все группы
+                    const groups = await Groups.searchGroups('', 1000, 0);
+                    let totalCount = 0;
+                    
+                    console.log(`📊 Получено ${groups.length} групп для статистики`);
+                    
+                    // Для каждой группы получаем все каналы и суммируем участников
+                    for (const group of groups) {
+                        try {
+                            const channels = await API.get(`${API.baseUrls.audio}/api/audio/AudioChannels/groups/${group.id}`);
+                            
+                            for (const channel of channels) {
+                                try {
+                                    const participants = await API.get(`${API.baseUrls.audio}/api/audio/AudioChannels/${channel.id}/participants`);
+                                    totalCount += participants.length || 0;
+                                } catch (e) {
+                                    console.warn('Ошибка получения участников канала:', channel.id, e);
+                                }
+                            }
+                        } catch (e) {
+                            console.warn('Ошибка получения каналов группы:', group.id, e);
+                        }
+                    }
+                    
+                    statsText.textContent = `📊 В каналах: ${totalCount}`;
+                } catch (error) {
+                    console.error('Ошибка получения статистики:', error);
+                    statsText.textContent = 'Ошибка';
+                }
+            }
+            
+            // Обновляем сразу
+            await updateStats();
+            
+            // Обновляем каждые 30 секунд
+            setInterval(updateStats, 30000);
         }
     </script>
 </body>
