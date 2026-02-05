@@ -294,21 +294,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         const hasToken = document.cookie.split(';').some(c => c.trim().startsWith('access_token='));
         
         if (hasToken) {
-            console.log('[API] Обнаружен токен при загрузке страницы, запускаем auto-refresh');
+            console.log('[API] Обнаружен токен при загрузке страницы');
             
-            // Сначала пробуем обновить токен (он может быть просрочен)
-            const refreshed = await API.tryRefreshToken();
-            
-            if (refreshed) {
-                console.log('[API] ✅ Токен успешно обновлен при загрузке');
-                API._lastRefreshTime = Date.now();
-                // Запускаем периодическое обновление
-                API.startAutoRefresh();
-            } else {
-                console.warn('[API] ⚠️ Не удалось обновить токен при загрузке - возможно сессия истекла');
-                // Не удаляем токен сразу - пусть пользователь попробует сделать запрос
-                // и тогда система перенаправит его на логин если нужно
-            }
+            // НЕ обновляем токен сразу при загрузке - он может быть свежим после логина
+            // Просто запускаем периодическое обновление
+            API._lastRefreshTime = Date.now();
+            API.startAutoRefresh();
+            console.log('[API] ✅ Auto-refresh запущен');
         } else {
             console.log('[API] Токен не найден при загрузке страницы');
         }
