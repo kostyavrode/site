@@ -137,6 +137,19 @@
 
         async function loadStats() {
             try {
+                // Проверяем наличие токена
+                const token = API.getToken();
+                if (!token) {
+                    console.error('❌ Токен не найден! Нужно войти в систему.');
+                    document.getElementById('total-connections').textContent = 'Ошибка: нет токена';
+                    document.getElementById('last-update').textContent = 'Войдите в систему';
+                    // Перенаправляем на логин через 2 секунды
+                    setTimeout(() => {
+                        window.location.href = 'login.html';
+                    }, 2000);
+                    return;
+                }
+                
                 // Определяем URL для API
                 const protocol = window.location.protocol;
                 const host = window.location.hostname;
@@ -157,6 +170,7 @@
                 }
                 
                 console.log('📊 Fetching stats from:', statsUrl);
+                console.log('🔑 Token exists:', !!token);
                 const stats = await API.get(statsUrl);
 
                 // Обновляем статистику
@@ -167,17 +181,29 @@
                 const timeStr = now.toLocaleTimeString('ru-RU');
                 document.getElementById('last-update').textContent = `Обновлено: ${timeStr}`;
             } catch (error) {
-                console.error('Ошибка загрузки статистики:', error);
-                if (error.message && error.message.includes('403')) {
+                console.error('❌ Ошибка загрузки статистики:', error);
+                console.error('Error details:', {
+                    message: error.message,
+                    stack: error.stack
+                });
+                
+                if (error.message && (error.message.includes('403') || error.message.includes('Forbid'))) {
                     // Доступ запрещен
                     document.getElementById('admin-content').style.display = 'none';
                     document.getElementById('access-denied').style.display = 'block';
                     setTimeout(() => {
                         window.location.href = 'groups.html';
                     }, 3000);
+                } else if (error.message && (error.message.includes('401') || error.message.includes('Unauthorized'))) {
+                    // Не авторизован - перенаправляем на логин
+                    document.getElementById('total-connections').textContent = 'Ошибка: не авторизован';
+                    document.getElementById('last-update').textContent = 'Перенаправление на страницу входа...';
+                    setTimeout(() => {
+                        window.location.href = 'login.html';
+                    }, 2000);
                 } else {
                     document.getElementById('total-connections').textContent = 'Ошибка';
-                    document.getElementById('last-update').textContent = 'Ошибка загрузки';
+                    document.getElementById('last-update').textContent = `Ошибка: ${error.message || 'Неизвестная ошибка'}`;
                 }
             }
         }
