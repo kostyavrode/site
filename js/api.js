@@ -43,12 +43,19 @@ const API = {
 
     // Базовый метод для HTTP запросов
     async request(url, options = {}) {
+        const token = this.getToken();
+        
         const defaultOptions = {
             headers: {
                 'Content-Type': 'application/json',
             },
             credentials: 'include'
         };
+
+        // Добавляем токен в заголовок Authorization, если он есть
+        if (token) {
+            defaultOptions.headers['Authorization'] = `Bearer ${token}`;
+        }
 
         const finalOptions = {
             ...defaultOptions,
@@ -76,6 +83,11 @@ const API = {
                 const refreshed = await this.tryRefreshToken();
                 
                 if (refreshed) {
+                    // Обновляем токен в заголовках для повторного запроса
+                    const newToken = this.getToken();
+                    if (newToken) {
+                        finalOptions.headers['Authorization'] = `Bearer ${newToken}`;
+                    }
                     // Повторяем оригинальный запрос
                     response = await fetch(url, finalOptions);
                     
