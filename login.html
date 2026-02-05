@@ -132,10 +132,25 @@
 
             try {
                 await Auth.login(nickName, password);
+                
+                // Проверяем, что токен установился
+                const token = API.getToken();
+                console.log('🔑 Токен после логина:', token ? '✅ Найден' : '❌ НЕ НАЙДЕН');
+                console.log('🍪 Все cookies:', document.cookie);
+                
+                if (!token) {
+                    console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: Токен не установился после логина!');
+                    Utils.showError('Ошибка: токен не был установлен. Попробуйте еще раз.');
+                    submitButton.disabled = false;
+                    submitButton.textContent = 'Войти';
+                    return;
+                }
+                
                 setTimeout(() => {
                     window.location.href = 'groups.html';
                 }, 1000);
             } catch (error) {
+                console.error('Ошибка логина:', error);
                 submitButton.disabled = false;
                 submitButton.textContent = 'Войти';
             }
