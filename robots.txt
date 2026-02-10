@@ -1,0 +1,16 @@
+# robots.txt for audio-chat.ru
+User-agent: *
+Allow: /
+
+# Main pages
+Allow: /index.html
+Allow: /login.html
+Allow: /register.html
+Allow: /groups.html
+
+# Disallow private pages
+Disallow: /group.html
+Disallow: /admin.html
+
+# Sitemap
+Sitemap: https://audio-chat.ru/sitemap.xml
