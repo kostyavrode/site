@@ -1399,45 +1399,6 @@ var AudioModule = {
         console.log('🔍 ============================================');
         
         try {
-            
-            // Создаем комбинированный поток с аудио и видео
-            const combinedStream = new MediaStream();
-            
-            // Добавляем аудио-треки из localStream
-            if (this.localStream) {
-                this.localStream.getAudioTracks().forEach(track => {
-                    combinedStream.addTrack(track);
-                    console.log('📤 Добавлен аудио-трек:', track.id);
-                });
-            }
-            
-            // КРИТИЧНО: Проверяем, что в combinedStream НЕТ других видео-треков
-            const existingVideoTracks = combinedStream.getVideoTracks();
-            if (existingVideoTracks.length > 0) {
-                console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: В combinedStream уже есть видео-треки перед добавлением нового!');
-                existingVideoTracks.forEach(track => {
-                    console.error('❌ Существующий видео-трек:', track.id, track.label);
-                    combinedStream.removeTrack(track);
-                });
-            }
-            
-            // Добавляем ТОЛЬКО выбранный видео-трек
-            combinedStream.addTrack(videoTrack);
-            console.log('📤 Добавлен видео-трек:', videoTrack.id, videoTrack.label);
-            
-            // КРИТИЧНО: Проверяем, что в combinedStream только один видео-трек (наш)
-            const finalVideoTracks = combinedStream.getVideoTracks();
-            if (finalVideoTracks.length !== 1 || finalVideoTracks[0] !== videoTrack) {
-                console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: В combinedStream неправильное количество видео-треков!');
-                console.error('❌ Ожидался 1 трек:', videoTrack.id);
-                console.error('❌ Найдено треков:', finalVideoTracks.length);
-                finalVideoTracks.forEach(track => {
-                    console.error('❌ Трек в combinedStream:', track.id, track.label, track === videoTrack ? '(правильный)' : '(НЕПРАВИЛЬНЫЙ!)');
-                });
-                throw new Error('ОШИБКА: В combinedStream неправильное количество видео-треков!');
-            }
-            console.log('✅ Подтверждено: в combinedStream только правильный видео-трек:', videoTrack.id);
-            
             // КРИТИЧНО: Удаляем ВСЕ старые видео-треки из PeerConnection перед публикацией нового
             // Это гарантирует, что отправляется только один видео-трек (выбранный пользователем)
             let hasVideoTransceiver = false;
@@ -1528,23 +1489,12 @@ var AudioModule = {
             console.log('📤 Track Label:', videoTrack.label);
             console.log('📤 ============================================');
             
-            // Получаем аудио-трек из localStream
-            const audioTrack = this.localStream ? this.localStream.getAudioTracks()[0] : null;
-            
             // Формируем tracks для Janus.js
+            // ВАЖНО: НЕ добавляем аудио-трек! Аудио уже опубликовано при подключении к каналу.
+            // Добавление аудио-трека здесь приводит к задвоению голоса.
             const tracks = [];
             
-            // Добавляем аудио-трек
-            if (audioTrack) {
-                tracks.push({
-                    type: 'audio',
-                    capture: audioTrack, // Передаем трек напрямую!
-                    recv: false
-                });
-                console.log('📤 Добавлен аудио-трек в tracks:', audioTrack.id);
-            }
-            
-            // КРИТИЧНО: Добавляем видео-трек напрямую (НЕ capture: true!)
+            // КРИТИЧНО: Добавляем ТОЛЬКО видео-трек напрямую (НЕ capture: true!)
             // С оптимизациями для низкой задержки
             tracks.push({
                 type: 'video',
