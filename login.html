@@ -148,19 +148,10 @@
 
             try {
                 await Auth.login(nickName, password);
-                
-                // Проверяем, что токен установился
+
+                // access_token часто HttpOnly — в document.cookie его не видно, getToken() пустой, это нормально
                 const token = API.getToken();
-                console.log('🔑 Токен после логина:', token ? '✅ Найден' : '❌ НЕ НАЙДЕН');
-                console.log('🍪 Все cookies:', document.cookie);
-                
-                if (!token) {
-                    console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: Токен не установился после логина!');
-                    Utils.showError('Ошибка: токен не был установлен. Попробуйте еще раз.');
-                    submitButton.disabled = false;
-                    submitButton.textContent = 'Войти';
-                    return;
-                }
+                console.log('🔑 Токен в JS (если не HttpOnly):', token ? 'есть' : 'нет (часто HttpOnly — ок)');
                 
                 setTimeout(() => {
                     window.location.href = 'groups.html';
