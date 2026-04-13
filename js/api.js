@@ -16,8 +16,22 @@ const API = {
     _isRefreshing: false,
     _refreshPromise: null,
 
-    // Интервал автоматического обновления токена
+    // Таймер автоматического обновления токена (setTimeout)
     _refreshInterval: null,
+
+    /** Время истечения access JWT (ms) из cookie, если токен читается из JS; иначе null */
+    _getAccessTokenExpMs() {
+        const t = this.getToken();
+        if (!t || t.split('.').length < 2) return null;
+        try {
+            let b64 = t.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+            while (b64.length % 4) b64 += '=';
+            const payload = JSON.parse(atob(b64));
+            return typeof payload.exp === 'number' ? payload.exp * 1000 : null;
+        } catch {
+            return null;
+        }
+    },
 
     // Получить токен из cookies
     getToken() {
@@ -208,32 +222,50 @@ const API = {
         return this._refreshPromise;
     },
 
-    // Запустить автоматическое обновление токена каждые 29 минут
+    // Плановое обновление: за несколько минут до exp JWT или каждые 15 мин (если exp не виден — HttpOnly)
     startAutoRefresh() {
-        // Останавливаем предыдущий интервал, если он есть
         this.stopAutoRefresh();
 
-        // 29 минут = 29 * 60 * 1000 миллисекунд
-        const REFRESH_INTERVAL_MS = 29 * 60 * 1000;
+        const scheduleNext = () => {
+            const now = Date.now();
+            const exp = this._getAccessTokenExpMs();
+            const beforeExpMs = 5 * 60 * 1000;
+            const fallbackMs = 15 * 60 * 1000;
+            const minDelayMs = 45 * 1000;
+            const maxDelayMs = 20 * 60 * 1000;
 
-        console.log('Starting automatic token refresh every 29 minutes');
-        
-        this._refreshInterval = setInterval(async () => {
-            console.log('Auto-refreshing token...');
-            const refreshed = await this.tryRefreshToken();
-            if (refreshed) {
-                this._lastRefreshTime = Date.now();
-            } else {
-                console.warn('Auto-refresh failed, stopping automatic refresh');
-                this.stopAutoRefresh();
+            let delay = fallbackMs;
+            if (exp) {
+                delay = exp - now - beforeExpMs;
+                delay = Math.max(minDelayMs, delay);
+                delay = Math.min(delay, maxDelayMs);
             }
-        }, REFRESH_INTERVAL_MS);
+
+            console.log(
+                `[API] Следующий auto-refresh через ${Math.round(delay / 1000 / 60)} мин` +
+                    (exp ? ` (exp JWT ~${new Date(exp).toISOString()})` : '')
+            );
+
+            this._refreshInterval = setTimeout(async () => {
+                console.log('Auto-refreshing token...');
+                const refreshed = await this.tryRefreshToken();
+                if (refreshed) {
+                    this._lastRefreshTime = Date.now();
+                    scheduleNext();
+                } else {
+                    console.warn('Auto-refresh failed, stopping automatic refresh');
+                    this.stopAutoRefresh();
+                }
+            }, delay);
+        };
+
+        scheduleNext();
     },
 
     // Остановить автоматическое обновление токена
     stopAutoRefresh() {
         if (this._refreshInterval !== null) {
-            clearInterval(this._refreshInterval);
+            clearTimeout(this._refreshInterval);
             this._refreshInterval = null;
             console.log('Stopped automatic token refresh');
         }
@@ -242,30 +274,24 @@ const API = {
     // Время последнего обновления токена
     _lastRefreshTime: null,
     
-    // Обновить токен если прошло достаточно времени с последнего обновления
+    // Обновить токен при возврате на вкладку / активности: без «мёртвой зоны» 5–25 минут
     async refreshIfNeeded() {
         const now = Date.now();
-        const MIN_REFRESH_INTERVAL = 5 * 60 * 1000; // 5 минут минимум между обновлениями
-        const MAX_TOKEN_AGE = 25 * 60 * 1000; // Обновляем если токену > 25 минут
-        
-        // Если недавно обновляли - пропускаем
-        if (this._lastRefreshTime && (now - this._lastRefreshTime) < MIN_REFRESH_INTERVAL) {
-            console.log('[API] Токен обновлялся недавно, пропускаем');
+        const debounceMs = 45 * 1000;
+        if (this._lastRefreshTime && now - this._lastRefreshTime < debounceMs) {
             return true;
         }
-        
-        // Если прошло много времени - обновляем
-        if (!this._lastRefreshTime || (now - this._lastRefreshTime) > MAX_TOKEN_AGE) {
-            console.log('[API] Требуется обновление токена (прошло времени с последнего обновления:', 
-                this._lastRefreshTime ? Math.round((now - this._lastRefreshTime) / 1000 / 60) + ' мин' : 'никогда', ')');
-            const refreshed = await this.tryRefreshToken();
-            if (refreshed) {
-                this._lastRefreshTime = now;
-            }
-            return refreshed;
+
+        const exp = this._getAccessTokenExpMs();
+        if (exp && exp - now > 3 * 60 * 1000) {
+            return true;
         }
-        
-        return true;
+
+        const refreshed = await this.tryRefreshToken();
+        if (refreshed) {
+            this._lastRefreshTime = now;
+        }
+        return refreshed;
     }
 };
 
