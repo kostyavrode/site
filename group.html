@@ -1419,16 +1419,15 @@
                     controlsContainer.querySelectorAll('.audio-mute-btn, .audio-settings-btn, .audio-screen-share-btn, .audio-webcam-btn, .audio-watch-btn').forEach(btn => btn.remove());
                 }
                 
-                // Скрываем список участников в карточке канала
-                document.querySelectorAll('.audio-participants-list').forEach(el => {
-                    el.style.display = 'none';
-                });
+                // Скрываем список участников в карточке канала и оверлей видео
+                hideAudioChannelParticipantLists();
                 
                 // Скрываем индикатор аудио активности
                 const statusDiv = document.getElementById(`audioStatus-${channelId}`);
                 if (statusDiv) {
                     statusDiv.style.display = 'none';
                 }
+                closeVideoOverlayIfOpen();
                 return;
             }
 
@@ -1469,6 +1468,8 @@
                     } catch (disconnectError) {
                         console.warn('Error disconnecting from previous channel:', disconnectError);
                     }
+                    closeVideoOverlayIfOpen();
+                    hideAudioChannelParticipantLists();
                 }
                 
                 await audioModule.init(janusRoomId, channelId, currentNickName);
@@ -1877,6 +1878,21 @@
         // ============================================
         
         let videoOverlayVisible = false;
+
+        function closeVideoOverlayIfOpen() {
+            if (!videoOverlayVisible) return;
+            const overlay = document.getElementById('videoOverlay');
+            if (overlay) overlay.classList.add('hidden');
+            videoOverlayVisible = false;
+        }
+
+        function hideAudioChannelParticipantLists() {
+            document.querySelectorAll('.audio-participants-list').forEach(el => {
+                el.style.display = 'none';
+            });
+            const section = document.getElementById('audioParticipantsSection');
+            if (section) section.style.display = 'none';
+        }
         
         // Map для отслеживания активных видео-стримов по SignalR уведомлениям
         // Ключ: userId, значение: {videoType, nickname, timestamp}

@@ -221,7 +221,9 @@ const API = {
         this._refreshInterval = setInterval(async () => {
             console.log('Auto-refreshing token...');
             const refreshed = await this.tryRefreshToken();
-            if (!refreshed) {
+            if (refreshed) {
+                this._lastRefreshTime = Date.now();
+            } else {
                 console.warn('Auto-refresh failed, stopping automatic refresh');
                 this.stopAutoRefresh();
             }
@@ -278,6 +280,7 @@ document.addEventListener('keydown', async (event) => {
         const refreshed = await API.tryRefreshToken();
         
         if (refreshed) {
+            API._lastRefreshTime = Date.now();
             console.log('[DEBUG] ✅ Token refreshed successfully!');
         } else {
             console.log('[DEBUG] ❌ Token refresh failed!');
@@ -295,12 +298,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         if (hasToken) {
             console.log('[API] Обнаружен токен при загрузке страницы');
-            
-            // НЕ обновляем токен сразу при загрузке - он может быть свежим после логина
-            // Просто запускаем периодическое обновление
-            API._lastRefreshTime = Date.now();
+            // Синхронизируем время жизни токена с сервером: нельзя считать «только что обновлённым»
+            // момент загрузки страницы — cookie могла остаться от сессии с почти истёкшим JWT.
+            const refreshed = await API.tryRefreshToken();
+            API._lastRefreshTime = refreshed ? Date.now() : null;
             API.startAutoRefresh();
-            console.log('[API] ✅ Auto-refresh запущен');
+            console.log('[API] ✅ Auto-refresh запущен' + (refreshed ? ' (токен обновлён при загрузке)' : ''));
         } else {
             console.log('[API] Токен не найден при загрузке страницы');
         }
