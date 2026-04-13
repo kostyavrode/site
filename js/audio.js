@@ -323,6 +323,37 @@ var AudioModule = {
         this.soundEffectBuffers = {};
     },
 
+    /** Аудиотрек, уходящий в Janus (из Web Audio MediaStreamDestination). */
+    getPublishAudioTrack() {
+        if (!this.localStream || !this.localStream.getAudioTracks) {
+            return null;
+        }
+        return this.localStream.getAudioTracks()[0] || null;
+    },
+
+    /**
+     * Объект media для Janus createOffer: без поля audio Janus делает capture=true = новый getUserMedia,
+     * игнорируя stream — тогда в эфир не попадает смешанный граф (только локальный monitor SFX).
+     */
+    buildJanusAudioPublisherMedia(hasAudio, extra) {
+        const media = Object.assign(
+            {
+                audioRecv: false,
+                videoRecv: false,
+                audioSend: hasAudio,
+                videoSend: false
+            },
+            extra || {}
+        );
+        if (hasAudio) {
+            const at = this.getPublishAudioTrack();
+            if (at) {
+                media.audio = at;
+            }
+        }
+        return media;
+    },
+
     /**
      * Воспроизвести эффект в эфир (смешивание) и локально у отправителя.
      * @param {string} effectId pipe | pain | hammer | screenshot
@@ -454,12 +485,7 @@ var AudioModule = {
                             const hasAudio = this.localStream && this.localStream.getAudioTracks().length > 0;
 
                             handle.createOffer({
-                                media: { 
-                                    audioRecv: false, 
-                                    videoRecv: false, 
-                                    audioSend: hasAudio, 
-                                    videoSend: false // Видео не используем
-                                },
+                                media: this.buildJanusAudioPublisherMedia(hasAudio),
                                 stream: this.localStream,
                                 success: (jsep) => {
                                     if (this.micRawStream) {
@@ -1413,14 +1439,10 @@ var AudioModule = {
             // Создаем новый offer только с аудио
             if (this.localStream) {
                 this.publisherHandle.createOffer({
-                    media: {
-                        audioRecv: false,
-                        videoRecv: false,
-                        audioSend: true,
-                        videoSend: false,
+                    media: this.buildJanusAudioPublisherMedia(true, {
                         replaceAudio: true,
-                        removeVideo: true // Удаляем видео
-                    },
+                        removeVideo: true
+                    }),
                     stream: this.localStream,
                     success: (jsep) => {
                         console.log('✅ Offer создан без видео');
@@ -2152,12 +2174,7 @@ var AudioModule = {
                         const hasAudio = this.localStream && this.localStream.getAudioTracks().length > 0;
                         if (hasAudio) {
                             this.publisherHandle.createOffer({
-                                media: { 
-                                    audioRecv: false, 
-                                    videoRecv: false, 
-                                    audioSend: true, 
-                                    videoSend: false
-                                },
+                                media: this.buildJanusAudioPublisherMedia(true),
                                 stream: this.localStream,
                                 success: (jsep) => {
                                     this.publisherHandle.send({
