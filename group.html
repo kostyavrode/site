@@ -1416,7 +1416,7 @@
                 const controlsContainer = channelCard?.querySelector('.audio-channel-controls');
                 if (controlsContainer) {
                     // Удаляем все кнопки кроме кнопки подключения
-                    controlsContainer.querySelectorAll('.audio-mute-btn, .audio-settings-btn, .audio-screen-share-btn, .audio-webcam-btn, .audio-watch-btn').forEach(btn => btn.remove());
+                    controlsContainer.querySelectorAll('.audio-mute-btn, .audio-settings-btn, .audio-screen-share-btn, .audio-webcam-btn, .audio-watch-btn, .audio-effects-panel').forEach(btn => btn.remove());
                 }
                 
                 // Скрываем список участников в карточке канала и оверлей видео
@@ -1604,6 +1604,46 @@
                             }
                         };
                         controlsContainer.appendChild(webcamBtn);
+                    }
+
+                    if (!controlsContainer.querySelector('.audio-effects-panel')) {
+                        const fxWrap = document.createElement('div');
+                        fxWrap.className = 'audio-effects-panel';
+                        fxWrap.style.marginTop = '10px';
+                        fxWrap.style.paddingTop = '8px';
+                        fxWrap.style.borderTop = '1px solid var(--border-color, rgba(255,255,255,0.12))';
+                        const fxLabel = document.createElement('div');
+                        fxLabel.textContent = 'Аудиоэффекты';
+                        fxLabel.style.fontSize = '12px';
+                        fxLabel.style.color = 'var(--text-secondary, #aaa)';
+                        fxLabel.style.marginBottom = '6px';
+                        fxWrap.appendChild(fxLabel);
+                        const row = document.createElement('div');
+                        row.style.display = 'flex';
+                        row.style.flexWrap = 'wrap';
+                        row.style.gap = '6px';
+                        const effects = [
+                            { id: 'pipe', label: '🔩', title: 'Металлическая труба' },
+                            { id: 'pain', label: '😣', title: 'Боль' },
+                            { id: 'hammer', label: '🔨', title: 'Удар молотком' },
+                            { id: 'screenshot', label: '📸', title: 'Звук скриншота' }
+                        ];
+                        effects.forEach(({ id, label, title }) => {
+                            const b = document.createElement('button');
+                            b.type = 'button';
+                            b.className = 'btn btn-sm audio-sfx-btn';
+                            b.title = title;
+                            b.textContent = label;
+                            b.onclick = () => {
+                                const audioModule = getAudioModule();
+                                if (audioModule && typeof audioModule.playSoundEffect === 'function') {
+                                    audioModule.playSoundEffect(id);
+                                }
+                            };
+                            row.appendChild(b);
+                        });
+                        fxWrap.appendChild(row);
+                        controlsContainer.appendChild(fxWrap);
                     }
                     
                     // Кнопка "Смотреть" (появляется когда есть видео)
