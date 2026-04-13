@@ -1852,8 +1852,8 @@ var AudioModule = {
                 
                 // Сохраняем pending publishers для UI (они ещё не в streamVolumes)
                 event.publishers.forEach(publisher => {
-                    // Пропускаем себя
-                    if (publisher.id !== this.participantId) {
+                    // Пропускаем себя (id из Janus может быть number|string — иначе подпишемся на свой feed = задержка + эхо)
+                    if (String(publisher.id) !== String(this.participantId)) {
                         // Сохраняем private_id для будущей переподписки
                         if (publisher.private_id) {
                             this.publisherPrivateIds.set(String(publisher.id), publisher.private_id);
@@ -2257,6 +2257,9 @@ var AudioModule = {
                 success: (result) => {
                     if (result && result.list) {
                         const publishersWithVideo = result.list.filter(p => {
+                            if (this.participantId != null && String(p.id) === String(this.participantId)) {
+                                return false;
+                            }
                             return p.streams && p.streams.some(s => s.type === 'video');
                         });
                         
@@ -2313,17 +2316,20 @@ var AudioModule = {
     subscribeToPublisher(publisher) {
         const publisherId = publisher.id;
         const displayName = publisher.display || `Publisher ${publisherId}`;
-        
-        // Проверяем, не подписаны ли уже
-        if (this.subscriberHandles.has(publisherId)) {
-            console.log(`⚠️ Уже подписаны на publisher ${publisherId}`);
+        const publisherIdStr = String(publisherId);
+
+        if (this.participantId != null && publisherIdStr === String(this.participantId)) {
+            console.log(`🔇 Пропуск подписки на собственный publisher ${publisherIdStr} (избегаем задвоения голоса у вещающего)`);
             return;
         }
         
-        console.log(`📡 Подписываемся на publisher ${publisherId} (${displayName})`);
+        // Проверяем, не подписаны ли уже (ключи в Map — строки)
+        if (this.subscriberHandles.has(publisherIdStr)) {
+            console.log(`⚠️ Уже подписаны на publisher ${publisherIdStr}`);
+            return;
+        }
         
-        // Приводим publisherId к строке для консистентности
-        const publisherIdStr = String(publisherId);
+        console.log(`📡 Подписываемся на publisher ${publisherIdStr} (${displayName})`);
         
         // Создаем отдельный handle для каждого subscriber
         this.janus.attach({
@@ -3161,6 +3167,11 @@ var AudioModule = {
     handleRemoteStream(stream, publisherId, displayName) {
         // Преобразуем publisherId в строку для консистентности
         const publisherIdStr = String(publisherId);
+
+        if (this.participantId != null && publisherIdStr === String(this.participantId)) {
+            console.log(`🔇 handleRemoteStream: игнорируем собственный publisher ${publisherIdStr} (нет воспроизведения своего голоса из Janus)`);
+            return;
+        }
         
         console.log(`🔊 handleRemoteStream вызван: publisherId=${publisherId} (строка: ${publisherIdStr}), displayName=${displayName}`);
         
@@ -3262,6 +3273,11 @@ var AudioModule = {
     processAudioForMixing(stream, publisherId, displayName) {
         // Преобразуем publisherId в строку для консистентности
         const publisherIdStr = String(publisherId);
+
+        if (this.participantId != null && publisherIdStr === String(this.participantId)) {
+            console.log(`🔇 processAudioForMixing: пропуск собственного publisher ${publisherIdStr}`);
+            return;
+        }
         
         console.log(`🎵 processAudioForMixing ВЫЗВАН: publisherId=${publisherId} (строка: ${publisherIdStr}), displayName=${displayName}`);
         console.log(`🔍 Поток:`, stream);
