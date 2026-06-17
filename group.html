@@ -526,7 +526,7 @@
     <script src="js/auth.js"></script>
     <script src="js/groups.js"></script>
     <script src="js/chat.js"></script>
-    <script src="js/audio.js" onerror="console.error('❌ Ошибка загрузки audio.js'); alert('Ошибка загрузки audio.js. Обновите страницу.');"></script>
+    <script src="js/audio.js?v=2" onerror="console.error('❌ Ошибка загрузки audio.js'); alert('Ошибка загрузки audio.js. Обновите страницу.');"></script>
     <script>
         // Проверка загрузки AudioModule после загрузки скрипта
         (function() {
@@ -890,6 +890,39 @@
                     indicator.textContent = '🎤 🔊';
                 }
             }
+        };
+
+        window.onAudioReconnecting = () => {
+            if (!currentAudioChannel) return;
+            const indicator = document.getElementById(`micIndicator-${currentAudioChannel}`);
+            if (indicator) {
+                indicator.textContent = '🔄';
+            }
+            const statusDiv = document.getElementById(`audioStatus-${currentAudioChannel}`);
+            if (statusDiv) {
+                statusDiv.style.display = 'block';
+                statusDiv.textContent = 'Переподключение...';
+            }
+        };
+
+        window.onAudioReconnected = () => {
+            if (!currentAudioChannel) return;
+            const indicator = document.getElementById(`micIndicator-${currentAudioChannel}`);
+            if (indicator) {
+                indicator.textContent = '🎤 🔊';
+            }
+            const statusDiv = document.getElementById(`audioStatus-${currentAudioChannel}`);
+            if (statusDiv) {
+                statusDiv.textContent = '';
+            }
+            const audioModule = getAudioModule();
+            if (audioModule) {
+                audioModule.requestPublishersList();
+            }
+        };
+
+        window.onAudioReconnectFailed = () => {
+            Utils.showError('Не удалось переподключиться к аудио каналу. Нажмите «Отключиться» и подключитесь снова.');
         };
         
         // Хранилище регуляторов громкости для каждого пользователя
@@ -1636,9 +1669,17 @@
                             b.textContent = label;
                             b.onclick = () => {
                                 const audioModule = getAudioModule();
-                                if (audioModule && typeof audioModule.playSoundEffect === 'function') {
-                                    audioModule.playSoundEffect(id);
+                                if (!audioModule || typeof audioModule.playSoundEffect !== 'function') {
+                                    return;
                                 }
+                                if (audioModule.audioContext && audioModule.audioContext.state === 'suspended') {
+                                    audioModule.audioContext.resume();
+                                }
+                                audioModule.playSoundEffect(id).then((ok) => {
+                                    if (!ok) {
+                                        Utils.showError('Не удалось воспроизвести звук. Подождите загрузки или переподключитесь к каналу.');
+                                    }
+                                });
                             };
                             row.appendChild(b);
                         });
@@ -1732,7 +1773,13 @@
                 // Устанавливаем обработчик ошибок для этого канала
                 window.onAudioError = (errorMsg) => {
                     console.error('Audio error:', errorMsg);
-                    if (errorMsg && errorMsg.includes('No such room')) {
+                    const audioModule = getAudioModule();
+                    const msg = String(errorMsg || '');
+                    if (audioModule && audioModule.isReconnecting &&
+                        (msg.includes('Lost connection') || msg.includes('server') || msg.includes('down'))) {
+                        return;
+                    }
+                    if (msg.includes('No such room')) {
                         Utils.showError('Комната в Janus не существует. Администратор группы должен пересоздать аудио канал.');
                         // Отключаемся от канала
                         button.textContent = 'Подключиться';

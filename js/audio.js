@@ -62,11 +62,321 @@ var AudioModule = {
     micMonitorSideToneGain: null,
     soundEffectBuffers: null,
 
+    // Авто-реконнект при обрыве сети
+    intentionalDisconnect: false,
+    wasConnected: false,
+    isReconnecting: false,
+    reconnectTimerId: null,
+    reconnectAttemptInFlight: false,
+    reconnectIntervalMs: 500,
+    reconnectMaxDurationMs: 600000,
+    reconnectStartedAt: null,
+    _isSoftTeardown: false,
+    _reconnectListenersBound: false,
+    _webrtcDownTimer: null,
+
+    getJanusServerUrl() {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const host = window.location.hostname;
+        const port = window.location.port ? `:${window.location.port}` : '';
+        let wsUrl = `${protocol}//${host}${port}/janus-ws`;
+        wsUrl = wsUrl.replace('http://', 'ws://').replace(':8088', ':8188');
+        return wsUrl;
+    },
+
+    _setupReconnectListeners() {
+        if (this._reconnectListenersBound) {
+            return;
+        }
+        this._reconnectListenersBound = true;
+        this._onNetworkOffline = () => this.handleConnectionLost('offline');
+        window.addEventListener('offline', this._onNetworkOffline);
+    },
+
+    handleConnectionLost(reason) {
+        if (this.intentionalDisconnect || !this.channelId || !this.roomId || !this.wasConnected) {
+            return;
+        }
+        if (this.isReconnecting) {
+            return;
+        }
+        console.warn('🔌 Connection lost, starting reconnect loop:', reason);
+        this.startReconnectLoop();
+    },
+
+    startReconnectLoop() {
+        if (this.intentionalDisconnect || !this.channelId || !this.roomId) {
+            return;
+        }
+        if (this.isReconnecting) {
+            return;
+        }
+        this.isReconnecting = true;
+        this.reconnectStartedAt = Date.now();
+        console.log('🔄 Reconnect loop started (every', this.reconnectIntervalMs, 'ms)');
+        if (window.onAudioReconnecting) {
+            window.onAudioReconnecting();
+        }
+        this.reconnectTimerId = setInterval(() => {
+            this.attemptReconnect();
+        }, this.reconnectIntervalMs);
+        this.attemptReconnect();
+    },
+
+    stopReconnectLoop() {
+        if (this.reconnectTimerId) {
+            clearInterval(this.reconnectTimerId);
+            this.reconnectTimerId = null;
+        }
+        if (this._webrtcDownTimer) {
+            clearTimeout(this._webrtcDownTimer);
+            this._webrtcDownTimer = null;
+        }
+        this.isReconnecting = false;
+        this.reconnectStartedAt = null;
+    },
+
+    onReconnectSuccess() {
+        console.log('✅ Auto-reconnect succeeded');
+        this.stopReconnectLoop();
+        if (window.onAudioReconnected) {
+            window.onAudioReconnected();
+        }
+        this.requestPublishersList();
+    },
+
+    waitForParticipantJoined(timeoutMs) {
+        if (this.participantId) {
+            return Promise.resolve();
+        }
+        return new Promise((resolve, reject) => {
+            const deadline = Date.now() + timeoutMs;
+            const timer = setInterval(() => {
+                if (this.participantId) {
+                    clearInterval(timer);
+                    resolve();
+                } else if (Date.now() >= deadline) {
+                    clearInterval(timer);
+                    reject(new Error('Joined event timeout'));
+                }
+            }, 50);
+        });
+    },
+
+    async attemptReconnect() {
+        if (this.reconnectAttemptInFlight || this.intentionalDisconnect) {
+            return;
+        }
+        if (!this.channelId || !this.roomId) {
+            this.stopReconnectLoop();
+            return;
+        }
+        if (this.reconnectStartedAt && Date.now() - this.reconnectStartedAt > this.reconnectMaxDurationMs) {
+            console.error('❌ Reconnect timeout exceeded');
+            this.stopReconnectLoop();
+            if (window.onAudioReconnectFailed) {
+                window.onAudioReconnectFailed();
+            }
+            return;
+        }
+
+        this.reconnectAttemptInFlight = true;
+        try {
+            await this.softTeardownJanusHandles();
+            await this.createJanusConnection(true);
+            await this.joinAsPublisher({ reuseMicrophone: true });
+            await this.waitForParticipantJoined(8000);
+            console.log('🔄 Reconnect attempt completed successfully');
+        } catch (error) {
+            console.warn('🔄 Reconnect attempt failed:', error.message || error);
+        } finally {
+            this.reconnectAttemptInFlight = false;
+        }
+    },
+
+    createJanusConnection(isReconnectAttempt) {
+        return new Promise((resolve, reject) => {
+            const wsUrl = this.getJanusServerUrl();
+            console.log('🔌 Janus URL:', wsUrl);
+
+            this.janus = new Janus({
+                server: wsUrl,
+                success: () => {
+                    console.log('✅ Janus connected successfully');
+                    this.initializeAudioContext();
+                    resolve();
+                },
+                error: (error) => {
+                    const errorMsg = (error && error.message) ? error.message : String(error || 'Ошибка подключения к Janus Gateway');
+                    console.error('Janus connection error:', errorMsg);
+                    if (isReconnectAttempt) {
+                        reject(new Error(errorMsg));
+                        return;
+                    }
+                    if (this.wasConnected && !this.intentionalDisconnect && this.channelId) {
+                        this.handleConnectionLost('janus-error');
+                        return;
+                    }
+                    if (window.onAudioError) {
+                        window.onAudioError(errorMsg);
+                    }
+                    reject(new Error(errorMsg));
+                },
+                destroyed: () => {
+                    console.log('Janus connection destroyed');
+                    if (this._isSoftTeardown) {
+                        return;
+                    }
+                    if (this.wasConnected && !this.intentionalDisconnect && this.channelId) {
+                        this.handleConnectionLost('janus-destroyed');
+                        return;
+                    }
+                    if (window.onAudioDisconnected) {
+                        window.onAudioDisconnected();
+                    }
+                },
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' },
+                    { urls: 'stun:stun2.l.google.com:19302' }
+                ]
+            });
+        });
+    },
+
+    async softTeardownJanusHandles() {
+        this._isSoftTeardown = true;
+        try {
+            this.subscriberHandles.forEach((handle) => {
+                try {
+                    handle.detach();
+                } catch (e) {
+                    console.warn('softTeardown subscriber detach:', e);
+                }
+            });
+            this.subscriberHandles.clear();
+
+            this.streamVolumes.forEach((streamData) => {
+                try {
+                    if (streamData.source) {
+                        streamData.source.disconnect();
+                    }
+                    if (streamData.gainNode) {
+                        streamData.gainNode.disconnect();
+                    }
+                    if (streamData.audioElement) {
+                        streamData.audioElement.pause();
+                        streamData.audioElement.srcObject = null;
+                        if (streamData.audioElement.parentNode) {
+                            streamData.audioElement.parentNode.removeChild(streamData.audioElement);
+                        }
+                    }
+                } catch (e) {
+                    console.warn('softTeardown stream cleanup:', e);
+                }
+            });
+            this.streamVolumes.clear();
+            this.remoteStreams.clear();
+            this.pendingPublishers.clear();
+            this.publisherPrivateIds.clear();
+
+            this.remoteVideoStreams.forEach((videoData) => {
+                try {
+                    if (videoData.videoElement) {
+                        videoData.videoElement.pause();
+                        videoData.videoElement.srcObject = null;
+                        if (videoData.videoElement.parentNode) {
+                            videoData.videoElement.parentNode.removeChild(videoData.videoElement);
+                        }
+                    }
+                } catch (e) {
+                    console.warn('softTeardown remote video cleanup:', e);
+                }
+            });
+            this.remoteVideoStreams.clear();
+
+            if (this.publisherHandle) {
+                try {
+                    this.publisherHandle.send({ message: { request: 'leave' } });
+                    this.publisherHandle.detach();
+                } catch (e) {
+                    console.warn('softTeardown publisher detach:', e);
+                }
+                this.publisherHandle = null;
+            }
+
+            this.participantId = null;
+
+            if (this.janus) {
+                await new Promise((resolve) => {
+                    try {
+                        this.janus.destroy({
+                            success: () => resolve(),
+                            error: () => resolve()
+                        });
+                    } catch (e) {
+                        resolve();
+                    }
+                });
+                this.janus = null;
+            }
+        } finally {
+            this._isSoftTeardown = false;
+        }
+    },
+
+    _onPublisherWebRtcState(on, handle) {
+        console.log('WebRTC state:', on ? 'up' : 'down');
+        if (on) {
+            if (this._webrtcDownTimer) {
+                clearTimeout(this._webrtcDownTimer);
+                this._webrtcDownTimer = null;
+            }
+            console.log('✅ WebRTC соединение установлено - аудио пакеты передаются!');
+
+            if (this.localStream) {
+                this.localStream.getAudioTracks().forEach(track => {
+                    track.enabled = !this.isMuted;
+                });
+            }
+
+            if (handle.webrtcStuff && handle.webrtcStuff.pc) {
+                const pc = handle.webrtcStuff.pc;
+                pc.getTransceivers().forEach(transceiver => {
+                    if (transceiver.sender && transceiver.sender.track && transceiver.sender.track.kind === 'audio') {
+                        transceiver.sender.track.enabled = !this.isMuted;
+                        if (transceiver.direction !== 'sendonly' && transceiver.direction !== 'sendrecv') {
+                            transceiver.direction = 'sendonly';
+                        }
+                    }
+                });
+                pc.getSenders().forEach(sender => {
+                    if (sender.track && sender.track.kind === 'audio') {
+                        sender.track.enabled = !this.isMuted;
+                    }
+                });
+            }
+
+            if (window.onAudioConnected) {
+                window.onAudioConnected();
+            }
+        } else {
+            console.log('❌ WebRTC соединение разорвано');
+            if (!this.isReconnecting && this.wasConnected && !this.intentionalDisconnect) {
+                this._webrtcDownTimer = setTimeout(() => {
+                    this.handleConnectionLost('webrtc-down');
+                }, 2000);
+            }
+        }
+    },
+
     async init(roomId, channelId = null, displayName = 'User') {
         console.log('🎯 Audio.init:', roomId, channelId, displayName);
         this.roomId = roomId;
         this.channelId = channelId;
         this.displayName = displayName;
+        this.intentionalDisconnect = false;
+        this.stopReconnectLoop();
         
         // Загружаем сохраненные настройки аудио
         this.loadAudioSettings();
@@ -89,73 +399,31 @@ var AudioModule = {
             throw new Error('Библиотека Janus не загружена. Проверьте подключение к интернету и обновите страницу.');
         }
         
-        // Динамически определяем URL Janus на основе текущего домена
-        // http:// → ws://, https:// → wss://
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const host = window.location.hostname;
-        const port = window.location.port ? `:${window.location.port}` : '';
-        const janusUrl = `${protocol}//${host}${port}/janus-ws`;
-        
-        console.log('🔌 Janus URL:', janusUrl);
-        
         return new Promise((resolve, reject) => {
             try {
                 console.log('Initializing Janus...');
-                
-                // Убеждаемся, что adapter доступен глобально для Janus.useDefaultDependencies()
+
                 if (typeof adapter === 'undefined' && typeof window !== 'undefined') {
                     window.adapter = adapterObj;
                     console.log('Set window.adapter for Janus');
                 }
-                
-                // Не передаем dependencies - Janus.useDefaultDependencies() автоматически
-                // использует глобальный adapter и другие зависимости по умолчанию
+
                 Janus.init({
                     debug: 'all',
-                    callback: () => {
+                    callback: async () => {
                         if (!Janus.isWebrtcSupported()) {
                             reject(new Error('WebRTC не поддерживается в этом браузере'));
                             return;
                         }
-
-                        // Используем HTTP для REST API, WebSocket для реального времени
-                        // Заменяем порт 8088 на 8188 и протокол http на ws
-                        let wsUrl = janusUrl;
-                        // Заменяем протокол
-                        wsUrl = wsUrl.replace('http://', 'ws://');
-                        // Заменяем порт 8088 на 8188
-                        wsUrl = wsUrl.replace(':8088', ':8188');
-                        
-                        this.janus = new Janus({
-                            server: wsUrl,
-                            success: () => {
-                                console.log('✅ Janus connected successfully, initializing Videoroom...');
-                                // Инициализируем AudioContext для клиентского микширования
-                                this.initializeAudioContext();
-                                // Присоединяемся как Publisher
-                                this.joinAsPublisher();
-                                resolve();
-                            },
-                            error: (error) => {
-                                console.error('Janus connection error:', error);
-                                const errorMsg = error.message || 'Ошибка подключения к Janus Gateway';
-                                if (window.onAudioError) {
-                                    window.onAudioError(errorMsg);
-                                }
-                                reject(new Error(errorMsg));
-                            },
-                            destroyed: () => {
-                                console.log('Janus connection destroyed');
-                                if (window.onAudioDisconnected) {
-                                    window.onAudioDisconnected();
-                                }
-                            },
-                            iceServers: [
-                                { urls: 'stun:stun.l.google.com:19302' },
-                                { urls: 'stun:stun1.l.google.com:19302' },
-                                { urls: 'stun:stun2.l.google.com:19302' }
-                            ]
-                        });
+                        try {
+                            this._setupReconnectListeners();
+                            await this.createJanusConnection(false);
+                            await this.joinAsPublisher();
+                            resolve();
+                        } catch (error) {
+                            console.error('Janus init error:', error);
+                            reject(error);
+                        }
                     }
                 });
             } catch (error) {
@@ -321,6 +589,98 @@ var AudioModule = {
         this.publishMixedStream = this.publishDestination.stream;
         this.localStream = this.publishMixedStream;
         this.soundEffectBuffers = {};
+        this.preloadSoundEffects().catch((e) => console.warn('SFX preload:', e));
+    },
+
+    getSoundEffectUrl(effectId) {
+        const rel = SOUND_EFFECT_URLS[effectId];
+        if (!rel) {
+            return null;
+        }
+        return typeof window !== 'undefined' && window.location
+            ? new URL(rel, window.location.href).toString()
+            : rel;
+    },
+
+    ensureAudioContextRunning() {
+        const ctx = this.audioContext;
+        if (ctx && ctx.state === 'suspended') {
+            ctx.resume();
+        }
+    },
+
+    async loadEffectBuffer(effectId) {
+        const rel = SOUND_EFFECT_URLS[effectId];
+        if (!rel || !this.audioContext) {
+            return null;
+        }
+        if (!this.soundEffectBuffers) {
+            this.soundEffectBuffers = {};
+        }
+        if (this.soundEffectBuffers[effectId]) {
+            return this.soundEffectBuffers[effectId];
+        }
+        const url = this.getSoundEffectUrl(effectId);
+        const res = await fetch(url);
+        if (!res.ok) {
+            throw new Error(`fetch failed ${url} ${res.status}`);
+        }
+        const arr = await res.arrayBuffer();
+        const buffer = await this.audioContext.decodeAudioData(arr.slice(0));
+        this.soundEffectBuffers[effectId] = buffer;
+        return buffer;
+    },
+
+    async preloadSoundEffects() {
+        if (!this.publishSumGain || !this.audioContext) {
+            return;
+        }
+        const ctx = this.audioContext;
+        if (ctx.state === 'suspended') {
+            await ctx.resume();
+        }
+        const ids = Object.keys(SOUND_EFFECT_URLS);
+        await Promise.all(ids.map((id) => this.loadEffectBuffer(id)));
+        console.log('✅ SFX preloaded:', ids.length);
+    },
+
+    _startSoundEffectBuffer(effectId) {
+        const buffer = this.soundEffectBuffers && this.soundEffectBuffers[effectId];
+        if (!buffer || !this.publishSumGain || !this.audioContext) {
+            return false;
+        }
+        const ctx = this.audioContext;
+        this.ensureAudioContextRunning();
+        if (ctx.state === 'suspended') {
+            console.warn('playSoundEffect: AudioContext still suspended');
+            return false;
+        }
+
+        const src = ctx.createBufferSource();
+        src.buffer = buffer;
+        const gSend = ctx.createGain();
+        gSend.gain.value = 0.42;
+        const gLoc = ctx.createGain();
+        gLoc.gain.value = 0.48;
+        src.connect(gSend);
+        gSend.connect(this.publishSumGain);
+        src.connect(gLoc);
+        if (this.sfxLocalMonitorGain) {
+            gLoc.connect(this.sfxLocalMonitorGain);
+        } else {
+            gLoc.connect(ctx.destination);
+        }
+        src.onended = () => {
+            try {
+                src.disconnect();
+                gSend.disconnect();
+                gLoc.disconnect();
+            } catch (e) {
+                /* ignore */
+            }
+        };
+        src.start(0);
+        return true;
     },
 
     /** Аудиотрек, уходящий в Janus (из Web Audio MediaStreamDestination). */
@@ -364,55 +724,12 @@ var AudioModule = {
             console.warn('playSoundEffect: нет графа или неизвестный id', effectId);
             return false;
         }
-        const ctx = this.audioContext;
-        if (ctx.state === 'suspended') {
-            await ctx.resume();
-        }
+        this.ensureAudioContextRunning();
         try {
-            if (!this.soundEffectBuffers) {
-                this.soundEffectBuffers = {};
+            if (!this.soundEffectBuffers || !this.soundEffectBuffers[effectId]) {
+                await this.loadEffectBuffer(effectId);
             }
-            let buffer = this.soundEffectBuffers[effectId];
-            if (!buffer) {
-                const url =
-                    typeof window !== 'undefined' && window.location
-                        ? new URL(rel, window.location.href).toString()
-                        : rel;
-                const res = await fetch(url);
-                if (!res.ok) {
-                    console.error('playSoundEffect: fetch failed', url, res.status);
-                    return false;
-                }
-                const arr = await res.arrayBuffer();
-                buffer = await ctx.decodeAudioData(arr.slice(0));
-                this.soundEffectBuffers[effectId] = buffer;
-            }
-
-            const src = ctx.createBufferSource();
-            src.buffer = buffer;
-            const gSend = ctx.createGain();
-            gSend.gain.value = 0.42;
-            const gLoc = ctx.createGain();
-            gLoc.gain.value = 0.48;
-            src.connect(gSend);
-            gSend.connect(this.publishSumGain);
-            src.connect(gLoc);
-            if (this.sfxLocalMonitorGain) {
-                gLoc.connect(this.sfxLocalMonitorGain);
-            } else {
-                gLoc.connect(ctx.destination);
-            }
-            src.onended = () => {
-                try {
-                    src.disconnect();
-                    gSend.disconnect();
-                    gLoc.disconnect();
-                } catch (e) {
-                    /* ignore */
-                }
-            };
-            src.start(0);
-            return true;
+            return this._startSoundEffectBuffer(effectId);
         } catch (e) {
             console.error('playSoundEffect:', e);
             return false;
@@ -420,44 +737,67 @@ var AudioModule = {
     },
 
     // Присоединиться к Videoroom как Publisher
-    async joinAsPublisher() {
+    async joinAsPublisher(options = {}) {
         console.log('🔌 Присоединяемся к Videoroom как Publisher...');
         
-        // Получаем локальный поток
+        const reuseMicrophone = options.reuseMicrophone === true;
         const constraints = this.getAudioConstraints();
+        const hasLiveMic = reuseMicrophone && this.micRawStream &&
+            this.micRawStream.getAudioTracks().some((track) => track.readyState === 'live');
         
         try {
-            const micStream = await navigator.mediaDevices.getUserMedia(constraints);
-
-            micStream.getAudioTracks().forEach((track) => {
-                track.enabled = true;
-                if (track.muted) {
-                    console.warn(`⚠️ Локальный трек ${track.id} muted, пытаемся исправить...`);
+            if (hasLiveMic && this.publishMixedStream && this.localStream) {
+                console.log('🎤 Reusing existing microphone stream for reconnect');
+                this.micRawStream.getAudioTracks().forEach((track) => {
+                    track.enabled = !this.isMuted;
+                });
+                if (this.audioContext && this.audioContext.state === 'suspended') {
+                    await this.audioContext.resume();
                 }
-                console.log(`✅ Локальный трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
-            });
+            } else if (hasLiveMic) {
+                console.log('🎤 Rebuilding publish graph from existing microphone');
+                await this.buildPublishAudioGraph(this.micRawStream);
+                if (this.audioContext && this.audioContext.state === 'suspended') {
+                    await this.audioContext.resume();
+                }
+            } else {
+                const micStream = await navigator.mediaDevices.getUserMedia(constraints);
 
-            await this.buildPublishAudioGraph(micStream);
+                micStream.getAudioTracks().forEach((track) => {
+                    track.enabled = true;
+                    if (track.muted) {
+                        console.warn(`⚠️ Локальный трек ${track.id} muted, пытаемся исправить...`);
+                    }
+                    console.log(`✅ Локальный трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
+                });
 
-            if (this.audioContext && this.audioContext.state === 'suspended') {
-                await this.audioContext.resume();
+                await this.buildPublishAudioGraph(micStream);
+
+                if (this.audioContext && this.audioContext.state === 'suspended') {
+                    await this.audioContext.resume();
+                }
+
+                if (this.audioSettings.monitorLocalAudio && this.audioContext && this.audioMixer && this.micRawStream) {
+                    try {
+                        this.micMonitorSideToneSource = this.audioContext.createMediaStreamSource(this.micRawStream);
+                        this.micMonitorSideToneGain = this.audioContext.createGain();
+                        this.micMonitorSideToneGain.gain.value = 0.3;
+                        this.micMonitorSideToneSource.connect(this.micMonitorSideToneGain);
+                        this.micMonitorSideToneGain.connect(this.audioMixer);
+                        console.log('🎧 Локальный аудио поток подключен для мониторинга (side-tone)');
+                    } catch (error) {
+                        console.warn('⚠️ Не удалось подключить локальный поток для мониторинга:', error);
+                    }
+                }
             }
 
-            if (this.audioSettings.monitorLocalAudio && this.audioContext && this.audioMixer && this.micRawStream) {
-                try {
-                    this.micMonitorSideToneSource = this.audioContext.createMediaStreamSource(this.micRawStream);
-                    this.micMonitorSideToneGain = this.audioContext.createGain();
-                    this.micMonitorSideToneGain.gain.value = 0.3;
-                    this.micMonitorSideToneSource.connect(this.micMonitorSideToneGain);
-                    this.micMonitorSideToneGain.connect(this.audioMixer);
-                    console.log('🎧 Локальный аудио поток подключен для мониторинга (side-tone)');
-                } catch (error) {
-                    console.warn('⚠️ Не удалось подключить локальный поток для мониторинга:', error);
+            await new Promise((resolve, reject) => {
+                if (!this.janus) {
+                    reject(new Error('Janus session not initialized'));
+                    return;
                 }
-            }
-            
-            // Прикрепляем плагин Videoroom
-            this.janus.attach({
+
+                this.janus.attach({
                 plugin: 'janus.plugin.videoroom',
                 opaqueId: this.displayName,
                 success: (handle) => {
@@ -477,7 +817,7 @@ var AudioModule = {
                             
                             if (this.micRawStream) {
                                 this.micRawStream.getAudioTracks().forEach((track) => {
-                                    track.enabled = true;
+                                    track.enabled = !this.isMuted;
                                     console.log(`✅ Перед публикацией (mic) трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
                                 });
                             }
@@ -490,12 +830,12 @@ var AudioModule = {
                                 success: (jsep) => {
                                     if (this.micRawStream) {
                                         this.micRawStream.getAudioTracks().forEach((track) => {
-                                            track.enabled = true;
+                                            track.enabled = !this.isMuted;
                                         });
                                     }
                                     if (this.localStream) {
                                         this.localStream.getAudioTracks().forEach((track) => {
-                                            track.enabled = true;
+                                            track.enabled = !this.isMuted;
                                         });
                                     }
                                     
@@ -507,7 +847,7 @@ var AudioModule = {
                                         const transceivers = pc.getTransceivers();
                                         transceivers.forEach(transceiver => {
                                             if (transceiver.sender && transceiver.sender.track && transceiver.sender.track.kind === 'audio') {
-                                                transceiver.sender.track.enabled = true;
+                                                transceiver.sender.track.enabled = !this.isMuted;
                                                 // Убеждаемся что direction правильный
                                                 if (transceiver.direction !== 'sendonly' && transceiver.direction !== 'sendrecv') {
                                                     transceiver.direction = 'sendonly';
@@ -520,7 +860,7 @@ var AudioModule = {
                                         const senders = pc.getSenders();
                                         senders.forEach(sender => {
                                             if (sender.track && sender.track.kind === 'audio') {
-                                                sender.track.enabled = true;
+                                                sender.track.enabled = !this.isMuted;
                                                 console.log(`✅ RTCRtpSender перед publish: ${sender.track.id} enabled=${sender.track.enabled}, muted=${sender.track.muted}`);
                                             }
                                         });
@@ -537,17 +877,20 @@ var AudioModule = {
                                 },
                                 error: (error) => {
                                     console.error('❌ Create offer error:', error);
+                                    reject(error);
                                 }
                             });
                             
                             // Подписываемся на существующих publishers
                             this.requestPublishersList();
+                            resolve();
                         },
                         error: (error) => {
                             console.error('❌ Join error:', error);
-                            if (window.onAudioError) {
+                            if (!this.isReconnecting && window.onAudioError) {
                                 window.onAudioError(error);
                             }
+                            reject(error);
                         }
                     });
                     
@@ -566,7 +909,7 @@ var AudioModule = {
                         
                         // Убеждаемся, что все треки enabled и не muted
                         stream.getAudioTracks().forEach(track => {
-                            track.enabled = true;
+                            track.enabled = !this.isMuted;
                             console.log(`✅ onlocalstream трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
                         });
                         
@@ -576,14 +919,11 @@ var AudioModule = {
                             const senders = pc.getSenders();
                             senders.forEach(sender => {
                                 if (sender.track && sender.track.kind === 'audio') {
-                                    sender.track.enabled = true;
+                                    sender.track.enabled = !this.isMuted;
                                     console.log(`✅ RTCRtpSender трек ${sender.track.id}: enabled=${sender.track.enabled}, muted=${sender.track.muted}`);
                                 }
                             });
                         }
-                        
-                        // Мониторинг локального потока уже настроен в joinAsPublisher при получении getUserMedia
-                        // Здесь просто обновляем ссылку на поток
                         
                         if (window.onLocalStream) {
                             window.onLocalStream(stream);
@@ -591,61 +931,22 @@ var AudioModule = {
                     };
                     
                     handle.webrtcState = (on) => {
-                        console.log('WebRTC state:', on ? 'up' : 'down');
-                        if (on) {
-                            console.log('✅ WebRTC соединение установлено - аудио пакеты передаются!');
-                            
-                            // Убеждаемся, что все треки enabled после установки соединения
-                            if (this.localStream) {
-                                this.localStream.getAudioTracks().forEach(track => {
-                                    track.enabled = true;
-                                    console.log(`✅ WebRTC up трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}`);
-                                });
-                            }
-                            
-                            // Контролируем через RTCPeerConnection и RTCRtpTransceiver
-                            if (handle.webrtcStuff && handle.webrtcStuff.pc) {
-                                const pc = handle.webrtcStuff.pc;
-                                
-                                // Убеждаемся что все transceivers настроены правильно
-                                const transceivers = pc.getTransceivers();
-                                transceivers.forEach(transceiver => {
-                                    if (transceiver.sender && transceiver.sender.track && transceiver.sender.track.kind === 'audio') {
-                                        transceiver.sender.track.enabled = true;
-                                        // Убеждаемся что direction правильный
-                                        if (transceiver.direction !== 'sendonly' && transceiver.direction !== 'sendrecv') {
-                                            transceiver.direction = 'sendonly';
-                                        }
-                                        console.log(`✅ WebRTC up RTCRtpTransceiver: track=${transceiver.sender.track.id}, enabled=${transceiver.sender.track.enabled}, direction=${transceiver.direction}, muted=${transceiver.sender.track.muted}`);
-                                    }
-                                });
-                                
-                                // Также проверяем senders
-                                const senders = pc.getSenders();
-                                senders.forEach(sender => {
-                                    if (sender.track && sender.track.kind === 'audio') {
-                                        sender.track.enabled = true;
-                                        console.log(`✅ WebRTC up RTCRtpSender: ${sender.track.id} enabled=${sender.track.enabled}, muted=${sender.track.muted}`);
-                                    }
-                                });
-                            }
-                            
-                            if (window.onAudioConnected) {
-                                window.onAudioConnected();
-                            }
-                        } else {
-                            console.log('❌ WebRTC соединение разорвано');
-                        }
+                        this._onPublisherWebRtcState(on, handle);
                     };
                 },
                 error: (error) => {
                     console.error('Videoroom attach error:', error);
-                    if (window.onAudioError) {
+                    if (!this.isReconnecting && window.onAudioError) {
                         window.onAudioError(error);
                     }
+                    reject(error);
                 }
             });
+            });
         } catch (error) {
+            if (this.isReconnecting) {
+                throw error;
+            }
             console.error('❌ Ошибка получения медиа:', error);
             
             // Формируем понятное сообщение в зависимости от типа ошибки
@@ -877,14 +1178,19 @@ var AudioModule = {
     },
 
     // Отключиться
-    async disconnect() {
+    async disconnect(userInitiated = true) {
+        this.stopReconnectLoop();
+        if (userInitiated) {
+            this.intentionalDisconnect = true;
+        }
+
         // Уведомляем через SignalR об остановке видео-трансляции (если была активна)
-        if ((this.isScreenSharing || this.isCameraEnabled) && typeof Chat !== 'undefined' && Chat && this.channelId) {
+        if (userInitiated && (this.isScreenSharing || this.isCameraEnabled) && typeof Chat !== 'undefined' && Chat && this.channelId) {
             await Chat.stopVideoStream(this.channelId);
         }
         
-        // Регистрируем отключение на сервере перед очисткой
-        if (this.channelId && this.participantId && window.registerAudioDisconnection) {
+        // Регистрируем отключение на сервере только при явном выходе
+        if (userInitiated && this.channelId && this.participantId && window.registerAudioDisconnection) {
             await window.registerAudioDisconnection(this.channelId, this.participantId);
         }
         
@@ -1040,7 +1346,10 @@ var AudioModule = {
         
         this.participantId = null;
         this.roomId = null;
+        this.channelId = null;
         this.isMuted = false;
+        this.wasConnected = false;
+        this.intentionalDisconnect = false;
     },
 
     // ============================================
@@ -2046,11 +2355,16 @@ var AudioModule = {
             // Событие 'joined' - мы присоединились к комнате
             if (event.videoroom === 'joined' && event.id) {
                 this.participantId = event.id;
+                this.wasConnected = true;
                 console.log('✅ Сохранен participantId (publisher ID):', this.participantId);
                 
                 // Регистрируем подключение на сервере
                 if (this.channelId && this.participantId && window.registerAudioConnection) {
                     window.registerAudioConnection(this.channelId, this.participantId);
+                }
+
+                if (this.isReconnecting) {
+                    this.onReconnectSuccess();
                 }
                 
                 // Запрашиваем список publishers после присоединения
