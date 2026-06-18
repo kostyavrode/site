@@ -544,6 +544,7 @@
         let currentNickName = 'User';
         let currentAudioChannel = null;
         let currentParticipantId = null;
+        let currentGroupHasPassword = false;
         
         // Функция для получения Audio модуля
         function getAudioModule() {
@@ -635,10 +636,40 @@
             await loadGroup();
         });
 
+        function isGroupPasswordProtected() {
+            return currentGroupHasPassword;
+        }
+
+        async function joinCurrentGroup(password = null) {
+            await Groups.joinGroup(currentGroupId, password);
+            document.getElementById('joinGroupModal').classList.add('hidden');
+            document.getElementById('joinGroupForm').reset();
+            await loadGroup();
+        }
+
+        function handleJoinGroupClick() {
+            if (isGroupPasswordProtected()) {
+                document.getElementById('joinGroupModal').classList.remove('hidden');
+                return;
+            }
+            joinCurrentGroup(null).catch(() => {});
+        }
+
+        function setupJoinButtons() {
+            document.getElementById('joinGroupBtn').style.display = 'block';
+            document.getElementById('joinGroupBtn').onclick = handleJoinGroupClick;
+
+            const inlineBtn = document.getElementById('joinGroupBtnInline');
+            if (inlineBtn) {
+                inlineBtn.onclick = handleJoinGroupClick;
+            }
+        }
+
         // Загрузка информации о группе
         async function loadGroup() {
             try {
                 const group = await Groups.getGroupById(currentGroupId);
+                currentGroupHasPassword = !!(group.hasPassword ?? group.HasPassword);
                 document.getElementById('groupName').textContent = group.name;
                 document.getElementById('groupDescription').textContent = group.description || '';
                 
@@ -682,17 +713,11 @@
                         `;
                         groupContent.appendChild(messageDiv);
                         
-                        // Обработчик кнопки присоединения
-                        document.getElementById('joinGroupBtnInline').onclick = () => {
-                            document.getElementById('joinGroupModal').classList.remove('hidden');
-                        };
+                        setupJoinButtons();
+                    } else {
+                        setupJoinButtons();
                     }
                     
-                    // Показываем кнопку в заголовке
-                    document.getElementById('joinGroupBtn').style.display = 'block';
-                    document.getElementById('joinGroupBtn').onclick = () => {
-                        document.getElementById('joinGroupModal').classList.remove('hidden');
-                    };
                     return;
                 }
 
@@ -790,17 +815,10 @@
                         `;
                         groupContent.appendChild(messageDiv);
                         
-                        // Обработчик кнопки присоединения
-                        document.getElementById('joinGroupBtnInline').onclick = () => {
-                            document.getElementById('joinGroupModal').classList.remove('hidden');
-                        };
+                        setupJoinButtons();
+                    } else {
+                        setupJoinButtons();
                     }
-                    
-                    // Показываем кнопку в заголовке
-                    document.getElementById('joinGroupBtn').style.display = 'block';
-                    document.getElementById('joinGroupBtn').onclick = () => {
-                        document.getElementById('joinGroupModal').classList.remove('hidden');
-                    };
                 } else {
                     Utils.showError(error.message || 'Ошибка при загрузке группы');
                 }
@@ -1298,12 +1316,7 @@
             const password = document.getElementById('groupPasswordInput').value.trim();
             
             try {
-                await Groups.joinGroup(currentGroupId, password || null);
-                document.getElementById('joinGroupModal').classList.add('hidden');
-                document.getElementById('joinGroupForm').reset();
-                
-                // Перезагружаем группу без полной перезагрузки страницы
-                await loadGroup();
+                await joinCurrentGroup(password || null);
             } catch (error) {
                 // Ошибка уже показана в Groups.joinGroup
             }
