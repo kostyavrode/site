@@ -990,10 +990,10 @@
                 const showLeaveButton = isYou && !isMemberOwner(member);
 
                 return `
-                <div style="padding: var(--spacing-sm); margin-bottom: var(--spacing-sm); background-color: var(--bg-secondary); border-radius: var(--border-radius);${isYou ? ' border-left: 3px solid var(--accent-green);' : ''}">
+                <div style="padding: var(--spacing-sm); margin-bottom: var(--spacing-sm); background-color: var(--bg-secondary); border-radius: var(--border-radius);${isYou ? ' border-left: 3px solid var(--accent-blue);' : ''}">
                     <div style="display: flex; align-items: center; justify-content: space-between; gap: var(--spacing-sm);">
                         <div style="min-width: 0;">
-                            <div style="font-weight: 600;${isYou ? ' color: var(--accent-green);' : ''}">
+                            <div style="font-weight: 600;${isYou ? ' color: var(--accent-blue);' : ''}">
                                 ${Utils.escapeHtml(member.nickName || member.userId || 'Пользователь')}${isYou ? ' (Вы)' : ''}
                             </div>
                             <div style="font-size: 12px; color: var(--text-secondary);">${Utils.escapeHtml(member.role || 'Member')}</div>
