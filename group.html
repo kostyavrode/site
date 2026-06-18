@@ -632,6 +632,19 @@
         </div>
     </div>
 
+    <!-- Модальное окно ошибки -->
+    <div id="errorModal" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 1003;">
+        <div class="card" style="max-width: 400px; width: 90%;">
+            <div class="card-header">
+                <h3 class="card-title" style="color: var(--error);">Ошибка</h3>
+            </div>
+            <div class="card-body">
+                <p id="errorModalMessage" style="margin-bottom: var(--spacing-md);"></p>
+                <button type="button" id="errorModalCloseBtn" class="btn btn-primary" style="width: 100%;">OK</button>
+            </div>
+        </div>
+    </div>
+
     <!-- RNNoise библиотека через CDN -->
     <script src="https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@1.5.0/dist/web-noise-suppressor.min.js"></script>
     
@@ -659,6 +672,7 @@
         let currentAudioChannel = null;
         let currentParticipantId = null;
         let currentGroupHasPassword = false;
+        let currentCanCreateAudioChannel = false;
         
         // Функция для получения Audio модуля
         function getAudioModule() {
@@ -854,6 +868,7 @@
                 document.getElementById('joinGroupBtn').style.display = 'none';
 
                 // Загрузка участников
+                currentCanCreateAudioChannel = canUserCreateAudioChannel(members);
                 displayMembers(members);
 
                 // Инициализация baseUrls если еще не инициализированы
@@ -940,9 +955,38 @@
         }
 
         // Отображение участников
+        function getMemberRole(member) {
+            return String(member.role || member.Role || 'Member').toLowerCase();
+        }
+
         function isMemberOwner(member) {
-            const role = String(member.role || member.Role || 'Member').toLowerCase();
-            return role === 'owner';
+            return getMemberRole(member) === 'owner';
+        }
+
+        function isMemberAdminOrOwner(member) {
+            const role = getMemberRole(member);
+            return role === 'owner' || role === 'admin';
+        }
+
+        function canUserCreateAudioChannel(members) {
+            if (!members || !Array.isArray(members)) return false;
+            const currentMember = members.find(m => isCurrentMember(m));
+            return currentMember ? isMemberAdminOrOwner(currentMember) : false;
+        }
+
+        function showErrorModal(message) {
+            const modal = document.getElementById('errorModal');
+            const messageEl = document.getElementById('errorModalMessage');
+            if (!modal || !messageEl) {
+                Utils.showError(message);
+                return;
+            }
+            messageEl.textContent = message;
+            modal.classList.remove('hidden');
+        }
+
+        function hideErrorModal() {
+            document.getElementById('errorModal')?.classList.add('hidden');
         }
 
         function isCurrentMember(member) {
@@ -2010,12 +2054,24 @@
         }
 
         // Создание аудио канала
+        document.getElementById('errorModalCloseBtn').addEventListener('click', hideErrorModal);
+
         document.getElementById('createAudioChannelBtn').addEventListener('click', () => {
+            if (!currentCanCreateAudioChannel) {
+                showErrorModal('Создавать аудиоканалы могут только владелец или администратор группы.');
+                return;
+            }
             document.getElementById('createAudioChannelModal').classList.remove('hidden');
         });
 
         document.getElementById('createAudioChannelForm').addEventListener('submit', async (e) => {
             e.preventDefault();
+
+            if (!currentCanCreateAudioChannel) {
+                showErrorModal('Создавать аудиоканалы могут только владелец или администратор группы.');
+                return;
+            }
+
             const name = document.getElementById('audioChannelName').value.trim();
             const description = document.getElementById('audioChannelDescription').value.trim();
 
