@@ -863,7 +863,15 @@
                 return;
             }
 
-            container.innerHTML = members.map(member => {
+            const sortedMembers = [...members].sort((a, b) => {
+                const aIsMe = isCurrentMember(a);
+                const bIsMe = isCurrentMember(b);
+                if (aIsMe && !bIsMe) return -1;
+                if (!aIsMe && bIsMe) return 1;
+                return 0;
+            });
+
+            container.innerHTML = sortedMembers.map(member => {
                 const isYou = isCurrentMember(member);
                 const showLeaveButton = isYou && !isMemberOwner(member);
 
@@ -1019,8 +1027,26 @@
             
             // Проверяем, находится ли пользователь в этом канале
             const isUserInChannel = currentAudioChannel !== null;
+
+            const audioModuleForSort = getAudioModule();
+            const effectiveParticipantIdForSort = currentParticipantId || (audioModuleForSort ? audioModuleForSort.participantId : null);
+            const isCurrentParticipant = (participant) => {
+                const name = participant.display || participant.displayName || participant.name || '';
+                const isYouById = participant.id && effectiveParticipantIdForSort && participant.id.toString() === effectiveParticipantIdForSort.toString();
+                const isYouByFlag = participant.isMe === true;
+                const isYouByName = currentNickName && name.toLowerCase().trim() === currentNickName.toLowerCase().trim();
+                return isYouById || isYouByFlag || isYouByName;
+            };
+
+            const sortedParticipants = [...participants].sort((a, b) => {
+                const aIsYou = isCurrentParticipant(a);
+                const bIsYou = isCurrentParticipant(b);
+                if (aIsYou && !bIsYou) return -1;
+                if (!aIsYou && bIsYou) return 1;
+                return 0;
+            });
             
-            container.innerHTML = participants.map(participant => {
+            container.innerHTML = sortedParticipants.map(participant => {
                 const name = participant.display || participant.displayName || participant.name || 'Пользователь';
                 const participantId = participant.id || participant.userId || name;
                 
@@ -1080,7 +1106,7 @@
                                        value="${savedVolume}"
                                        data-participant-id="${participantId}"
                                        data-channel-id="${currentAudioChannel}"
-                                       style="flex: 1; height: 4px; cursor: pointer;"
+                                       style="flex: 1;"
                                        title="Громкость: ${savedVolume}%">
                                 <span style="font-size: 11px; color: var(--text-secondary); min-width: 35px; text-align: right;">${savedVolume}%</span>
                             </div>
