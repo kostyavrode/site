@@ -124,7 +124,7 @@
             display: grid;
             grid-template-columns: 300px 1fr 250px;
             gap: var(--spacing-md);
-            flex: 1;
+            height: calc(100vh - 200px);
             min-height: 0;
             align-items: stretch;
         }
@@ -194,6 +194,7 @@
         
         .messages-container {
             flex: 1;
+            min-height: 0;
             overflow-y: auto;
             padding: var(--spacing-md);
             background-color: var(--bg-primary);
@@ -230,6 +231,7 @@
         }
         
         .chat-input-container {
+            flex-shrink: 0;
             border-top: 1px solid var(--border-color);
             padding: var(--spacing-md);
             background-color: var(--bg-secondary);
@@ -326,26 +328,6 @@
         
         .audio-channels-modal.active {
             display: flex;
-        }
-
-        main.content.group-page-content {
-            display: flex;
-            flex-direction: column;
-            min-height: 0;
-            overflow: hidden;
-            padding: var(--spacing-md);
-        }
-
-        #groupContent:not(.hidden) {
-            display: flex;
-            flex-direction: column;
-            flex: 1;
-            min-height: 0;
-            overflow: hidden;
-        }
-
-        #groupContent > .group-page-header {
-            flex-shrink: 0;
         }
 
         /* Тёмные полосы прокрутки */
@@ -496,9 +478,9 @@
             </div>
         </nav>
 
-        <main class="content group-page-content">
+        <main class="content" style="padding: var(--spacing-md);">
             <div id="groupContent" class="hidden">
-                <div class="d-flex group-page-header" style="justify-content: space-between; align-items: center; margin-bottom: var(--spacing-md);">
+                <div class="d-flex" style="justify-content: space-between; align-items: center; margin-bottom: var(--spacing-md);">
                     <div>
                         <h1 id="groupName">Загрузка...</h1>
                         <p id="groupDescription" style="color: var(--text-secondary);"></p>
