@@ -259,7 +259,7 @@
         }
         
         .audio-channel.active {
-            border-color: var(--accent-green);
+            border-color: var(--accent-blue);
         }
         
         .audio-controls {
@@ -504,7 +504,7 @@
                         
                         <!-- Участники аудио канала -->
                         <div id="audioParticipantsSection" style="display: none; margin-top: var(--spacing-lg); padding-top: var(--spacing-lg); border-top: 1px solid var(--border-color);">
-                            <h3 style="margin-bottom: var(--spacing-md);">🎤 В аудио канале</h3>
+                            <h3 style="margin-bottom: var(--spacing-md);">В аудио канале</h3>
                             <div id="audioParticipantsList">
                                 <p style="color: var(--text-secondary);">Загрузка...</p>
                             </div>
@@ -1195,6 +1195,16 @@
         // Хранилище регуляторов громкости для каждого пользователя
         const participantVolumeControls = new Map();
         
+        function formatChannelParticipantsList(participants) {
+            if (!participants || participants.length === 0) {
+                return '<span style="color: var(--text-secondary);">Пусто</span>';
+            }
+            return participants.map(p => {
+                const name = Utils.escapeHtml(p.displayName || p.display || p.name || 'User');
+                return `<div style="line-height: 1.6;">${name}</div>`;
+            }).join('');
+        }
+
         // Отображение участников аудио канала
         function displayAudioParticipants(participants) {
             if (!currentAudioChannel) {
@@ -1282,10 +1292,10 @@
                 const showVolumeSlider = !isYou && isUserInChannel;
                 
                 return `
-                    <div style="padding: var(--spacing-sm); margin-bottom: var(--spacing-sm); background-color: var(--bg-secondary); border-radius: var(--border-radius); ${isYou ? 'border-left: 3px solid var(--accent-green);' : ''}">
+                    <div style="padding: var(--spacing-sm); margin-bottom: var(--spacing-sm); background-color: var(--bg-secondary); border-radius: var(--border-radius); ${isYou ? 'border-left: 3px solid var(--accent-blue);' : ''}">
                         <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--spacing-xs);">
-                            <div style="font-weight: 600; font-size: 13px; ${isYou ? 'color: var(--accent-green);' : ''}">
-                                ${isYou ? '🎤 ' : '🔊 '}${Utils.escapeHtml(name)}${isYou ? ' (Вы)' : ''}
+                            <div style="font-weight: 600; font-size: 13px; ${isYou ? 'color: var(--accent-blue);' : ''}">
+                                ${Utils.escapeHtml(name)}${isYou ? ' (Вы)' : ''}
                             </div>
                         </div>
                         ${showVolumeSlider ? `
@@ -1431,12 +1441,7 @@
             // Обновляем краткий список участников в карточке канала
             const participantsContainer = document.getElementById(`channelParticipants-${channelId}`);
             if (participantsContainer) {
-                if (count > 0) {
-                    const names = participantsArray.map(p => p.displayName || p.display || 'User').join(', ');
-                    participantsContainer.innerHTML = `<span style="color: var(--accent-green);">🎤 ${count}:</span> ${Utils.escapeHtml(names)}`;
-                } else {
-                    participantsContainer.innerHTML = '<span style="color: var(--text-secondary);">Пусто</span>';
-                }
+                participantsContainer.innerHTML = formatChannelParticipantsList(participantsArray);
             }
             
             // Если это текущий канал, обновляем детальный список участников
@@ -1597,12 +1602,7 @@
                 const participants = await API.get(`${API.baseUrls.audio}/api/audio/AudioChannels/${channelId}/participants`);
                 const container = document.getElementById(`channelParticipants-${channelId}`);
                 if (container) {
-                    if (participants && participants.length > 0) {
-                        const names = participants.map(p => p.displayName || 'User').join(', ');
-                        container.innerHTML = `<span style="color: var(--accent-green);">🎤 ${participants.length}:</span> ${Utils.escapeHtml(names)}`;
-                    } else {
-                        container.innerHTML = '<span style="color: var(--text-secondary);">Пусто</span>';
-                    }
+                    container.innerHTML = formatChannelParticipantsList(participants);
                 }
             } catch (error) {
                 // Игнорируем ошибки
@@ -1656,7 +1656,7 @@
                         </div>
                         <!-- Список участников в канале -->
                         <div id="audioParticipantsList-${channel.id}" class="audio-participants-list" style="display: none; margin-top: var(--spacing-md); padding-top: var(--spacing-md); border-top: 1px solid var(--border-color);">
-                            <div style="font-weight: 600; margin-bottom: var(--spacing-sm); font-size: 14px;">🎤 Участники в канале:</div>
+                            <div style="font-weight: 600; margin-bottom: var(--spacing-sm); font-size: 14px;">Участники в канале:</div>
                             <div id="audioParticipantsContainer-${channel.id}" style="max-height: 200px; overflow-y: auto;">
                                 <p style="color: var(--text-secondary); font-size: 12px;">Загрузка...</p>
                             </div>
