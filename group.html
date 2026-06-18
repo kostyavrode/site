@@ -1003,6 +1003,32 @@
             return role === 'owner' || role === 'admin';
         }
 
+        function isCurrentUserOwner(members) {
+            if (!members || !Array.isArray(members)) return false;
+            const currentMember = members.find(m => isCurrentMember(m));
+            return currentMember ? isMemberOwner(currentMember) : false;
+        }
+
+        function getRoleLabel(role) {
+            const normalized = String(role || 'Member').toLowerCase();
+            if (normalized === 'owner') return 'Владелец';
+            if (normalized === 'admin') return 'Админ';
+            return 'Участник';
+        }
+
+        async function changeMemberRole(targetUserId, newRole) {
+            if (!currentGroupId || !targetUserId || !newRole) return;
+
+            try {
+                await Groups.updateMemberRole(currentGroupId, targetUserId, newRole);
+                const members = await Groups.getGroupMembers(currentGroupId);
+                currentCanCreateAudioChannel = canUserCreateAudioChannel(members);
+                displayMembers(members);
+            } catch (error) {
+                console.error('Failed to change member role:', error);
+            }
+        }
+
         function canUserCreateAudioChannel(members) {
             if (!members || !Array.isArray(members)) return false;
             const currentMember = members.find(m => isCurrentMember(m));
@@ -1067,6 +1093,8 @@
             container.innerHTML = sortedMembers.map(member => {
                 const isYou = isCurrentMember(member);
                 const showLeaveButton = isYou && !isMemberOwner(member);
+                const showRoleSelect = isCurrentUserOwner(members) && !isMemberOwner(member) && !isYou;
+                const currentRole = getMemberRole(member) === 'admin' ? 'Admin' : 'Member';
 
                 return `
                 <div style="padding: var(--spacing-sm); margin-bottom: var(--spacing-sm); background-color: var(--bg-secondary); border-radius: var(--border-radius);${isYou ? ' border-left: 3px solid var(--accent-blue);' : ''}">
@@ -1075,11 +1103,19 @@
                             <div style="font-weight: 600;${isYou ? ' color: var(--accent-blue);' : ''}">
                                 ${Utils.escapeHtml(member.nickName || member.userId || 'Пользователь')}${isYou ? ' (Вы)' : ''}
                             </div>
-                            <div style="font-size: 12px; color: var(--text-secondary);">${Utils.escapeHtml(member.role || 'Member')}</div>
+                            <div style="font-size: 12px; color: var(--text-secondary);">${Utils.escapeHtml(getRoleLabel(member.role || member.Role))}</div>
                         </div>
-                        ${showLeaveButton ? `
-                            <button type="button" class="btn btn-sm leave-group-btn" title="Покинуть группу">Покинуть</button>
-                        ` : ''}
+                        <div style="display: flex; align-items: center; gap: var(--spacing-sm); flex-shrink: 0;">
+                            ${showRoleSelect ? `
+                                <select class="member-role-select" data-user-id="${Utils.escapeHtml(member.userId)}" style="font-size: 12px; padding: 4px 8px;">
+                                    <option value="Member" ${currentRole === 'Member' ? 'selected' : ''}>Участник</option>
+                                    <option value="Admin" ${currentRole === 'Admin' ? 'selected' : ''}>Админ</option>
+                                </select>
+                            ` : ''}
+                            ${showLeaveButton ? `
+                                <button type="button" class="btn btn-sm leave-group-btn" title="Покинуть группу">Покинуть</button>
+                            ` : ''}
+                        </div>
                     </div>
                 </div>
             `;
@@ -1087,6 +1123,15 @@
 
             container.querySelectorAll('.leave-group-btn').forEach(btn => {
                 btn.addEventListener('click', leaveCurrentGroup);
+            });
+
+            container.querySelectorAll('.member-role-select').forEach(select => {
+                select.addEventListener('change', async (event) => {
+                    const target = event.target;
+                    const userId = target.dataset.userId;
+                    const newRole = target.value;
+                    await changeMemberRole(userId, newRole);
+                });
             });
         }
 

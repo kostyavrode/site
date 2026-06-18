@@ -99,6 +99,18 @@ const Groups = {
         }
     },
 
+    // Изменить роль участника (только владелец)
+    async updateMemberRole(groupId, userId, role) {
+        try {
+            const response = await API.put(`${API.baseUrls.groups}/api/Groups/${groupId}/members/${userId}/role`, { role });
+            Utils.showSuccess('Роль участника обновлена');
+            return response;
+        } catch (error) {
+            Utils.showError(error.message || 'Ошибка при изменении роли');
+            throw error;
+        }
+    },
+
     // Обновить группу
     async updateGroup(groupId, name, description, password) {
         try {
