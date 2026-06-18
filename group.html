@@ -826,6 +826,36 @@
         }
 
         // Отображение участников
+        function isMemberOwner(member) {
+            const role = String(member.role || member.Role || 'Member').toLowerCase();
+            return role === 'owner';
+        }
+
+        function isCurrentMember(member) {
+            if (currentUserId && member.userId && String(member.userId) === String(currentUserId)) {
+                return true;
+            }
+            const memberName = (member.nickName || member.displayName || '').toLowerCase().trim();
+            const myName = (currentNickName || '').toLowerCase().trim();
+            return memberName && myName && memberName === myName;
+        }
+
+        async function leaveCurrentGroup() {
+            if (!currentGroupId) return;
+
+            try {
+                const audioModule = getAudioModule();
+                if (audioModule) {
+                    await audioModule.disconnect();
+                }
+                await Chat.leaveGroup();
+                await Groups.leaveGroup(currentGroupId);
+                window.location.href = 'groups.html';
+            } catch (error) {
+                // Ошибка уже показана в Groups.leaveGroup
+            }
+        }
+
         function displayMembers(members) {
             const container = document.getElementById('membersList');
             if (!members || members.length === 0) {
@@ -833,12 +863,30 @@
                 return;
             }
 
-            container.innerHTML = members.map(member => `
-                <div style="padding: var(--spacing-sm); margin-bottom: var(--spacing-sm); background-color: var(--bg-secondary); border-radius: var(--border-radius);">
-                    <div style="font-weight: 600;">${Utils.escapeHtml(member.nickName || member.userId || 'Пользователь')}</div>
-                    <div style="font-size: 12px; color: var(--text-secondary);">${member.role || 'Member'}</div>
+            container.innerHTML = members.map(member => {
+                const isYou = isCurrentMember(member);
+                const showLeaveButton = isYou && !isMemberOwner(member);
+
+                return `
+                <div style="padding: var(--spacing-sm); margin-bottom: var(--spacing-sm); background-color: var(--bg-secondary); border-radius: var(--border-radius);${isYou ? ' border-left: 3px solid var(--accent-green);' : ''}">
+                    <div style="display: flex; align-items: center; justify-content: space-between; gap: var(--spacing-sm);">
+                        <div style="min-width: 0;">
+                            <div style="font-weight: 600;${isYou ? ' color: var(--accent-green);' : ''}">
+                                ${Utils.escapeHtml(member.nickName || member.userId || 'Пользователь')}${isYou ? ' (Вы)' : ''}
+                            </div>
+                            <div style="font-size: 12px; color: var(--text-secondary);">${Utils.escapeHtml(member.role || 'Member')}</div>
+                        </div>
+                        ${showLeaveButton ? `
+                            <button type="button" class="btn btn-sm leave-group-btn" title="Покинуть группу">Покинуть</button>
+                        ` : ''}
+                    </div>
                 </div>
-            `).join('');
+            `;
+            }).join('');
+
+            container.querySelectorAll('.leave-group-btn').forEach(btn => {
+                btn.addEventListener('click', leaveCurrentGroup);
+            });
         }
 
         // Загрузка сообщений
