@@ -77,6 +77,14 @@
                     </div>
                 </div>
 
+                <!-- Все группы (только если пользователь ещё ни в одной группе) -->
+                <div id="browseGroupsSection" class="hidden">
+                    <h2>Все группы</h2>
+                    <div id="browseGroupsList" class="mb-lg">
+                        <p style="color: var(--text-secondary);">Загрузка...</p>
+                    </div>
+                </div>
+
                 <!-- Мои группы -->
                 <div id="myGroupsSection">
                     <h2>Мои группы</h2>
@@ -133,6 +141,12 @@
     <script src="js/groups.js"></script>
     <script>
         let searchTimeout;
+        let showBrowseGroups = false;
+
+        function setBrowseSectionVisible(visible) {
+            showBrowseGroups = visible;
+            document.getElementById('browseGroupsSection').classList.toggle('hidden', !visible);
+        }
 
         // Проверка авторизации
         document.addEventListener('DOMContentLoaded', async () => {
@@ -170,8 +184,8 @@
                 }
             }
 
-            // Загрузка групп пользователя
-            loadUserGroups();
+            // Загрузка групп
+            loadInitialGroups();
 
             // Поиск
             document.getElementById('searchInput').addEventListener('input', (e) => {
@@ -181,6 +195,9 @@
                     searchTimeout = setTimeout(() => searchGroups(query), 300);
                 } else {
                     document.getElementById('searchResultsSection').classList.add('hidden');
+                    if (showBrowseGroups) {
+                        setBrowseSectionVisible(true);
+                    }
                     document.getElementById('myGroupsSection').classList.remove('hidden');
                 }
             });
@@ -205,20 +222,51 @@
                 await Groups.createGroup(name, description || null, password || null);
                 document.getElementById('createGroupModal').classList.add('hidden');
                 document.getElementById('createGroupForm').reset();
-                loadUserGroups();
+                setBrowseSectionVisible(false);
+                await loadUserGroups();
             } catch (error) {
                 submitBtn.disabled = false;
                 submitBtn.textContent = 'Создать';
             }
         });
 
+        function normalizeGroupsResponse(results) {
+            if (Array.isArray(results)) {
+                return results;
+            }
+            return results.groups || results.items || [];
+        }
+
+        async function loadInitialGroups() {
+            const userGroups = await loadUserGroups();
+            if (userGroups.length === 0) {
+                setBrowseSectionVisible(true);
+                await loadBrowseGroups();
+            } else {
+                setBrowseSectionVisible(false);
+            }
+        }
+
+        // Загрузка групп для просмотра
+        async function loadBrowseGroups() {
+            try {
+                const results = await Groups.getBrowseGroups(10);
+                const groups = normalizeGroupsResponse(results).slice(0, 10);
+                displayGroups(groups, 'browseGroupsList');
+            } catch (error) {
+                document.getElementById('browseGroupsList').innerHTML = '<p style="color: var(--error);">Ошибка при загрузке групп</p>';
+            }
+        }
+
         // Загрузка групп пользователя
         async function loadUserGroups() {
             try {
-                const groups = await Groups.getUserGroups();
+                const groups = normalizeGroupsResponse(await Groups.getUserGroups());
                 displayGroups(groups, 'myGroupsList');
+                return groups;
             } catch (error) {
                 document.getElementById('myGroupsList').innerHTML = '<p style="color: var(--error);">Ошибка при загрузке групп</p>';
+                return [];
             }
         }
 
@@ -226,9 +274,10 @@
         async function searchGroups(query) {
             try {
                 const results = await Groups.searchGroups(query);
-                const groups = Array.isArray(results) ? results : (results.groups || []);
+                const groups = normalizeGroupsResponse(results);
                 displayGroups(groups, 'searchResultsList');
                 document.getElementById('searchResultsSection').classList.remove('hidden');
+                document.getElementById('browseGroupsSection').classList.add('hidden');
                 document.getElementById('myGroupsSection').classList.add('hidden');
             } catch (error) {
                 document.getElementById('searchResultsList').innerHTML = '<p style="color: var(--error);">Ошибка при поиске</p>';

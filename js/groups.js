@@ -50,6 +50,21 @@ const Groups = {
         }
     },
 
+    // Получить список групп для просмотра (первые N групп)
+    async getBrowseGroups(limit = 10, offset = 0) {
+        try {
+            const params = new URLSearchParams({
+                query: '',
+                limit: limit.toString(),
+                offset: offset.toString()
+            });
+            return await API.get(`${API.baseUrls.groups}/api/Groups/search?${params}`);
+        } catch (error) {
+            console.error('Browse groups error:', error);
+            throw error;
+        }
+    },
+
     // Присоединиться к группе
     async joinGroup(groupId, password) {
         try {
