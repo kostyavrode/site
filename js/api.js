@@ -15,15 +15,6 @@ const API = {
     _baseUrlsInitialized: false,
 
     initBaseUrls() {
-        if (this._baseUrlsInitialized &&
-            this.baseUrls.auth &&
-            this.baseUrls.groups &&
-            this.baseUrls.chat &&
-            this.baseUrls.audio &&
-            this.baseUrls.notification) {
-            return;
-        }
-
         const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
         const host = window.location.hostname;
         const port = window.location.port ? `:${window.location.port}` : '';

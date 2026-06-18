@@ -104,9 +104,17 @@ const Groups = {
         const { showSuccess = true } = options;
 
         try {
-            const payload = { userId, UserId: userId, role, Role: role };
+            API.initBaseUrls();
+            const payload = {
+                groupId,
+                GroupId: groupId,
+                userId,
+                UserId: userId,
+                role,
+                Role: role
+            };
             const response = await API.post(
-                `${API.baseUrls.groups}/api/Groups/${groupId}/members/role`,
+                `${API.baseUrls.groups}/api/Groups/member-role`,
                 payload
             );
             if (showSuccess) {
@@ -114,7 +122,10 @@ const Groups = {
             }
             return response;
         } catch (error) {
-            Utils.showError(error.message || 'Ошибка при изменении роли');
+            const message = error.message || 'Ошибка при изменении роли';
+            Utils.showError(message.includes('404')
+                ? 'Сервис групп не поддерживает смену ролей. Перезапустите GroupsService.'
+                : message);
             throw error;
         }
     },
