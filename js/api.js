@@ -12,6 +12,52 @@ const API = {
         notification: ''
     },
 
+    _baseUrlsInitialized: false,
+
+    initBaseUrls() {
+        if (this._baseUrlsInitialized &&
+            this.baseUrls.auth &&
+            this.baseUrls.groups &&
+            this.baseUrls.chat &&
+            this.baseUrls.audio &&
+            this.baseUrls.notification) {
+            return;
+        }
+
+        const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
+        const host = window.location.hostname;
+        const port = window.location.port ? `:${window.location.port}` : '';
+        const baseUrl = `${protocol}//${host}${port}`;
+        const isProduction = host !== 'localhost' && host !== '127.0.0.1';
+        const isTestEnv = window.location.pathname.startsWith('/test/');
+        const apiPrefix = isTestEnv ? '/test' : '';
+        const isLocalTest = port === ':8001' || new URLSearchParams(window.location.search).get('test') === 'true';
+        const hostOnly = baseUrl.replace(/:\d+$/, '');
+
+        if (isProduction) {
+            const prodBase = `${baseUrl}${apiPrefix}`;
+            this.baseUrls.auth = prodBase;
+            this.baseUrls.groups = prodBase;
+            this.baseUrls.chat = prodBase;
+            this.baseUrls.audio = prodBase;
+            this.baseUrls.notification = prodBase;
+        } else if (isLocalTest) {
+            this.baseUrls.auth = `${hostOnly}:10001`;
+            this.baseUrls.groups = `${hostOnly}:10002`;
+            this.baseUrls.chat = `${hostOnly}:10003`;
+            this.baseUrls.audio = `${hostOnly}:10004`;
+            this.baseUrls.notification = `${hostOnly}:10005`;
+        } else {
+            this.baseUrls.auth = `${hostOnly}:5001`;
+            this.baseUrls.groups = `${hostOnly}:5002`;
+            this.baseUrls.chat = `${hostOnly}:5003`;
+            this.baseUrls.audio = `${hostOnly}:5004`;
+            this.baseUrls.notification = `${hostOnly}:5005`;
+        }
+
+        this._baseUrlsInitialized = true;
+    },
+
     // Флаг, что refresh уже в процессе
     _isRefreshing: false,
     _refreshPromise: null,
@@ -57,6 +103,8 @@ const API = {
 
     // Базовый метод для HTTP запросов
     async request(url, options = {}) {
+        this.initBaseUrls();
+
         const token = this.getToken();
         
         const defaultOptions = {

@@ -910,33 +910,8 @@
                 currentCanCreateAudioChannel = canUserCreateAudioChannel(members);
                 displayMembers(members);
 
-                // Инициализация baseUrls если еще не инициализированы
-                if (!API.baseUrls.auth || !API.baseUrls.groups || !API.baseUrls.chat || !API.baseUrls.audio || !API.baseUrls.notification) {
-                    const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
-                    const host = window.location.hostname;
-                    const port = window.location.port ? `:${window.location.port}` : '';
-                    const baseUrl = `${protocol}//${host}${port}`;
-                    
-                    // На продакшене используем baseUrl без портов (через nginx)
-                    // На localhost используем порты напрямую
-                    const isProduction = host !== 'localhost' && host !== '127.0.0.1';
-                    
-                    if (isProduction) {
-                        // Продакшен: все через nginx без портов
-                        API.baseUrls.auth = API.baseUrls.auth || baseUrl;
-                        API.baseUrls.groups = API.baseUrls.groups || baseUrl;
-                        API.baseUrls.chat = API.baseUrls.chat || baseUrl;
-                        API.baseUrls.audio = API.baseUrls.audio || baseUrl;
-                        API.baseUrls.notification = API.baseUrls.notification || baseUrl;
-                    } else {
-                        // Локальная разработка: используем порты
-                        API.baseUrls.auth = API.baseUrls.auth || `${baseUrl.replace(/:\d+$/, '')}:5001`;
-                        API.baseUrls.groups = API.baseUrls.groups || `${baseUrl.replace(/:\d+$/, '')}:5002`;
-                        API.baseUrls.chat = API.baseUrls.chat || `${baseUrl.replace(/:\d+$/, '')}:5003`;
-                        API.baseUrls.audio = API.baseUrls.audio || `${baseUrl.replace(/:\d+$/, '')}:5004`;
-                        API.baseUrls.notification = API.baseUrls.notification || `${baseUrl.replace(/:\d+$/, '')}:5005`;
-                    }
-                }
+                // Инициализация baseUrls
+                API.initBaseUrls();
 
                 // Инициализация чата
                 await Chat.init(currentGroupId);
@@ -1020,6 +995,10 @@
             return 'Участник';
         }
 
+        function getMemberUserId(member) {
+            return member.userId || member.UserId || '';
+        }
+
         function getAssignableRoleFromMember(member) {
             return getMemberRole(member) === 'admin' ? 'Admin' : 'Member';
         }
@@ -1028,10 +1007,18 @@
             isEditingRoles = true;
             pendingRoleChanges = {};
             currentMembersList.forEach(member => {
-                if (!isMemberOwner(member) && !isCurrentMember(member)) {
-                    pendingRoleChanges[member.userId] = getAssignableRoleFromMember(member);
+                const memberUserId = getMemberUserId(member);
+                if (!isMemberOwner(member) && !isCurrentMember(member) && memberUserId) {
+                    pendingRoleChanges[memberUserId] = getAssignableRoleFromMember(member);
                 }
             });
+            updateMembersHeader(currentMembersList);
+            displayMembers(currentMembersList);
+        }
+
+        function cancelEditingRoles() {
+            isEditingRoles = false;
+            pendingRoleChanges = {};
             updateMembersHeader(currentMembersList);
             displayMembers(currentMembersList);
         }
@@ -1048,7 +1035,7 @@
             try {
                 const updates = [];
                 for (const [userId, newRole] of Object.entries(pendingRoleChanges)) {
-                    const member = currentMembersList.find(m => m.userId === userId);
+                    const member = currentMembersList.find(m => getMemberUserId(m) === userId);
                     if (!member) continue;
                     if (newRole !== getAssignableRoleFromMember(member)) {
                         updates.push({ userId, newRole });
@@ -1056,7 +1043,7 @@
                 }
 
                 for (const { userId, newRole } of updates) {
-                    await API.put(`${API.baseUrls.groups}/api/Groups/${currentGroupId}/members/${userId}/role`, { role: newRole });
+                    await Groups.updateMemberRole(currentGroupId, userId, newRole, { showSuccess: false });
                 }
 
                 isEditingRoles = false;
@@ -1093,7 +1080,13 @@
             }
 
             if (isEditingRoles) {
-                container.innerHTML = '<button type="button" class="btn btn-sm btn-primary" id="saveRolesBtn">Сохранить</button>';
+                container.innerHTML = `
+                    <div style="display: flex; gap: var(--spacing-sm);">
+                        <button type="button" class="btn btn-sm" id="cancelRolesBtn">Отменить</button>
+                        <button type="button" class="btn btn-sm btn-primary" id="saveRolesBtn">Сохранить</button>
+                    </div>
+                `;
+                document.getElementById('cancelRolesBtn')?.addEventListener('click', cancelEditingRoles);
                 document.getElementById('saveRolesBtn')?.addEventListener('click', saveRoleChanges);
             } else {
                 container.innerHTML = '<button type="button" class="btn btn-sm" id="editRolesBtn">Изменить роли</button>';
@@ -1169,7 +1162,8 @@
                 const isYou = isCurrentMember(member);
                 const showLeaveButton = isYou && !isMemberOwner(member) && !isEditingRoles;
                 const showRoleSelect = isEditingRoles && isCurrentUserOwner(members) && !isMemberOwner(member) && !isYou;
-                const selectedRole = pendingRoleChanges[member.userId] || getAssignableRoleFromMember(member);
+                const memberUserId = getMemberUserId(member);
+                const selectedRole = pendingRoleChanges[memberUserId] || getAssignableRoleFromMember(member);
 
                 return `
                 <div style="padding: var(--spacing-sm); margin-bottom: var(--spacing-sm); background-color: var(--bg-secondary); border-radius: var(--border-radius);${isYou ? ' border-left: 3px solid var(--accent-blue);' : ''}">
@@ -1182,7 +1176,7 @@
                         </div>
                         <div style="display: flex; align-items: center; gap: var(--spacing-sm); flex-shrink: 0;">
                             ${showRoleSelect ? `
-                                <select class="member-role-select" data-user-id="${Utils.escapeHtml(member.userId)}" style="font-size: 12px; padding: 4px 8px;">
+                                <select class="member-role-select" data-user-id="${Utils.escapeHtml(memberUserId)}" style="font-size: 12px; padding: 4px 8px;">
                                     <option value="Member" ${selectedRole === 'Member' ? 'selected' : ''}>Участник</option>
                                     <option value="Admin" ${selectedRole === 'Admin' ? 'selected' : ''}>Админ</option>
                                 </select>

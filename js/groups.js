@@ -100,10 +100,18 @@ const Groups = {
     },
 
     // Изменить роль участника (только владелец)
-    async updateMemberRole(groupId, userId, role) {
+    async updateMemberRole(groupId, userId, role, options = {}) {
+        const { showSuccess = true } = options;
+
         try {
-            const response = await API.put(`${API.baseUrls.groups}/api/Groups/${groupId}/members/${userId}/role`, { role });
-            Utils.showSuccess('Роль участника обновлена');
+            const payload = { userId, UserId: userId, role, Role: role };
+            const response = await API.post(
+                `${API.baseUrls.groups}/api/Groups/${groupId}/members/role`,
+                payload
+            );
+            if (showSuccess) {
+                Utils.showSuccess('Роль участника обновлена');
+            }
             return response;
         } catch (error) {
             Utils.showError(error.message || 'Ошибка при изменении роли');
