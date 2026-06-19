@@ -93,6 +93,32 @@ code {
     flex-direction: column;
 }
 
+.maintenance-banner {
+    background: linear-gradient(90deg, #8b4513 0%, #a0522d 50%, #8b4513 100%);
+    border-bottom: 3px solid #dcdcaa;
+    color: #fff8e7;
+    padding: 20px var(--spacing-md);
+    text-align: center;
+    flex-shrink: 0;
+}
+
+.maintenance-banner__title {
+    font-size: clamp(22px, 4vw, 36px);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.35);
+}
+
+.maintenance-banner__text {
+    font-size: clamp(14px, 2.5vw, 18px);
+    line-height: 1.4;
+    color: #ffebc8;
+    margin: 0;
+}
+
 .content {
     flex: 1;
     padding: var(--spacing-lg);
