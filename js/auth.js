@@ -19,8 +19,8 @@ const Auth = {
                 nickName,
                 password
             });
+            API.saveTokenFromResponse(response);
             Utils.showSuccess('Вход выполнен успешно!');
-            API.markSessionActive();
             API._lastRefreshTime = Date.now();
             API.startAutoRefresh();
             return response;
@@ -34,11 +34,11 @@ const Auth = {
     async logout() {
         try {
             await API.post(`${API.baseUrls.auth}/api/Auth/logout`, {});
-            API.clearSession();
+            // Останавливаем автоматическое обновление токена
+            API.stopAutoRefresh();
             Utils.showSuccess('Выход выполнен');
         } catch (error) {
             console.error('Logout error:', error);
-            API.clearSession();
         }
     },
 
@@ -56,11 +56,7 @@ const Auth = {
     async isAuthenticated() {
         try {
             const user = await this.getCurrentUser();
-            if (user !== null) {
-                API.markSessionActive();
-                return true;
-            }
-            return false;
+            return user !== null;
         } catch (error) {
             return false;
         }

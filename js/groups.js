@@ -78,9 +78,7 @@ const Groups = {
             Utils.showSuccess('Вы успешно присоединились к группе!');
             return response;
         } catch (error) {
-            if (error.message !== 'Unauthorized') {
-                Utils.showError(error.message || 'Ошибка при присоединении к группе');
-            }
+            Utils.showError(error.message || 'Ошибка при присоединении к группе');
             throw error;
         }
     },
