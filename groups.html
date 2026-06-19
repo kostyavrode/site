@@ -77,28 +77,38 @@
                     </div>
                 </div>
 
-                <!-- Все группы (только если пользователь ещё ни в одной группе) -->
-                <div id="browseGroupsSection" class="hidden">
-                    <h2>Все группы</h2>
-                    <div id="browseGroupsList" class="mb-lg">
-                        <p style="color: var(--text-secondary);">Загрузка...</p>
-                    </div>
-                </div>
+                <!-- Секции групп (порядок меняется при поиске через flex order) -->
+                <div id="groupsSections" style="display: flex; flex-direction: column; gap: var(--spacing-lg);">
 
-                <!-- Мои группы -->
-                <div id="myGroupsSection">
-                    <h2>Мои группы</h2>
-                    <div id="myGroupsList" class="mb-lg">
-                        <p style="color: var(--text-secondary);">Загрузка...</p>
+                    <!-- Мои группы -->
+                    <div id="myGroupsSection" style="order: 1;">
+                        <h2>Мои группы</h2>
+                        <div id="myGroupsList" class="mb-lg">
+                            <p style="color: var(--text-secondary);">Загрузка...</p>
+                        </div>
                     </div>
-                </div>
 
-                <!-- Результаты поиска -->
-                <div id="searchResultsSection" class="hidden">
-                    <h2>Результаты поиска</h2>
-                    <div id="searchResultsList">
-                        <p style="color: var(--text-secondary);">Введите запрос для поиска</p>
+                    <!-- Глобальные группы -->
+                    <div id="globalGroupsSection" style="order: 2;">
+                        <h2>Глобальные группы</h2>
+                        <div id="globalGroupsList" class="mb-md">
+                            <p style="color: var(--text-secondary);">Загрузка...</p>
+                        </div>
+                        <div id="globalGroupsPagination" class="d-flex gap-sm" style="justify-content: center; align-items: center; flex-wrap: wrap;">
+                            <button type="button" class="btn btn-sm" id="globalGroupsPrev" disabled>← Назад</button>
+                            <span id="globalGroupsPageInfo" style="color: var(--text-secondary); font-size: 13px; min-width: 120px; text-align: center;">Страница 1</span>
+                            <button type="button" class="btn btn-sm" id="globalGroupsNext" disabled>Вперёд →</button>
+                        </div>
                     </div>
+
+                    <!-- Результаты поиска (вместо глобальных групп) -->
+                    <div id="searchResultsSection" class="hidden" style="order: 1;">
+                        <h2>Результаты поиска</h2>
+                        <div id="searchResultsList">
+                            <p style="color: var(--text-secondary);">Введите запрос для поиска</p>
+                        </div>
+                    </div>
+
                 </div>
             </div>
         </main>
@@ -140,12 +150,30 @@
     <script src="js/auth.js"></script>
     <script src="js/groups.js"></script>
     <script>
+        const GLOBAL_PAGE_SIZE = 10;
         let searchTimeout;
-        let showBrowseGroups = false;
+        let globalGroupsPage = 1;
+        let globalGroupsTotalPages = 1;
+        let isSearchActive = false;
 
-        function setBrowseSectionVisible(visible) {
-            showBrowseGroups = visible;
-            document.getElementById('browseGroupsSection').classList.toggle('hidden', !visible);
+        function setGroupsLayoutMode(mode) {
+            const mySection = document.getElementById('myGroupsSection');
+            const globalSection = document.getElementById('globalGroupsSection');
+            const searchSection = document.getElementById('searchResultsSection');
+
+            isSearchActive = mode === 'search';
+
+            if (isSearchActive) {
+                searchSection.classList.remove('hidden');
+                globalSection.classList.add('hidden');
+                searchSection.style.order = '1';
+                mySection.style.order = '2';
+            } else {
+                searchSection.classList.add('hidden');
+                globalSection.classList.remove('hidden');
+                mySection.style.order = '1';
+                globalSection.style.order = '2';
+            }
         }
 
         // Проверка авторизации
@@ -185,7 +213,20 @@
             }
 
             // Загрузка групп
-            loadInitialGroups();
+            loadUserGroups();
+            loadGlobalGroups(globalGroupsPage);
+
+            document.getElementById('globalGroupsPrev').addEventListener('click', () => {
+                if (globalGroupsPage > 1) {
+                    loadGlobalGroups(globalGroupsPage - 1);
+                }
+            });
+
+            document.getElementById('globalGroupsNext').addEventListener('click', () => {
+                if (globalGroupsPage < globalGroupsTotalPages) {
+                    loadGlobalGroups(globalGroupsPage + 1);
+                }
+            });
 
             // Поиск
             document.getElementById('searchInput').addEventListener('input', (e) => {
@@ -194,11 +235,8 @@
                 if (query.length > 0) {
                     searchTimeout = setTimeout(() => searchGroups(query), 300);
                 } else {
-                    document.getElementById('searchResultsSection').classList.add('hidden');
-                    if (showBrowseGroups) {
-                        setBrowseSectionVisible(true);
-                    }
-                    document.getElementById('myGroupsSection').classList.remove('hidden');
+                    setGroupsLayoutMode('default');
+                    loadGlobalGroups(globalGroupsPage);
                 }
             });
         });
@@ -222,8 +260,8 @@
                 await Groups.createGroup(name, description || null, password || null);
                 document.getElementById('createGroupModal').classList.add('hidden');
                 document.getElementById('createGroupForm').reset();
-                setBrowseSectionVisible(false);
                 await loadUserGroups();
+                await loadGlobalGroups(globalGroupsPage);
             } catch (error) {
                 submitBtn.disabled = false;
                 submitBtn.textContent = 'Создать';
@@ -234,27 +272,48 @@
             if (Array.isArray(results)) {
                 return results;
             }
-            return results.groups || results.items || [];
+            return results.groups || results.items || results.Items || [];
         }
 
-        async function loadInitialGroups() {
-            const userGroups = await loadUserGroups();
-            if (userGroups.length === 0) {
-                setBrowseSectionVisible(true);
-                await loadBrowseGroups();
-            } else {
-                setBrowseSectionVisible(false);
+        function parseGroupsPageResponse(results, page, pageSize) {
+            const groups = normalizeGroupsResponse(results);
+            const totalCount = results.totalCount ?? results.TotalCount ?? null;
+            const responsePageSize = results.pageSize ?? results.PageSize ?? pageSize;
+            let totalPages = results.totalPages ?? results.TotalPages ?? null;
+
+            if (totalPages === null && totalCount !== null) {
+                totalPages = Math.max(1, Math.ceil(totalCount / responsePageSize));
+            } else if (totalPages === null) {
+                totalPages = groups.length < pageSize ? page : page + (groups.length === pageSize ? 1 : 0);
             }
+
+            return { groups, totalPages: Math.max(1, totalPages) };
         }
 
-        // Загрузка групп для просмотра
-        async function loadBrowseGroups() {
+        function updateGlobalGroupsPagination(page, totalPages) {
+            globalGroupsPage = page;
+            globalGroupsTotalPages = totalPages;
+
+            document.getElementById('globalGroupsPageInfo').textContent =
+                totalPages > 1 ? `Страница ${page} из ${totalPages}` : `Страница ${page}`;
+
+            document.getElementById('globalGroupsPrev').disabled = page <= 1;
+            document.getElementById('globalGroupsNext').disabled = page >= totalPages;
+        }
+
+        async function loadGlobalGroups(page = 1) {
+            const listEl = document.getElementById('globalGroupsList');
+            listEl.innerHTML = '<p style="color: var(--text-secondary);">Загрузка...</p>';
+
             try {
-                const results = await Groups.getBrowseGroups(10);
-                const groups = normalizeGroupsResponse(results).slice(0, 10);
-                displayGroups(groups, 'browseGroupsList');
+                const offset = (page - 1) * GLOBAL_PAGE_SIZE;
+                const results = await Groups.getBrowseGroups(GLOBAL_PAGE_SIZE, offset);
+                const { groups, totalPages } = parseGroupsPageResponse(results, page, GLOBAL_PAGE_SIZE);
+
+                updateGlobalGroupsPagination(page, totalPages);
+                displayGroups(groups, 'globalGroupsList');
             } catch (error) {
-                document.getElementById('browseGroupsList').innerHTML = '<p style="color: var(--error);">Ошибка при загрузке групп</p>';
+                listEl.innerHTML = '<p style="color: var(--error);">Ошибка при загрузке групп</p>';
             }
         }
 
@@ -272,15 +331,17 @@
 
         // Поиск групп
         async function searchGroups(query) {
+            setGroupsLayoutMode('search');
+
+            const listEl = document.getElementById('searchResultsList');
+            listEl.innerHTML = '<p style="color: var(--text-secondary);">Поиск...</p>';
+
             try {
                 const results = await Groups.searchGroups(query);
                 const groups = normalizeGroupsResponse(results);
                 displayGroups(groups, 'searchResultsList');
-                document.getElementById('searchResultsSection').classList.remove('hidden');
-                document.getElementById('browseGroupsSection').classList.add('hidden');
-                document.getElementById('myGroupsSection').classList.add('hidden');
             } catch (error) {
-                document.getElementById('searchResultsList').innerHTML = '<p style="color: var(--error);">Ошибка при поиске</p>';
+                listEl.innerHTML = '<p style="color: var(--error);">Ошибка при поиске</p>';
             }
         }
 
@@ -328,7 +389,7 @@
                 try {
                     // Получаем ВСЕ группы всех пользователей через поиск с пустым запросом
                     // Используем большой лимит, чтобы получить все группы
-                    const groups = await Groups.searchGroups('', 1000, 0);
+                    const groups = normalizeGroupsResponse(await Groups.searchGroups('', 1000, 0));
                     let totalCount = 0;
                     
                     console.log(`📊 Получено ${groups.length} групп для статистики`);
