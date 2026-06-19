@@ -41,7 +41,6 @@ var AudioModule = {
     remoteStreams: new Map(), // Map<PublisherId, MediaStream>
     pendingPublishers: new Map(), // Map<PublisherId, {id, display}> - publishers, на которых подписались, но поток ещё не получен
     publisherPrivateIds: new Map(), // Map<PublisherId, private_id> - для переподписки
-    participantIdentities: new Map(), // Map<PublisherIdStr, { userId, displayName }>
     
     // Управление видео (screen share / webcam)
     localVideoStream: null, // Локальный видео-поток (screen или camera)
@@ -279,7 +278,6 @@ var AudioModule = {
             this.streamVolumes.clear();
             this.remoteStreams.clear();
             this.pendingPublishers.clear();
-            this.participantIdentities.clear();
             this.publisherPrivateIds.clear();
 
             this.remoteVideoStreams.forEach((videoData) => {
@@ -1099,85 +1097,8 @@ var AudioModule = {
     // joinRoom -> joinAsPublisher (вызывается автоматически при init)
     // handleMessage -> handlePublisherMessage
 
-    getVolumeStorageKey(channelId, userId, displayName) {
-        if (!channelId) return null;
-        if (userId) {
-            return `audioVolume-${channelId}-${userId}`;
-        }
-        const normalized = (displayName || '').trim().toLowerCase();
-        if (normalized) {
-            return `audioVolume-${channelId}-name:${normalized}`;
-        }
-        return null;
-    },
-
-    getSavedVolumePercent(channelId, userId, displayName) {
-        const tryKey = (key) => {
-            if (!key) return null;
-            try {
-                const saved = localStorage.getItem(key);
-                if (saved !== null) {
-                    const val = parseInt(saved, 10);
-                    if (!isNaN(val) && val >= 0 && val <= 100) {
-                        return val;
-                    }
-                }
-            } catch (e) {
-                /* ignore */
-            }
-            return null;
-        };
-
-        if (userId) {
-            const byUserId = tryKey(this.getVolumeStorageKey(channelId, userId, null));
-            if (byUserId !== null) return byUserId;
-        }
-        if (displayName) {
-            return tryKey(this.getVolumeStorageKey(channelId, null, displayName));
-        }
-        return null;
-    },
-
-    saveVolumePreference(channelId, publisherId, volumePercent) {
-        const publisherIdStr = String(publisherId);
-        const identity = this.participantIdentities.get(publisherIdStr);
-        const streamData = this.streamVolumes.get(publisherIdStr);
-        const userId = identity?.userId;
-        const displayName = identity?.displayName || streamData?.display;
-        const key = this.getVolumeStorageKey(channelId, userId, displayName);
-        if (!key) return;
-        try {
-            localStorage.setItem(key, String(Math.round(volumePercent)));
-        } catch (e) {
-            console.warn('Не удалось сохранить громкость:', e);
-        }
-    },
-
-    registerParticipantIdentity(publisherId, userId, displayName) {
-        const publisherIdStr = String(publisherId);
-        const existing = this.participantIdentities.get(publisherIdStr) || {};
-        this.participantIdentities.set(publisherIdStr, {
-            userId: userId || existing.userId || null,
-            displayName: displayName || existing.displayName || null
-        });
-        if (this.streamVolumes.has(publisherIdStr)) {
-            this.applySavedVolumeForPublisher(publisherIdStr);
-        }
-    },
-
-    applySavedVolumeForPublisher(publisherIdStr) {
-        if (!this.channelId) return;
-        const identity = this.participantIdentities.get(publisherIdStr);
-        const streamData = this.streamVolumes.get(publisherIdStr);
-        const userId = identity?.userId;
-        const displayName = identity?.displayName || streamData?.display;
-        const savedPercent = this.getSavedVolumePercent(this.channelId, userId, displayName);
-        if (savedPercent === null) return;
-        this.setParticipantVolume(publisherIdStr, savedPercent, { persist: false });
-    },
-
     // Установить громкость потока (клиентское управление)
-    setParticipantVolume(publisherId, volume, options = {}) {
+    setParticipantVolume(publisherId, volume) {
         // Преобразуем publisherId в строку для поиска в Map
         const publisherIdStr = String(publisherId);
         
@@ -1197,9 +1118,6 @@ var AudioModule = {
                 streamDataByNum.gainNode.gain.value = clampedVolume;
                 streamDataByNum.volume = clampedVolume;
                 console.log(`✅ Громкость потока ${numericId} установлена: ${Math.round(clampedVolume * 100)}%`);
-                if (options.persist !== false && this.channelId) {
-                    this.saveVolumePreference(this.channelId, numericId, Math.round(clampedVolume * 100));
-                }
                 return;
             }
             console.warn(`⚠️ Поток ${publisherId} не найден для установки громкости. Доступные потоки:`, Array.from(this.streamVolumes.keys()));
@@ -1230,10 +1148,6 @@ var AudioModule = {
             console.log(`✅ Громкость потока ${publisherIdStr} установлена через audioElement: ${Math.round(Math.min(1.0, clampedVolume) * 100)}%`);
         } else {
             console.warn(`⚠️ Ни GainNode, ни audioElement не найдены для потока ${publisherIdStr}`);
-        }
-
-        if (options.persist !== false && this.channelId) {
-            this.saveVolumePreference(this.channelId, publisherIdStr, Math.round(clampedVolume * 100));
         }
     },
 
@@ -1314,7 +1228,6 @@ var AudioModule = {
         this.streamVolumes.clear();
         this.remoteStreams.clear();
         this.pendingPublishers.clear();
-        this.participantIdentities.clear();
         
         let publisherPc = null;
         if (this.publisherHandle && this.publisherHandle.webrtcStuff && this.publisherHandle.webrtcStuff.pc) {
@@ -4095,11 +4008,6 @@ var AudioModule = {
                     volume: 1.0,
                     display: displayName
                 });
-
-                if (!this.participantIdentities.has(publisherIdStr)) {
-                    this.participantIdentities.set(publisherIdStr, { userId: null, displayName });
-                }
-                this.applySavedVolumeForPublisher(publisherIdStr);
                 
                 // Удаляем из pending (поток получен)
                 this.pendingPublishers.delete(publisherIdStr);
@@ -4207,11 +4115,6 @@ var AudioModule = {
                 volume: 1.0,
                 display: displayName
             });
-
-            if (!this.participantIdentities.has(publisherIdStr)) {
-                this.participantIdentities.set(publisherIdStr, { userId: null, displayName });
-            }
-            this.applySavedVolumeForPublisher(publisherIdStr);
             
             // Удаляем из pending (поток получен)
             this.pendingPublishers.delete(publisherIdStr);
@@ -4383,11 +4286,9 @@ var AudioModule = {
         this.streamVolumes.forEach((streamData, publisherId) => {
             const idStr = String(publisherId);
             if (!addedIds.has(idStr)) {
-                const identity = this.participantIdentities.get(idStr);
                 participants.push({
                     id: publisherId,
-                    display: streamData.display || 'Пользователь',
-                    userId: identity?.userId || null
+                    display: streamData.display || 'Пользователь'
                 });
                 addedIds.add(idStr);
             }
@@ -4397,11 +4298,9 @@ var AudioModule = {
         this.pendingPublishers.forEach((publisherData, publisherId) => {
             const idStr = String(publisherId);
             if (!addedIds.has(idStr)) {
-                const identity = this.participantIdentities.get(idStr);
                 participants.push({
                     id: publisherData.id,
-                    display: publisherData.display || 'Пользователь',
-                    userId: identity?.userId || null
+                    display: publisherData.display || 'Пользователь'
                 });
                 addedIds.add(idStr);
             }
