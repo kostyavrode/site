@@ -275,19 +275,57 @@
             return results.groups || results.items || results.Items || [];
         }
 
-        function parseGroupsPageResponse(results, page, pageSize) {
-            const groups = normalizeGroupsResponse(results);
-            const totalCount = results.totalCount ?? results.TotalCount ?? null;
-            const responsePageSize = results.pageSize ?? results.PageSize ?? pageSize;
-            let totalPages = results.totalPages ?? results.TotalPages ?? null;
+        function extractPaginatedGroups(results, page, pageSize) {
+            const isPlainArray = Array.isArray(results);
+            const allGroups = normalizeGroupsResponse(results);
+
+            const totalCount = isPlainArray
+                ? allGroups.length
+                : (results.totalCount ?? results.TotalCount ?? null);
+
+            let totalPages = isPlainArray
+                ? null
+                : (results.totalPages ?? results.TotalPages ?? null);
+
+            const responsePageSize = isPlainArray
+                ? pageSize
+                : (results.pageSize ?? results.PageSize ?? pageSize);
 
             if (totalPages === null && totalCount !== null) {
                 totalPages = Math.max(1, Math.ceil(totalCount / responsePageSize));
-            } else if (totalPages === null) {
-                totalPages = groups.length < pageSize ? page : page + (groups.length === pageSize ? 1 : 0);
             }
 
-            return { groups, totalPages: Math.max(1, totalPages) };
+            // Сервер вернул все группы одним списком — режем на клиенте
+            if (totalCount !== null && allGroups.length > pageSize) {
+                const start = (page - 1) * pageSize;
+                return {
+                    groups: allGroups.slice(start, start + pageSize),
+                    totalPages: Math.max(1, Math.ceil(totalCount / pageSize))
+                };
+            }
+
+            // Сервер уже отдал одну страницу
+            if (totalCount !== null && allGroups.length <= pageSize) {
+                return {
+                    groups: allGroups,
+                    totalPages: totalPages ?? Math.max(1, Math.ceil(totalCount / pageSize))
+                };
+            }
+
+            // Нет метаданных: если пришло больше pageSize — это полный список
+            if (allGroups.length > pageSize) {
+                const start = (page - 1) * pageSize;
+                return {
+                    groups: allGroups.slice(start, start + pageSize),
+                    totalPages: Math.max(1, Math.ceil(allGroups.length / pageSize))
+                };
+            }
+
+            // Одна страница или последняя
+            return {
+                groups: allGroups,
+                totalPages: Math.max(1, totalPages ?? page)
+            };
         }
 
         function updateGlobalGroupsPagination(page, totalPages) {
@@ -306,9 +344,8 @@
             listEl.innerHTML = '<p style="color: var(--text-secondary);">Загрузка...</p>';
 
             try {
-                const offset = (page - 1) * GLOBAL_PAGE_SIZE;
-                const results = await Groups.getBrowseGroups(GLOBAL_PAGE_SIZE, offset);
-                const { groups, totalPages } = parseGroupsPageResponse(results, page, GLOBAL_PAGE_SIZE);
+                const results = await Groups.getBrowseGroups(page, GLOBAL_PAGE_SIZE);
+                const { groups, totalPages } = extractPaginatedGroups(results, page, GLOBAL_PAGE_SIZE);
 
                 updateGlobalGroupsPagination(page, totalPages);
                 displayGroups(groups, 'globalGroupsList');

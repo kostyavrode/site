@@ -50,12 +50,15 @@ const Groups = {
         }
     },
 
-    // Получить список групп для просмотра (первые N групп)
-    async getBrowseGroups(limit = 10, offset = 0) {
+    // Глобальный список групп (пагинация: page + pageSize)
+    async getBrowseGroups(page = 1, pageSize = 10) {
         try {
+            const offset = (page - 1) * pageSize;
             const params = new URLSearchParams({
                 query: '',
-                limit: limit.toString(),
+                page: page.toString(),
+                pageSize: pageSize.toString(),
+                limit: pageSize.toString(),
                 offset: offset.toString()
             });
             return await API.get(`${API.baseUrls.groups}/api/Groups/search?${params}`);
