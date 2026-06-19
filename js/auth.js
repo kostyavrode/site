@@ -20,7 +20,7 @@ const Auth = {
                 password
             });
             Utils.showSuccess('Вход выполнен успешно!');
-            // Запускаем автоматическое обновление токена каждые 29 минут
+            API.markSessionActive();
             API._lastRefreshTime = Date.now();
             API.startAutoRefresh();
             return response;
@@ -34,11 +34,11 @@ const Auth = {
     async logout() {
         try {
             await API.post(`${API.baseUrls.auth}/api/Auth/logout`, {});
-            // Останавливаем автоматическое обновление токена
-            API.stopAutoRefresh();
+            API.clearSession();
             Utils.showSuccess('Выход выполнен');
         } catch (error) {
             console.error('Logout error:', error);
+            API.clearSession();
         }
     },
 
@@ -56,7 +56,11 @@ const Auth = {
     async isAuthenticated() {
         try {
             const user = await this.getCurrentUser();
-            return user !== null;
+            if (user !== null) {
+                API.markSessionActive();
+                return true;
+            }
+            return false;
         } catch (error) {
             return false;
         }

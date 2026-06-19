@@ -71,12 +71,16 @@ const Groups = {
     // Присоединиться к группе
     async joinGroup(groupId, password) {
         try {
-            const data = password ? { password } : {};
-            const response = await API.post(`${API.baseUrls.groups}/api/Groups/${groupId}/join`, data);
+            const url = `${API.baseUrls.groups}/api/Groups/${groupId}/join`;
+            const response = password
+                ? await API.post(url, { password })
+                : await API.post(url);
             Utils.showSuccess('Вы успешно присоединились к группе!');
             return response;
         } catch (error) {
-            Utils.showError(error.message || 'Ошибка при присоединении к группе');
+            if (error.message !== 'Unauthorized') {
+                Utils.showError(error.message || 'Ошибка при присоединении к группе');
+            }
             throw error;
         }
     },

@@ -751,11 +751,12 @@
             // Проверка авторизации
             const isAuth = await Auth.isAuthenticated();
             if (!isAuth) {
-                window.location.href = 'login.html';
+                const returnPath = window.location.pathname + window.location.search;
+                window.location.href = `login.html?return=${encodeURIComponent(returnPath)}`;
                 return;
             }
 
-            // Запускаем автоматическое обновление токена каждые 29 минут
+            // Запускаем автоматическое обновление токена
             API.startAutoRefresh();
 
             // Обновление навигации

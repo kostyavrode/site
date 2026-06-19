@@ -106,11 +106,20 @@
     <script src="js/utils.js"></script>
     <script src="js/auth.js"></script>
     <script>
+        function getLoginRedirectUrl() {
+            const params = new URLSearchParams(window.location.search);
+            const returnPath = params.get('return');
+            if (returnPath && !returnPath.includes('login.html') && !returnPath.includes('://') && !returnPath.startsWith('//')) {
+                return returnPath;
+            }
+            return 'groups.html';
+        }
+
         // Проверка, не авторизован ли уже пользователь
         document.addEventListener('DOMContentLoaded', async () => {
             try {
                 if (await Auth.isAuthenticated()) {
-                    window.location.href = 'groups.html';
+                    window.location.href = getLoginRedirectUrl();
                 }
             } catch (error) {
                 // Игнорируем ошибки при проверке - пользователь просто не авторизован
@@ -154,7 +163,7 @@
                 console.log('🔑 Токен в JS (если не HttpOnly):', token ? 'есть' : 'нет (часто HttpOnly — ок)');
                 
                 setTimeout(() => {
-                    window.location.href = 'groups.html';
+                    window.location.href = getLoginRedirectUrl();
                 }, 1000);
             } catch (error) {
                 console.error('Ошибка логина:', error);

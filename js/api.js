@@ -55,6 +55,17 @@ const API = {
 
     // Таймер автоматического обновления токена (setTimeout)
     _refreshInterval: null,
+    _sessionActive: false,
+
+    markSessionActive() {
+        this._sessionActive = true;
+    },
+
+    clearSession() {
+        this._sessionActive = false;
+        this.removeToken();
+        this.stopAutoRefresh();
+    },
 
     /** Время истечения access JWT (ms) из cookie, если токен читается из JS; иначе null */
     _getAccessTokenExpMs() {
@@ -92,25 +103,32 @@ const API = {
         document.cookie = 'access_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT';
     },
 
-    // Базовый метод для HTTP запросов
-    async request(url, options = {}) {
-        this.initBaseUrls();
+    redirectToLogin(message) {
+        this.clearSession();
+        const path = window.location.pathname;
+        if (path.includes('login.html') || path.includes('register.html')) {
+            return;
+        }
+        const returnPath = path + window.location.search;
+        const loginUrl = returnPath && !returnPath.includes('login.html')
+            ? `login.html?return=${encodeURIComponent(returnPath)}`
+            : 'login.html';
+        if (message && typeof Utils !== 'undefined' && Utils.showError) {
+            Utils.showError(message);
+        }
+        window.location.href = loginUrl;
+    },
 
-        const token = this.getToken();
-        
+    buildRequestOptions(options = {}) {
         const defaultOptions = {
-            headers: {
-                'Content-Type': 'application/json',
-            },
+            headers: {},
             credentials: 'include'
         };
-
-        // Добавляем токен в заголовок Authorization, если он есть
-        if (token) {
-            defaultOptions.headers['Authorization'] = `Bearer ${token}`;
+        const hasBody = options.body !== undefined && options.body !== null;
+        if (hasBody && !options.headers?.['Content-Type']) {
+            defaultOptions.headers['Content-Type'] = 'application/json';
         }
-
-        const finalOptions = {
+        return {
             ...defaultOptions,
             ...options,
             headers: {
@@ -118,6 +136,13 @@ const API = {
                 ...options.headers
             }
         };
+    },
+
+    // Базовый метод для HTTP запросов
+    async request(url, options = {}) {
+        this.initBaseUrls();
+
+        const finalOptions = this.buildRequestOptions(options);
 
         try {
             const isLoginRequest = url.includes('/api/Auth/login');
@@ -136,30 +161,16 @@ const API = {
                 const refreshed = await this.tryRefreshToken();
                 
                 if (refreshed) {
-                    // Обновляем токен в заголовках для повторного запроса
-                    const newToken = this.getToken();
-                    if (newToken) {
-                        finalOptions.headers['Authorization'] = `Bearer ${newToken}`;
-                    }
-                    // Повторяем оригинальный запрос
+                    // После refresh актуальный JWT только в HttpOnly cookie — не подставляем Bearer из JS
+                    delete finalOptions.headers['Authorization'];
                     response = await fetch(url, finalOptions);
                     
                     if (response.status === 401) {
-                        // Refresh не помог, токен недействителен
-                        this.removeToken();
-                        const currentPath = window.location.pathname;
-                        if (!currentPath.includes('login.html') && !currentPath.includes('register.html') && !currentPath.includes('group.html')) {
-                            window.location.href = 'login.html';
-                        }
+                        this.redirectToLogin('Сессия истекла. Войдите снова.');
                         throw new Error('Unauthorized');
                     }
                 } else {
-                    // Refresh не удался
-                    this.removeToken();
-                    const currentPath = window.location.pathname;
-                    if (!currentPath.includes('login.html') && !currentPath.includes('register.html') && !currentPath.includes('group.html')) {
-                        window.location.href = 'login.html';
-                    }
+                    this.redirectToLogin('Сессия истекла. Войдите снова.');
                     throw new Error('Unauthorized');
                 }
             }
@@ -195,10 +206,11 @@ const API = {
 
     // POST запрос
     async post(url, data) {
-        return this.request(url, {
-            method: 'POST',
-            body: JSON.stringify(data)
-        });
+        const options = { method: 'POST' };
+        if (data !== undefined) {
+            options.body = JSON.stringify(data);
+        }
+        return this.request(url, options);
     },
 
     // PUT запрос
@@ -353,37 +365,21 @@ document.addEventListener('keydown', async (event) => {
     }
 });
 
-// При загрузке страницы: если пользователь уже авторизован, запускаем auto-refresh
-// Это критически важно, потому что после перезагрузки страницы auto-refresh не работает!
+// При загрузке страницы: auto-refresh только если сессия уже отмечена (после login / isAuthenticated)
 document.addEventListener('DOMContentLoaded', async () => {
-    // Даем время на инициализацию API (baseUrls могут устанавливаться позже)
-    setTimeout(async () => {
-        // Проверяем, есть ли токен (через cookie)
-        const hasToken = document.cookie.split(';').some(c => c.trim().startsWith('access_token='));
-        
-        if (hasToken) {
-            console.log('[API] Обнаружен токен при загрузке страницы');
-            // Синхронизируем время жизни токена с сервером: нельзя считать «только что обновлённым»
-            // момент загрузки страницы — cookie могла остаться от сессии с почти истёкшим JWT.
-            const refreshed = await API.tryRefreshToken();
-            API._lastRefreshTime = refreshed ? Date.now() : null;
+    setTimeout(() => {
+        if (API._sessionActive) {
             API.startAutoRefresh();
-            console.log('[API] ✅ Auto-refresh запущен' + (refreshed ? ' (токен обновлён при загрузке)' : ''));
-        } else {
-            console.log('[API] Токен не найден при загрузке страницы');
+            console.log('[API] ✅ Auto-refresh запущен для активной сессии');
         }
-    }, 500); // Небольшая задержка для инициализации baseUrls
+    }, 500);
 });
 
 // ВАЖНО: Обновляем токен когда пользователь возвращается на вкладку
-// Браузер может "замораживать" неактивные вкладки и setInterval не сработает
 document.addEventListener('visibilitychange', async () => {
-    if (document.visibilityState === 'visible') {
-        const hasToken = document.cookie.split(';').some(c => c.trim().startsWith('access_token='));
-        if (hasToken) {
-            console.log('[API] Вкладка стала активной, проверяем токен...');
-            await API.refreshIfNeeded();
-        }
+    if (document.visibilityState === 'visible' && API._sessionActive) {
+        console.log('[API] Вкладка стала активной, проверяем токен...');
+        await API.refreshIfNeeded();
     }
 });
 
@@ -395,10 +391,8 @@ const ACTIVITY_REFRESH_INTERVAL = 10 * 60 * 1000; // 10 минут
     document.addEventListener(eventType, async () => {
         const now = Date.now();
         if (now - lastActivityRefresh > ACTIVITY_REFRESH_INTERVAL) {
-            const hasToken = document.cookie.split(';').some(c => c.trim().startsWith('access_token='));
-            if (hasToken) {
+            if (API._sessionActive) {
                 lastActivityRefresh = now;
-                // Проверяем в фоне, не блокируя
                 API.refreshIfNeeded().catch(e => console.warn('[API] Ошибка обновления токена:', e));
             }
         }
