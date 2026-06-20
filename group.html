@@ -813,10 +813,11 @@
         }
 
         async function joinCurrentGroup(password = null) {
-            await Groups.joinGroup(currentGroupId, password);
+            const result = await Groups.joinGroup(currentGroupId, password);
             document.getElementById('joinGroupModal').classList.add('hidden');
             document.getElementById('joinGroupForm').reset();
             await loadGroup();
+            return result;
         }
 
         function handleJoinGroupClick() {

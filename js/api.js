@@ -236,14 +236,13 @@ const API = {
             
             // Для 403 и 404 на странице группы не делаем редирект
             if ((response.status === 403 || response.status === 404) && window.location.pathname.includes('group.html')) {
-                // Позволяем обработать ошибку на странице группы
-                const error = await response.json().catch(() => ({ error: response.statusText }));
-                throw new Error(error.error || `HTTP ${response.status}`);
+                const errorInfo = await this._readResponseError(response);
+                throw new Error(errorInfo.message || `HTTP ${response.status}`);
             }
 
             if (!response.ok) {
-                const error = await response.json().catch(() => ({ error: response.statusText }));
-                throw new Error(error.error || `HTTP ${response.status}`);
+                const errorInfo = await this._readResponseError(response);
+                throw new Error(errorInfo.message || `HTTP ${response.status}`);
             }
 
             const contentType = response.headers.get('content-type');

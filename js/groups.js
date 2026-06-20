@@ -72,12 +72,16 @@ const Groups = {
     async joinGroup(groupId, password) {
         try {
             const url = `${API.baseUrls.groups}/api/Groups/${groupId}/join`;
-            const response = password
-                ? await API.post(url, { password })
-                : await API.post(url);
+            const data = password ? { password } : {};
+            const response = await API.post(url, data);
             Utils.showSuccess('Вы успешно присоединились к группе!');
             return response;
         } catch (error) {
+            const message = (error.message || '').toLowerCase();
+            if (message.includes('already a member') || message.includes('уже')) {
+                Utils.showSuccess('Вы уже участник этой группы');
+                return { alreadyMember: true };
+            }
             Utils.showError(error.message || 'Ошибка при присоединении к группе');
             throw error;
         }
