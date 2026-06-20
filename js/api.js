@@ -109,6 +109,67 @@ const API = {
         }
     },
 
+    async _readResponseError(response) {
+        try {
+            const text = await response.text();
+            if (!text || !text.trim()) {
+                return { empty: true, message: null };
+            }
+            try {
+                const json = JSON.parse(text);
+                return { empty: false, message: json.error || json.message || text };
+            } catch {
+                return { empty: false, message: text };
+            }
+        } catch {
+            return { empty: true, message: null };
+        }
+    },
+
+    _isBusinessAuthorizationError(message) {
+        if (!message) {
+            return true;
+        }
+        const msg = String(message).toLowerCase();
+        return msg.includes('member') ||
+            msg.includes('must be a member') ||
+            msg.includes('only group owner') ||
+            msg.includes('invalid group password') ||
+            msg.includes('password is required');
+    },
+
+    _shouldLogoutOn401(errorInfo) {
+        if (errorInfo.empty) {
+            return false;
+        }
+        if (this._isBusinessAuthorizationError(errorInfo.message)) {
+            return false;
+        }
+        return true;
+    },
+
+    _shouldAttemptRefreshOn401(errorInfo, url) {
+        if (errorInfo.empty) {
+            return false;
+        }
+        if (this._isBusinessAuthorizationError(errorInfo.message)) {
+            return false;
+        }
+        if (url.includes('/members') && !url.includes('/members/role') && !url.includes('/member-role')) {
+            return false;
+        }
+        return true;
+    },
+
+    _handleUnauthorizedRedirect() {
+        const currentPath = window.location.pathname;
+        if (!currentPath.includes('login.html') &&
+            !currentPath.includes('register.html') &&
+            !currentPath.includes('group.html')) {
+            window.location.href = 'login.html';
+        }
+    },
+
     // Базовый метод для HTTP запросов
     async request(url, options = {}) {
         this.initBaseUrls();
@@ -144,30 +205,32 @@ const API = {
                     throw new Error('Unauthorized');
                 }
 
-                // Пытаемся обновить токен
+                const errorInfo = await this._readResponseError(response);
+
+                if (!this._shouldAttemptRefreshOn401(errorInfo, url)) {
+                    throw new Error(errorInfo.message || 'Unauthorized');
+                }
+
                 const refreshed = await this.tryRefreshToken();
-                
+
                 if (refreshed) {
                     this.applyAuthHeader(finalOptions.headers);
                     response = await fetch(url, finalOptions);
-                    
+
                     if (response.status === 401) {
-                        // Refresh не помог, токен недействителен
-                        this.removeToken();
-                        const currentPath = window.location.pathname;
-                        if (!currentPath.includes('login.html') && !currentPath.includes('register.html') && !currentPath.includes('group.html')) {
-                            window.location.href = 'login.html';
+                        const retryError = await this._readResponseError(response);
+                        if (this._shouldLogoutOn401(retryError)) {
+                            this.removeToken();
+                            this._handleUnauthorizedRedirect();
                         }
-                        throw new Error('Unauthorized');
+                        throw new Error(retryError.message || 'Unauthorized');
                     }
                 } else {
-                    // Refresh не удался
-                    this.removeToken();
-                    const currentPath = window.location.pathname;
-                    if (!currentPath.includes('login.html') && !currentPath.includes('register.html') && !currentPath.includes('group.html')) {
-                        window.location.href = 'login.html';
+                    if (this._shouldLogoutOn401(errorInfo)) {
+                        this.removeToken();
+                        this._handleUnauthorizedRedirect();
                     }
-                    throw new Error('Unauthorized');
+                    throw new Error(errorInfo.message || 'Unauthorized');
                 }
             }
             

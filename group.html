@@ -845,17 +845,19 @@
                 document.getElementById('groupName').textContent = group.name;
                 document.getElementById('groupDescription').textContent = group.description || '';
                 
-                // Проверка, является ли пользователь участником
+                // Проверка участия через список групп (без /members для не-участников — иначе 401)
                 let isMember = false;
                 let members = [];
                 try {
-                    members = await Groups.getGroupMembers(currentGroupId);
-                    isMember = members.some(m => m.userId === currentUserId);
+                    const userGroups = await Groups.getUserGroups();
+                    isMember = userGroups.some(g => String(g.id || g.Id) === String(currentGroupId));
+                    if (isMember) {
+                        members = await Groups.getGroupMembers(currentGroupId);
+                    }
                 } catch (membersError) {
-                    // Если не можем получить участников (например, 403), считаем что не участник
-                    console.log('Не удалось получить список участников, считаем что не участник:', membersError);
+                    console.log('Не удалось проверить участие в группе:', membersError);
                     isMember = false;
-                    members = []; // Инициализируем пустым массивом
+                    members = [];
                 }
                 
                 if (!isMember) {
