@@ -94,6 +94,7 @@ code {
 }
 
 .maintenance-banner {
+    display: none;
     background: linear-gradient(90deg, #8b4513 0%, #a0522d 50%, #8b4513 100%);
     border-bottom: 3px solid #dcdcaa;
     color: #fff8e7;
