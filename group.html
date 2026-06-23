@@ -723,7 +723,7 @@
     <script src="js/auth.js"></script>
     <script src="js/groups.js"></script>
     <script src="js/chat.js"></script>
-    <script src="js/audio.js?v=5" onerror="console.error('❌ Ошибка загрузки audio.js'); alert('Ошибка загрузки audio.js. Обновите страницу.');"></script>
+    <script src="js/audio.js?v=6" onerror="console.error('❌ Ошибка загрузки audio.js'); alert('Ошибка загрузки audio.js. Обновите страницу.');"></script>
     <script>
         // Проверка загрузки AudioModule после загрузки скрипта
         (function() {
@@ -2331,7 +2331,12 @@
             updateRnnoiseCheckboxAvailability();
 
             if (useRNNoiseEl) {
-                useRNNoiseEl.checked = settings.useRNNoise === true || audioModule.isRNNoiseEnabled?.() === true;
+                const hasSavedPref = audioModule.hasSavedRNNoisePreference
+                    ? audioModule.hasSavedRNNoisePreference()
+                    : false;
+                useRNNoiseEl.checked = hasSavedPref
+                    ? (settings.useRNNoise === true || audioModule.isRNNoiseEnabled?.() === true)
+                    : true;
             }
 
             if (noiseSuppressionEl) {

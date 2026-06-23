@@ -62,6 +62,7 @@ var AudioModule = {
     micMonitorSideToneSource: null,
     micMonitorSideToneGain: null,
     soundEffectBuffers: null,
+    _pendingDefaultRNNoise: false,
 
     // Авто-реконнект при обрыве сети
     intentionalDisconnect: false,
@@ -734,6 +735,8 @@ var AudioModule = {
     // Присоединиться к Videoroom как Publisher
     async joinAsPublisher(options = {}) {
         console.log('🔌 Присоединяемся к Videoroom как Publisher...');
+
+        this.applyDefaultRNNoiseIfUnset();
         
         const reuseMicrophone = options.reuseMicrophone === true;
         const constraints = this.getAudioConstraints();
@@ -4482,26 +4485,82 @@ var AudioModule = {
 
     loadRNNoiseSetting() {
         try {
-            if (this.audioSettings.useRNNoise === true) {
-                this.rnnoiseEnabled = true;
-                this.audioSettings.noiseSuppression = false;
-                return;
+            const saved = localStorage.getItem('audioSettings');
+            if (saved) {
+                const parsed = JSON.parse(saved);
+                if (Object.prototype.hasOwnProperty.call(parsed, 'useRNNoise')) {
+                    this.rnnoiseEnabled = parsed.useRNNoise === true;
+                    this.audioSettings.useRNNoise = this.rnnoiseEnabled;
+                    if (this.rnnoiseEnabled) {
+                        this.audioSettings.noiseSuppression = false;
+                    }
+                    return;
+                }
             }
 
             const legacy = localStorage.getItem('rnnoiseEnabled');
-            if (legacy === 'true') {
-                this.updateAudioSettings({
-                    useRNNoise: true,
-                    noiseSuppression: false
-                });
+            if (legacy !== null) {
+                this.rnnoiseEnabled = legacy === 'true';
+                this.audioSettings.useRNNoise = this.rnnoiseEnabled;
+                if (this.rnnoiseEnabled) {
+                    this.audioSettings.noiseSuppression = false;
+                }
                 return;
             }
 
-            this.rnnoiseEnabled = this.audioSettings.useRNNoise === true;
+            this.rnnoiseEnabled = false;
+            this.audioSettings.useRNNoise = false;
         } catch (e) {
             this.rnnoiseEnabled = false;
             this.audioSettings.useRNNoise = false;
         }
+    },
+
+    hasSavedRNNoisePreference() {
+        try {
+            const saved = localStorage.getItem('audioSettings');
+            if (saved) {
+                const parsed = JSON.parse(saved);
+                if (Object.prototype.hasOwnProperty.call(parsed, 'useRNNoise')) {
+                    return true;
+                }
+            }
+            return localStorage.getItem('rnnoiseEnabled') !== null;
+        } catch (e) {
+            return false;
+        }
+    },
+
+    applyDefaultRNNoiseIfUnset() {
+        if (this.hasSavedRNNoisePreference()) {
+            this._pendingDefaultRNNoise = false;
+            return false;
+        }
+
+        if (!this.isRNNoiseLibraryAvailable()) {
+            this._pendingDefaultRNNoise = true;
+            return false;
+        }
+
+        this._pendingDefaultRNNoise = false;
+        this.rnnoiseEnabled = true;
+        this.audioSettings.useRNNoise = true;
+        this.audioSettings.noiseSuppression = false;
+        console.log('✅ RNNoise включён по умолчанию (сохранённой настройки нет)');
+        return true;
+    },
+
+    async applyPendingDefaultRNNoise() {
+        if (!this._pendingDefaultRNNoise || this.hasSavedRNNoisePreference()) {
+            return false;
+        }
+        if (!this.applyDefaultRNNoiseIfUnset()) {
+            return false;
+        }
+        if (this.micSourceNode && this.micGainNode) {
+            return this.connectMicToPublishChain();
+        }
+        return true;
     },
     // Дублирующиеся методы удалены - используются методы выше (строки 436 и 453)
 };
@@ -4512,6 +4571,11 @@ var AudioModule = {
     try {
         if (typeof window !== 'undefined') {
             window.AudioModule = AudioModule;
+            window.addEventListener('rnnoise-lib-ready', () => {
+                AudioModule.applyPendingDefaultRNNoise().catch((e) => {
+                    console.warn('applyPendingDefaultRNNoise:', e);
+                });
+            });
             // НЕ перезаписываем window.Audio, так как это встроенный класс браузера
             console.log('✅ AudioModule экспортирован в window.AudioModule');
             console.log('✅ AudioModule методы:', Object.keys(AudioModule).slice(0, 10));
