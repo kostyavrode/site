@@ -3,18 +3,57 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Группы - Audio Chat</title>
+    
+    <!-- Google Search Console verification -->
+    <meta name="google-site-verification" content="PRPqlizLVA5_5EYBf2n--OGEU-3jwQdbdv4002o7UH0" />
+    
+    <!-- SEO Meta Tags -->
+    <title>Группы - Audio Chat | Бесплатный голосовой чат</title>
+    <meta name="description" content="Создавайте группы для голосового общения в Audio Chat. Бесплатный аналог Discord на русском языке с голосовыми каналами.">
+    <meta name="keywords" content="аудио чат группы, создать голосовой канал, audio chat, аналог discord группы, голосовое общение">
+    <meta name="robots" content="index, follow">
+    <link rel="canonical" href="https://audio-chat.ru/groups.html">
+    
+    <!-- Open Graph -->
+    <meta property="og:title" content="Группы - Audio Chat">
+    <meta property="og:description" content="Создавайте группы для голосового общения. Бесплатный аналог Discord.">
+    <meta property="og:url" content="https://audio-chat.ru/groups.html">
+    <meta property="og:type" content="website">
+    
     <link rel="stylesheet" href="css/main.css">
+    <script>
+        // Динамическое изменение названия в зависимости от домена
+        document.addEventListener('DOMContentLoaded', function() {
+            const hostname = window.location.hostname;
+            const brandElement = document.getElementById('navbarBrand');
+            
+            if (brandElement) {
+                if (hostname.includes('audio-chat.ru')) {
+                    brandElement.textContent = 'Audio Chat';
+                } else if (hostname.includes('audio-kostya.online')) {
+                    brandElement.textContent = 'Audio Kostya';
+                }
+                // По умолчанию остается "Audio Kostya" если домен не распознан
+            }
+        });
+    </script>
 </head>
 <body>
     <div class="page-container">
+        <div class="maintenance-banner" role="alert">
+            <div class="maintenance-banner__title">🍫 Ведутся технические шоколадки</div>
+            <p class="maintenance-banner__text">Почему-то упала система авторизации. Завтра надеюсь починю.</p>
+        </div>
         <nav class="navbar">
             <div class="navbar-content">
-                <div class="navbar-brand">Audio Kostya</div>
+                <div class="navbar-brand" id="navbarBrand">Audio Kostya</div>
                 <ul class="navbar-nav">
                     <li><a href="groups.html" class="active">Мои группы</a></li>
                     <li id="auth-nav">
                         <a href="login.html">Вход</a>
+                    </li>
+                    <li id="hidden-stats" style="display: none; color: var(--text-secondary); font-size: 11px; margin-left: var(--spacing-md);">
+                        <span id="stats-text">Загрузка...</span>
                     </li>
                 </ul>
             </div>
@@ -42,20 +81,38 @@
                     </div>
                 </div>
 
-                <!-- Мои группы -->
-                <div id="myGroupsSection">
-                    <h2>Мои группы</h2>
-                    <div id="myGroupsList" class="mb-lg">
-                        <p style="color: var(--text-secondary);">Загрузка...</p>
-                    </div>
-                </div>
+                <!-- Секции групп (порядок меняется при поиске через flex order) -->
+                <div id="groupsSections" style="display: flex; flex-direction: column; gap: var(--spacing-lg);">
 
-                <!-- Результаты поиска -->
-                <div id="searchResultsSection" class="hidden">
-                    <h2>Результаты поиска</h2>
-                    <div id="searchResultsList">
-                        <p style="color: var(--text-secondary);">Введите запрос для поиска</p>
+                    <!-- Мои группы -->
+                    <div id="myGroupsSection" style="order: 1;">
+                        <h2>Мои группы</h2>
+                        <div id="myGroupsList" class="mb-lg">
+                            <p style="color: var(--text-secondary);">Загрузка...</p>
+                        </div>
                     </div>
+
+                    <!-- Глобальные группы -->
+                    <div id="globalGroupsSection" style="order: 2;">
+                        <h2>Глобальные группы</h2>
+                        <div id="globalGroupsList" class="mb-md">
+                            <p style="color: var(--text-secondary);">Загрузка...</p>
+                        </div>
+                        <div id="globalGroupsPagination" class="d-flex gap-sm" style="justify-content: center; align-items: center; flex-wrap: wrap;">
+                            <button type="button" class="btn btn-sm" id="globalGroupsPrev" disabled>← Назад</button>
+                            <span id="globalGroupsPageInfo" style="color: var(--text-secondary); font-size: 13px; min-width: 120px; text-align: center;">Страница 1</span>
+                            <button type="button" class="btn btn-sm" id="globalGroupsNext" disabled>Вперёд →</button>
+                        </div>
+                    </div>
+
+                    <!-- Результаты поиска (вместо глобальных групп) -->
+                    <div id="searchResultsSection" class="hidden" style="order: 1;">
+                        <h2>Результаты поиска</h2>
+                        <div id="searchResultsList">
+                            <p style="color: var(--text-secondary);">Введите запрос для поиска</p>
+                        </div>
+                    </div>
+
                 </div>
             </div>
         </main>
@@ -97,7 +154,31 @@
     <script src="js/auth.js"></script>
     <script src="js/groups.js"></script>
     <script>
+        const GLOBAL_PAGE_SIZE = 10;
         let searchTimeout;
+        let globalGroupsPage = 1;
+        let globalGroupsTotalPages = 1;
+        let isSearchActive = false;
+
+        function setGroupsLayoutMode(mode) {
+            const mySection = document.getElementById('myGroupsSection');
+            const globalSection = document.getElementById('globalGroupsSection');
+            const searchSection = document.getElementById('searchResultsSection');
+
+            isSearchActive = mode === 'search';
+
+            if (isSearchActive) {
+                searchSection.classList.remove('hidden');
+                globalSection.classList.add('hidden');
+                searchSection.style.order = '1';
+                mySection.style.order = '2';
+            } else {
+                searchSection.classList.add('hidden');
+                globalSection.classList.remove('hidden');
+                mySection.style.order = '1';
+                globalSection.style.order = '2';
+            }
+        }
 
         // Проверка авторизации
         document.addEventListener('DOMContentLoaded', async () => {
@@ -125,10 +206,31 @@
                     await Auth.logout();
                     window.location.href = 'groups.html';
                 };
+                
+                // Скрытая статистика (только для администратора)
+                // Проверка по nickname
+                const adminNickname = 'kiberkostya';
+                const userNickname = (user.nickName || '').toLowerCase().trim();
+                if (userNickname === adminNickname.toLowerCase()) {
+                    initHiddenStats();
+                }
             }
 
-            // Загрузка групп пользователя
+            // Загрузка групп
             loadUserGroups();
+            loadGlobalGroups(globalGroupsPage);
+
+            document.getElementById('globalGroupsPrev').addEventListener('click', () => {
+                if (globalGroupsPage > 1) {
+                    loadGlobalGroups(globalGroupsPage - 1);
+                }
+            });
+
+            document.getElementById('globalGroupsNext').addEventListener('click', () => {
+                if (globalGroupsPage < globalGroupsTotalPages) {
+                    loadGlobalGroups(globalGroupsPage + 1);
+                }
+            });
 
             // Поиск
             document.getElementById('searchInput').addEventListener('input', (e) => {
@@ -137,8 +239,8 @@
                 if (query.length > 0) {
                     searchTimeout = setTimeout(() => searchGroups(query), 300);
                 } else {
-                    document.getElementById('searchResultsSection').classList.add('hidden');
-                    document.getElementById('myGroupsSection').classList.remove('hidden');
+                    setGroupsLayoutMode('default');
+                    loadGlobalGroups(globalGroupsPage);
                 }
             });
         });
@@ -162,33 +264,125 @@
                 await Groups.createGroup(name, description || null, password || null);
                 document.getElementById('createGroupModal').classList.add('hidden');
                 document.getElementById('createGroupForm').reset();
-                loadUserGroups();
+                await loadUserGroups();
+                await loadGlobalGroups(globalGroupsPage);
             } catch (error) {
                 submitBtn.disabled = false;
                 submitBtn.textContent = 'Создать';
             }
         });
 
+        function normalizeGroupsResponse(results) {
+            if (Array.isArray(results)) {
+                return results;
+            }
+            return results.groups || results.items || results.Items || [];
+        }
+
+        function extractPaginatedGroups(results, page, pageSize) {
+            const isPlainArray = Array.isArray(results);
+            const allGroups = normalizeGroupsResponse(results);
+
+            const totalCount = isPlainArray
+                ? allGroups.length
+                : (results.totalCount ?? results.TotalCount ?? null);
+
+            let totalPages = isPlainArray
+                ? null
+                : (results.totalPages ?? results.TotalPages ?? null);
+
+            const responsePageSize = isPlainArray
+                ? pageSize
+                : (results.pageSize ?? results.PageSize ?? pageSize);
+
+            if (totalPages === null && totalCount !== null) {
+                totalPages = Math.max(1, Math.ceil(totalCount / responsePageSize));
+            }
+
+            // Сервер вернул все группы одним списком — режем на клиенте
+            if (totalCount !== null && allGroups.length > pageSize) {
+                const start = (page - 1) * pageSize;
+                return {
+                    groups: allGroups.slice(start, start + pageSize),
+                    totalPages: Math.max(1, Math.ceil(totalCount / pageSize))
+                };
+            }
+
+            // Сервер уже отдал одну страницу
+            if (totalCount !== null && allGroups.length <= pageSize) {
+                return {
+                    groups: allGroups,
+                    totalPages: totalPages ?? Math.max(1, Math.ceil(totalCount / pageSize))
+                };
+            }
+
+            // Нет метаданных: если пришло больше pageSize — это полный список
+            if (allGroups.length > pageSize) {
+                const start = (page - 1) * pageSize;
+                return {
+                    groups: allGroups.slice(start, start + pageSize),
+                    totalPages: Math.max(1, Math.ceil(allGroups.length / pageSize))
+                };
+            }
+
+            // Одна страница или последняя
+            return {
+                groups: allGroups,
+                totalPages: Math.max(1, totalPages ?? page)
+            };
+        }
+
+        function updateGlobalGroupsPagination(page, totalPages) {
+            globalGroupsPage = page;
+            globalGroupsTotalPages = totalPages;
+
+            document.getElementById('globalGroupsPageInfo').textContent =
+                totalPages > 1 ? `Страница ${page} из ${totalPages}` : `Страница ${page}`;
+
+            document.getElementById('globalGroupsPrev').disabled = page <= 1;
+            document.getElementById('globalGroupsNext').disabled = page >= totalPages;
+        }
+
+        async function loadGlobalGroups(page = 1) {
+            const listEl = document.getElementById('globalGroupsList');
+            listEl.innerHTML = '<p style="color: var(--text-secondary);">Загрузка...</p>';
+
+            try {
+                const results = await Groups.getBrowseGroups(page, GLOBAL_PAGE_SIZE);
+                const { groups, totalPages } = extractPaginatedGroups(results, page, GLOBAL_PAGE_SIZE);
+
+                updateGlobalGroupsPagination(page, totalPages);
+                displayGroups(groups, 'globalGroupsList');
+            } catch (error) {
+                listEl.innerHTML = '<p style="color: var(--error);">Ошибка при загрузке групп</p>';
+            }
+        }
+
         // Загрузка групп пользователя
         async function loadUserGroups() {
             try {
-                const groups = await Groups.getUserGroups();
+                const groups = normalizeGroupsResponse(await Groups.getUserGroups());
                 displayGroups(groups, 'myGroupsList');
+                return groups;
             } catch (error) {
                 document.getElementById('myGroupsList').innerHTML = '<p style="color: var(--error);">Ошибка при загрузке групп</p>';
+                return [];
             }
         }
 
         // Поиск групп
         async function searchGroups(query) {
+            setGroupsLayoutMode('search');
+
+            const listEl = document.getElementById('searchResultsList');
+            listEl.innerHTML = '<p style="color: var(--text-secondary);">Поиск...</p>';
+
             try {
                 const results = await Groups.searchGroups(query);
-                const groups = Array.isArray(results) ? results : (results.groups || []);
+                const groups = normalizeGroupsResponse(results);
                 displayGroups(groups, 'searchResultsList');
-                document.getElementById('searchResultsSection').classList.remove('hidden');
-                document.getElementById('myGroupsSection').classList.add('hidden');
             } catch (error) {
-                document.getElementById('searchResultsList').innerHTML = '<p style="color: var(--error);">Ошибка при поиске</p>';
+                listEl.innerHTML = '<p style="color: var(--error);">Ошибка при поиске</p>';
             }
         }
 
@@ -219,6 +413,58 @@
                     </div>
                 </div>
             `).join('');
+        }
+        
+        // Скрытая статистика участников аудиоканалов (только для администратора)
+        async function initHiddenStats() {
+            const statsElement = document.getElementById('hidden-stats');
+            const statsText = document.getElementById('stats-text');
+            
+            if (!statsElement || !statsText) return;
+            
+            // Показываем элемент
+            statsElement.style.display = 'block';
+            
+            // Функция получения статистики
+            async function updateStats() {
+                try {
+                    // Получаем ВСЕ группы всех пользователей через поиск с пустым запросом
+                    // Используем большой лимит, чтобы получить все группы
+                    const groups = normalizeGroupsResponse(await Groups.searchGroups('', 1000, 0));
+                    let totalCount = 0;
+                    
+                    console.log(`📊 Получено ${groups.length} групп для статистики`);
+                    
+                    // Для каждой группы получаем все каналы и суммируем участников
+                    for (const group of groups) {
+                        try {
+                            const channels = await API.get(`${API.baseUrls.audio}/api/audio/AudioChannels/groups/${group.id}`);
+                            
+                            for (const channel of channels) {
+                                try {
+                                    const participants = await API.get(`${API.baseUrls.audio}/api/audio/AudioChannels/${channel.id}/participants`);
+                                    totalCount += participants.length || 0;
+                                } catch (e) {
+                                    console.warn('Ошибка получения участников канала:', channel.id, e);
+                                }
+                            }
+                        } catch (e) {
+                            console.warn('Ошибка получения каналов группы:', group.id, e);
+                        }
+                    }
+                    
+                    statsText.textContent = `📊 В каналах: ${totalCount}`;
+                } catch (error) {
+                    console.error('Ошибка получения статистики:', error);
+                    statsText.textContent = 'Ошибка';
+                }
+            }
+            
+            // Обновляем сразу
+            await updateStats();
+            
+            // Обновляем каждые 30 секунд
+            setInterval(updateStats, 30000);
         }
     </script>
 </body>

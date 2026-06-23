@@ -41,6 +41,39 @@ const Chat = {
             }
         });
 
+        // Обработка уведомлений о начале видео-трансляции
+        this.connection.on('VideoStreamStarted', (data) => {
+            console.log('📹 SignalR событие VideoStreamStarted получено от сервера:', data);
+            if (window.onVideoStreamStarted) {
+                console.log('📹 Вызываем window.onVideoStreamStarted');
+                window.onVideoStreamStarted(data);
+            } else {
+                console.warn('⚠️ window.onVideoStreamStarted не определён!');
+            }
+        });
+
+        // Обработка уведомлений об остановке видео-трансляции
+        this.connection.on('VideoStreamStopped', (data) => {
+            console.log('🔴 SignalR событие VideoStreamStopped получено от сервера:', data);
+            if (window.onVideoStreamStopped) {
+                console.log('🔴 Вызываем window.onVideoStreamStopped');
+                window.onVideoStreamStopped(data);
+            } else {
+                console.warn('⚠️ window.onVideoStreamStopped не определён!');
+            }
+        });
+
+        // Обработка списка активных видео-стримов (при подключении)
+        this.connection.on('ActiveVideoStreams', (data) => {
+            console.log('📹 SignalR событие ActiveVideoStreams получено от сервера:', data);
+            if (window.onActiveVideoStreams) {
+                console.log('📹 Вызываем window.onActiveVideoStreams');
+                window.onActiveVideoStreams(data);
+            } else {
+                console.warn('⚠️ window.onActiveVideoStreams не определён!');
+            }
+        });
+
         // Обработка ошибок подключения
         this.connection.onclose((error) => {
             console.error('SignalR connection closed', error);
@@ -96,6 +129,73 @@ const Chat = {
             this.connection = null;
         }
         this.groupId = null;
+    },
+
+    // Уведомить о начале видео-трансляции
+    async startVideoStream(channelId, videoType) {
+        console.log('🔔 Chat.startVideoStream вызван:', {
+            channelId,
+            videoType,
+            groupId: this.groupId,
+            connectionState: this.connection?.state,
+            hasConnection: !!this.connection
+        });
+        
+        if (!this.connection || this.connection.state !== signalR.HubConnectionState.Connected) {
+            console.warn('⚠️ SignalR не подключен, не можем отправить уведомление о видео', {
+                state: this.connection?.state,
+                hasConnection: !!this.connection
+            });
+            return;
+        }
+
+        try {
+            console.log('📤 Вызываем StartVideoStream:', this.groupId, channelId, videoType);
+            await this.connection.invoke('StartVideoStream', this.groupId, channelId, videoType);
+            console.log('✅ Отправлено уведомление о начале видео-трансляции:', videoType);
+        } catch (error) {
+            console.error('❌ Ошибка при отправке уведомления о начале видео:', error);
+        }
+    },
+
+    // Уведомить об остановке видео-трансляции
+    async stopVideoStream(channelId) {
+        if (!this.connection || this.connection.state !== signalR.HubConnectionState.Connected) {
+            console.warn('SignalR не подключен, не можем отправить уведомление о видео');
+            return;
+        }
+
+        try {
+            await this.connection.invoke('StopVideoStream', this.groupId, channelId);
+            console.log('✅ Отправлено уведомление об остановке видео-трансляции');
+        } catch (error) {
+            console.error('Ошибка при отправке уведомления об остановке видео:', error);
+        }
+    },
+
+    // Запросить список активных видео-стримов
+    async getActiveVideoStreams(channelId) {
+        console.log('🔔 Chat.getActiveVideoStreams вызван:', {
+            channelId,
+            connectionState: this.connection?.state,
+            hasConnection: !!this.connection
+        });
+        
+        if (!this.connection || this.connection.state !== signalR.HubConnectionState.Connected) {
+            console.warn('⚠️ SignalR не подключен, не можем запросить активные видео-стримы', {
+                state: this.connection?.state,
+                hasConnection: !!this.connection
+            });
+            return;
+        }
+
+        try {
+            console.log('📤 Вызываем GetActiveVideoStreams:', channelId);
+            await this.connection.invoke('GetActiveVideoStreams', channelId);
+            console.log('✅ Запрошен список активных видео-стримов для канала:', channelId);
+        } catch (error) {
+            console.error('❌ Ошибка при запросе активных видео-стримов:', error);
+        }
     },
 
     // Получить историю сообщений

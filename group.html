@@ -3,7 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Группа - Audio Chat</title>
+    
+    <!-- SEO Meta Tags -->
+    <title>Голосовой канал - Audio Chat | Бесплатный аналог Discord</title>
+    <meta name="description" content="Голосовое общение в Audio Chat. Бесплатный голосовой чат на русском - альтернатива Discord с демонстрацией экрана.">
+    <meta name="keywords" content="аудио чат, голосовой канал, audio chat, аналог discord, голосовое общение, демонстрация экрана">
+    <meta name="robots" content="noindex, nofollow">
+    
     <link rel="stylesheet" href="css/main.css">
     <script src="https://unpkg.com/@microsoft/signalr@7.0.0/dist/browser/signalr.min.js"></script>
     <!-- WebRTC Adapter - должен загружаться ДО Janus -->
@@ -119,11 +125,42 @@
             grid-template-columns: 300px 1fr 250px;
             gap: var(--spacing-md);
             height: calc(100vh - 200px);
+            min-height: 0;
+            align-items: stretch;
+        }
+        
+        .sidebar,
+        .main-content,
+        .audio-channels {
+            height: 100%;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
         }
         
         .sidebar {
-            overflow-y: auto;
             border-right: 1px solid var(--border-color);
+        }
+
+        .group-column-header {
+            flex-shrink: 0;
+            margin-bottom: var(--spacing-md);
+        }
+
+        .group-column-header h3 {
+            margin-bottom: 0;
+        }
+
+        #membersList,
+        #audioChannelsList {
+            flex: 1;
+            min-height: 0;
+            overflow-y: auto;
+        }
+
+        #audioParticipantsSection {
+            flex-shrink: 0;
         }
         
         .main-content {
@@ -137,10 +174,27 @@
             display: flex;
             flex-direction: column;
             overflow: hidden;
+            min-height: 0;
+        }
+        
+        .audio-channel-controls {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: var(--spacing-xs);
+            margin-top: var(--spacing-sm);
+        }
+        
+        .audio-channel-controls .join-audio-btn {
+            grid-column: 1 / -1;
+        }
+        
+        .audio-channel-controls .audio-watch-btn {
+            grid-column: 1 / -1;
         }
         
         .messages-container {
             flex: 1;
+            min-height: 0;
             overflow-y: auto;
             padding: var(--spacing-md);
             background-color: var(--bg-primary);
@@ -177,6 +231,7 @@
         }
         
         .chat-input-container {
+            flex-shrink: 0;
             border-top: 1px solid var(--border-color);
             padding: var(--spacing-md);
             background-color: var(--bg-secondary);
@@ -192,7 +247,6 @@
         }
         
         .audio-channels {
-            overflow-y: auto;
             border-left: 1px solid var(--border-color);
         }
         
@@ -205,7 +259,7 @@
         }
         
         .audio-channel.active {
-            border-color: var(--accent-green);
+            border-color: var(--accent-blue);
         }
         
         .audio-controls {
@@ -214,28 +268,50 @@
             margin-top: var(--spacing-sm);
         }
         
+        /* Планшеты - скрываем участников, оставляем аудиоканалы */
         @media (max-width: 1200px) {
             .group-layout {
-                grid-template-columns: 250px 1fr;
+                grid-template-columns: 1fr 250px;
             }
-            .audio-channels {
+            .sidebar {
                 display: none;
             }
         }
         
-        /* Мобильные устройства */
+        /* Мобильные устройства - аудиоканалы слева */
         @media (max-width: 768px) {
             .group-layout {
-                grid-template-columns: 1fr;
+                grid-template-columns: 200px 1fr;
+                gap: var(--spacing-sm);
             }
             .sidebar {
                 display: none;
             }
             .audio-channels {
-                display: none;
+                display: block;
+                order: -1; /* Перемещаем аудиоканалы влево */
+                border-right: 1px solid var(--border-color);
+                border-left: none;
+            }
+            .main-content {
+                order: 1;
             }
             #mobileAudioBtn {
-                display: inline-block;
+                display: none; /* Кнопка не нужна, т.к. аудиоканалы видны */
+            }
+        }
+        
+        /* Очень маленькие экраны */
+        @media (max-width: 480px) {
+            .group-layout {
+                grid-template-columns: 150px 1fr;
+            }
+            .audio-channels h3 {
+                font-size: 14px;
+            }
+            .audio-channels .btn-sm {
+                padding: 2px 6px;
+                font-size: 10px;
             }
         }
         
@@ -245,7 +321,7 @@
             }
         }
         
-        /* Модальное окно аудиоканалов - скрыто по умолчанию */
+        /* Модальное окно аудиоканалов - больше не нужно на мобильных */
         .audio-channels-modal {
             display: none;
         }
@@ -253,17 +329,154 @@
         .audio-channels-modal.active {
             display: flex;
         }
+
+        /* Тёмные полосы прокрутки */
+        .sidebar,
+        .messages-container,
+        .audio-channels,
+        #mobileAudioChannelsList,
+        [id^="audioParticipantsContainer-"] {
+            scrollbar-width: thin;
+            scrollbar-color: #3e3e42 #1e1e1e;
+        }
+
+        .sidebar::-webkit-scrollbar,
+        .messages-container::-webkit-scrollbar,
+        .audio-channels::-webkit-scrollbar,
+        #mobileAudioChannelsList::-webkit-scrollbar,
+        [id^="audioParticipantsContainer-"]::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        .sidebar::-webkit-scrollbar-track,
+        .messages-container::-webkit-scrollbar-track,
+        .audio-channels::-webkit-scrollbar-track,
+        #mobileAudioChannelsList::-webkit-scrollbar-track,
+        [id^="audioParticipantsContainer-"]::-webkit-scrollbar-track {
+            background: #1e1e1e;
+        }
+
+        .sidebar::-webkit-scrollbar-thumb,
+        .messages-container::-webkit-scrollbar-thumb,
+        .audio-channels::-webkit-scrollbar-thumb,
+        #mobileAudioChannelsList::-webkit-scrollbar-thumb,
+        [id^="audioParticipantsContainer-"]::-webkit-scrollbar-thumb {
+            background: #3e3e42;
+            border: 1px solid #2d2d30;
+            border-radius: 4px;
+        }
+
+        .sidebar::-webkit-scrollbar-thumb:hover,
+        .messages-container::-webkit-scrollbar-thumb:hover,
+        .audio-channels::-webkit-scrollbar-thumb:hover,
+        #mobileAudioChannelsList::-webkit-scrollbar-thumb:hover,
+        [id^="audioParticipantsContainer-"]::-webkit-scrollbar-thumb:hover {
+            background: #569cd6;
+        }
+
+        /* Тёмные слайдеры громкости */
+        .sidebar input[type="range"],
+        .audio-channels input[type="range"],
+        .audio-participants-list input[type="range"],
+        [id^="audioParticipantsContainer-"] input[type="range"],
+        .participant-volume-slider {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 100%;
+            height: 6px;
+            background: transparent;
+            border: none;
+            border-radius: 3px;
+            outline: none;
+            cursor: pointer;
+            accent-color: #569cd6;
+        }
+
+        .sidebar input[type="range"]::-webkit-slider-runnable-track,
+        .audio-channels input[type="range"]::-webkit-slider-runnable-track,
+        .audio-participants-list input[type="range"]::-webkit-slider-runnable-track,
+        [id^="audioParticipantsContainer-"] input[type="range"]::-webkit-slider-runnable-track,
+        .participant-volume-slider::-webkit-slider-runnable-track {
+            height: 6px;
+            background: #2d2d30;
+            border: 1px solid #3e3e42;
+            border-radius: 3px;
+        }
+
+        .sidebar input[type="range"]::-webkit-slider-thumb,
+        .audio-channels input[type="range"]::-webkit-slider-thumb,
+        .audio-participants-list input[type="range"]::-webkit-slider-thumb,
+        [id^="audioParticipantsContainer-"] input[type="range"]::-webkit-slider-thumb,
+        .participant-volume-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 14px;
+            height: 14px;
+            margin-top: -5px;
+            background: #569cd6;
+            border: 1px solid #3e3e42;
+            border-radius: 50%;
+            cursor: pointer;
+        }
+
+        .sidebar input[type="range"]::-moz-range-track,
+        .audio-channels input[type="range"]::-moz-range-track,
+        .audio-participants-list input[type="range"]::-moz-range-track,
+        [id^="audioParticipantsContainer-"] input[type="range"]::-moz-range-track,
+        .participant-volume-slider::-moz-range-track {
+            height: 6px;
+            background: #2d2d30;
+            border: 1px solid #3e3e42;
+            border-radius: 3px;
+        }
+
+        .sidebar input[type="range"]::-moz-range-thumb,
+        .audio-channels input[type="range"]::-moz-range-thumb,
+        .audio-participants-list input[type="range"]::-moz-range-thumb,
+        [id^="audioParticipantsContainer-"] input[type="range"]::-moz-range-thumb,
+        .participant-volume-slider::-moz-range-thumb {
+            width: 14px;
+            height: 14px;
+            background: #569cd6;
+            border: 1px solid #3e3e42;
+            border-radius: 50%;
+            cursor: pointer;
+        }
     </style>
+    <script>
+        // Динамическое изменение названия в зависимости от домена
+        document.addEventListener('DOMContentLoaded', function() {
+            const hostname = window.location.hostname;
+            const brandElement = document.getElementById('navbarBrand');
+            
+            if (brandElement) {
+                if (hostname.includes('audio-chat.ru')) {
+                    brandElement.textContent = 'Audio Chat';
+                } else if (hostname.includes('audio-kostya.online')) {
+                    brandElement.textContent = 'Audio Kostya';
+                }
+                // По умолчанию остается "Audio Kostya" если домен не распознан
+            }
+        });
+    </script>
 </head>
 <body>
     <div class="page-container">
+        <div class="maintenance-banner" role="alert">
+            <div class="maintenance-banner__title">🍫 Ведутся технические шоколадки</div>
+            <p class="maintenance-banner__text">Почему-то упала система авторизации. Завтра надеюсь починю.</p>
+        </div>
         <nav class="navbar">
             <div class="navbar-content">
-                <div class="navbar-brand">Audio Kostya</div>
+                <div class="navbar-brand" id="navbarBrand">Audio Kostya</div>
                 <ul class="navbar-nav">
                     <li><a href="groups.html">Мои группы</a></li>
                     <li id="auth-nav">
                         <a href="login.html">Вход</a>
+                    </li>
+                    <li id="hidden-stats" style="display: none; color: var(--text-secondary); font-size: 11px; margin-left: var(--spacing-md);">
+                        <span id="stats-text">Загрузка...</span>
                     </li>
                 </ul>
             </div>
@@ -286,14 +499,17 @@
                 <div class="group-layout">
                     <!-- Участники -->
                     <div class="sidebar">
-                        <h3 style="margin-bottom: var(--spacing-md);">Участники группы</h3>
+                        <div class="group-column-header d-flex" style="justify-content: space-between; align-items: center;">
+                            <h3>Участники группы</h3>
+                            <div id="membersHeaderActions"></div>
+                        </div>
                         <div id="membersList">
                             <p style="color: var(--text-secondary);">Загрузка...</p>
                         </div>
                         
                         <!-- Участники аудио канала -->
                         <div id="audioParticipantsSection" style="display: none; margin-top: var(--spacing-lg); padding-top: var(--spacing-lg); border-top: 1px solid var(--border-color);">
-                            <h3 style="margin-bottom: var(--spacing-md);">🎤 В аудио канале</h3>
+                            <h3 style="margin-bottom: var(--spacing-md);">В аудио канале</h3>
                             <div id="audioParticipantsList">
                                 <p style="color: var(--text-secondary);">Загрузка...</p>
                             </div>
@@ -302,6 +518,9 @@
 
                     <!-- Чат -->
                     <div class="main-content">
+                        <div class="group-column-header">
+                            <h3>Чат</h3>
+                        </div>
                         <div class="chat-container">
                             <div class="messages-container" id="messagesContainer">
                                 <p style="color: var(--text-secondary); text-align: center;">Загрузка сообщений...</p>
@@ -323,7 +542,7 @@
 
                     <!-- Аудио каналы -->
                     <div class="audio-channels">
-                        <div class="d-flex" style="justify-content: space-between; align-items: center; margin-bottom: var(--spacing-md);">
+                        <div class="group-column-header d-flex" style="justify-content: space-between; align-items: center;">
                             <h3>Аудио каналы</h3>
                             <button class="btn btn-sm btn-primary" id="createAudioChannelBtn">+</button>
                         </div>
@@ -383,24 +602,11 @@
             </div>
             <div class="card-body">
                 <div class="form-group">
-                    <div style="padding: var(--spacing-sm);">
-                        <strong>RNNoise (AI-шумоподавление)</strong>
-                        <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px; margin-bottom: var(--spacing-sm);">
-                            Улучшенное подавление клавиатуры и фона. При включении браузерное шумоподавление отключается автоматически.
-                        </div>
-                        <button type="button" id="rnnoiseToggleBtn" class="btn btn-primary" style="width: 100%;">
-                            Включить RNNoise
-                        </button>
-                        <div id="rnnoiseStatusHint" style="font-size: 12px; color: var(--text-secondary); margin-top: var(--spacing-sm);"></div>
-                    </div>
-                </div>
-
-                <div class="form-group" style="margin-top: var(--spacing-md);">
                     <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: var(--spacing-sm);">
                         <span>
-                            <strong>Шумоподавление браузера</strong>
+                            <strong>Шумоподавление</strong>
                             <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">
-                                Стандартная обработка WebRTC. Не используется вместе с RNNoise.
+                                Убирает фоновые шумы (вентилятор, клавиатура и т.д.)
                             </div>
                         </span>
                         <input type="checkbox" id="noiseSuppression" class="form-checkbox" checked style="width: 20px; height: 20px;">
@@ -466,15 +672,28 @@
         </div>
     </div>
 
+    <!-- Модальное окно ошибки -->
+    <div id="errorModal" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 1003;">
+        <div class="card" style="max-width: 400px; width: 90%;">
+            <div class="card-header">
+                <h3 class="card-title" style="color: var(--error);">Ошибка</h3>
+            </div>
+            <div class="card-body">
+                <p id="errorModalMessage" style="margin-bottom: var(--spacing-md);"></p>
+                <button type="button" id="errorModalCloseBtn" class="btn btn-primary" style="width: 100%;">OK</button>
+            </div>
+        </div>
+    </div>
+
     <!-- RNNoise библиотека через CDN -->
     <script src="https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@1.5.0/dist/web-noise-suppressor.min.js"></script>
-
+    
     <script src="js/api.js"></script>
     <script src="js/utils.js"></script>
     <script src="js/auth.js"></script>
     <script src="js/groups.js"></script>
     <script src="js/chat.js"></script>
-    <script src="js/audio.js" onerror="console.error('❌ Ошибка загрузки audio.js'); alert('Ошибка загрузки audio.js. Обновите страницу.');"></script>
+    <script src="js/audio.js?v=2" onerror="console.error('❌ Ошибка загрузки audio.js'); alert('Ошибка загрузки audio.js. Обновите страницу.');"></script>
     <script>
         // Проверка загрузки AudioModule после загрузки скрипта
         (function() {
@@ -492,6 +711,11 @@
         let currentNickName = 'User';
         let currentAudioChannel = null;
         let currentParticipantId = null;
+        let currentGroupHasPassword = false;
+        let currentCanCreateAudioChannel = false;
+        let isEditingRoles = false;
+        let currentMembersList = [];
+        let pendingRoleChanges = {};
         
         // Функция для получения Audio модуля
         function getAudioModule() {
@@ -531,11 +755,12 @@
             // Проверка авторизации
             const isAuth = await Auth.isAuthenticated();
             if (!isAuth) {
-                window.location.href = 'login.html';
+                const returnPath = window.location.pathname + window.location.search;
+                window.location.href = `login.html?return=${encodeURIComponent(returnPath)}`;
                 return;
             }
 
-            // Запускаем автоматическое обновление токена каждые 29 минут
+            // Запускаем автоматическое обновление токена
             API.startAutoRefresh();
 
             // Обновление навигации
@@ -560,6 +785,14 @@
                     await Auth.logout();
                     window.location.href = 'groups.html';
                 };
+                
+                // Скрытая статистика (только для администратора)
+                // Проверка по nickname
+                const adminNickname = 'kiberkostya';
+                const userNickname = (user.nickName || '').toLowerCase().trim();
+                if (userNickname === adminNickname.toLowerCase()) {
+                    initHiddenStats();
+                }
             }
 
             // Получение ID группы из URL
@@ -575,24 +808,57 @@
             await loadGroup();
         });
 
+        function isGroupPasswordProtected() {
+            return currentGroupHasPassword;
+        }
+
+        async function joinCurrentGroup(password = null) {
+            const result = await Groups.joinGroup(currentGroupId, password);
+            document.getElementById('joinGroupModal').classList.add('hidden');
+            document.getElementById('joinGroupForm').reset();
+            await loadGroup();
+            return result;
+        }
+
+        function handleJoinGroupClick() {
+            if (isGroupPasswordProtected()) {
+                document.getElementById('joinGroupModal').classList.remove('hidden');
+                return;
+            }
+            joinCurrentGroup(null).catch(() => {});
+        }
+
+        function setupJoinButtons() {
+            document.getElementById('joinGroupBtn').style.display = 'block';
+            document.getElementById('joinGroupBtn').onclick = handleJoinGroupClick;
+
+            const inlineBtn = document.getElementById('joinGroupBtnInline');
+            if (inlineBtn) {
+                inlineBtn.onclick = handleJoinGroupClick;
+            }
+        }
+
         // Загрузка информации о группе
         async function loadGroup() {
             try {
                 const group = await Groups.getGroupById(currentGroupId);
+                currentGroupHasPassword = !!(group.hasPassword ?? group.HasPassword);
                 document.getElementById('groupName').textContent = group.name;
                 document.getElementById('groupDescription').textContent = group.description || '';
                 
-                // Проверка, является ли пользователь участником
+                // Проверка участия через список групп (без /members для не-участников — иначе 401)
                 let isMember = false;
                 let members = [];
                 try {
-                    members = await Groups.getGroupMembers(currentGroupId);
-                    isMember = members.some(m => m.userId === currentUserId);
+                    const userGroups = await Groups.getUserGroups();
+                    isMember = userGroups.some(g => String(g.id || g.Id) === String(currentGroupId));
+                    if (isMember) {
+                        members = await Groups.getGroupMembers(currentGroupId);
+                    }
                 } catch (membersError) {
-                    // Если не можем получить участников (например, 403), считаем что не участник
-                    console.log('Не удалось получить список участников, считаем что не участник:', membersError);
+                    console.log('Не удалось проверить участие в группе:', membersError);
                     isMember = false;
-                    members = []; // Инициализируем пустым массивом
+                    members = [];
                 }
                 
                 if (!isMember) {
@@ -622,17 +888,11 @@
                         `;
                         groupContent.appendChild(messageDiv);
                         
-                        // Обработчик кнопки присоединения
-                        document.getElementById('joinGroupBtnInline').onclick = () => {
-                            document.getElementById('joinGroupModal').classList.remove('hidden');
-                        };
+                        setupJoinButtons();
+                    } else {
+                        setupJoinButtons();
                     }
                     
-                    // Показываем кнопку в заголовке
-                    document.getElementById('joinGroupBtn').style.display = 'block';
-                    document.getElementById('joinGroupBtn').onclick = () => {
-                        document.getElementById('joinGroupModal').classList.remove('hidden');
-                    };
                     return;
                 }
 
@@ -655,35 +915,11 @@
                 document.getElementById('joinGroupBtn').style.display = 'none';
 
                 // Загрузка участников
+                currentCanCreateAudioChannel = canUserCreateAudioChannel(members);
                 displayMembers(members);
 
-                // Инициализация baseUrls если еще не инициализированы
-                if (!API.baseUrls.auth || !API.baseUrls.groups || !API.baseUrls.chat || !API.baseUrls.audio || !API.baseUrls.notification) {
-                    const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
-                    const host = window.location.hostname;
-                    const port = window.location.port ? `:${window.location.port}` : '';
-                    const baseUrl = `${protocol}//${host}${port}`;
-                    
-                    // На продакшене используем baseUrl без портов (через nginx)
-                    // На localhost используем порты напрямую
-                    const isProduction = host !== 'localhost' && host !== '127.0.0.1';
-                    
-                    if (isProduction) {
-                        // Продакшен: все через nginx без портов
-                        API.baseUrls.auth = API.baseUrls.auth || baseUrl;
-                        API.baseUrls.groups = API.baseUrls.groups || baseUrl;
-                        API.baseUrls.chat = API.baseUrls.chat || baseUrl;
-                        API.baseUrls.audio = API.baseUrls.audio || baseUrl;
-                        API.baseUrls.notification = API.baseUrls.notification || baseUrl;
-                    } else {
-                        // Локальная разработка: используем порты
-                        API.baseUrls.auth = API.baseUrls.auth || `${baseUrl.replace(/:\d+$/, '')}:5001`;
-                        API.baseUrls.groups = API.baseUrls.groups || `${baseUrl.replace(/:\d+$/, '')}:5002`;
-                        API.baseUrls.chat = API.baseUrls.chat || `${baseUrl.replace(/:\d+$/, '')}:5003`;
-                        API.baseUrls.audio = API.baseUrls.audio || `${baseUrl.replace(/:\d+$/, '')}:5004`;
-                        API.baseUrls.notification = API.baseUrls.notification || `${baseUrl.replace(/:\d+$/, '')}:5005`;
-                    }
-                }
+                // Инициализация baseUrls
+                API.initBaseUrls();
 
                 // Инициализация чата
                 await Chat.init(currentGroupId);
@@ -730,17 +966,10 @@
                         `;
                         groupContent.appendChild(messageDiv);
                         
-                        // Обработчик кнопки присоединения
-                        document.getElementById('joinGroupBtnInline').onclick = () => {
-                            document.getElementById('joinGroupModal').classList.remove('hidden');
-                        };
+                        setupJoinButtons();
+                    } else {
+                        setupJoinButtons();
                     }
-                    
-                    // Показываем кнопку в заголовке
-                    document.getElementById('joinGroupBtn').style.display = 'block';
-                    document.getElementById('joinGroupBtn').onclick = () => {
-                        document.getElementById('joinGroupModal').classList.remove('hidden');
-                    };
                 } else {
                     Utils.showError(error.message || 'Ошибка при загрузке группы');
                 }
@@ -748,19 +977,238 @@
         }
 
         // Отображение участников
+        function getMemberRole(member) {
+            return String(member.role || member.Role || 'Member').toLowerCase();
+        }
+
+        function isMemberOwner(member) {
+            return getMemberRole(member) === 'owner';
+        }
+
+        function isMemberAdminOrOwner(member) {
+            const role = getMemberRole(member);
+            return role === 'owner' || role === 'admin';
+        }
+
+        function isCurrentUserOwner(members) {
+            if (!members || !Array.isArray(members)) return false;
+            const currentMember = members.find(m => isCurrentMember(m));
+            return currentMember ? isMemberOwner(currentMember) : false;
+        }
+
+        function getRoleLabel(role) {
+            const normalized = String(role || 'Member').toLowerCase();
+            if (normalized === 'owner') return 'Владелец';
+            if (normalized === 'admin') return 'Админ';
+            return 'Участник';
+        }
+
+        function getMemberUserId(member) {
+            return member.userId || member.UserId || '';
+        }
+
+        function getAssignableRoleFromMember(member) {
+            return getMemberRole(member) === 'admin' ? 'Admin' : 'Member';
+        }
+
+        function startEditingRoles() {
+            isEditingRoles = true;
+            pendingRoleChanges = {};
+            currentMembersList.forEach(member => {
+                const memberUserId = getMemberUserId(member);
+                if (!isMemberOwner(member) && !isCurrentMember(member) && memberUserId) {
+                    pendingRoleChanges[memberUserId] = getAssignableRoleFromMember(member);
+                }
+            });
+            updateMembersHeader(currentMembersList);
+            displayMembers(currentMembersList);
+        }
+
+        function cancelEditingRoles() {
+            isEditingRoles = false;
+            pendingRoleChanges = {};
+            updateMembersHeader(currentMembersList);
+            displayMembers(currentMembersList);
+        }
+
+        async function saveRoleChanges() {
+            if (!currentGroupId) return;
+
+            const saveBtn = document.getElementById('saveRolesBtn');
+            if (saveBtn) {
+                saveBtn.disabled = true;
+                saveBtn.textContent = 'Сохранение...';
+            }
+
+            try {
+                const updates = [];
+                for (const [userId, newRole] of Object.entries(pendingRoleChanges)) {
+                    const member = currentMembersList.find(m => getMemberUserId(m) === userId);
+                    if (!member) continue;
+                    if (newRole !== getAssignableRoleFromMember(member)) {
+                        updates.push({ userId, newRole });
+                    }
+                }
+
+                for (const { userId, newRole } of updates) {
+                    await Groups.updateMemberRole(currentGroupId, userId, newRole, { showSuccess: false });
+                }
+
+                isEditingRoles = false;
+                pendingRoleChanges = {};
+
+                const members = await Groups.getGroupMembers(currentGroupId);
+                currentMembersList = members;
+                currentCanCreateAudioChannel = canUserCreateAudioChannel(members);
+                updateMembersHeader(members);
+                displayMembers(members);
+
+                if (updates.length > 0) {
+                    Utils.showSuccess('Роли участников обновлены');
+                }
+            } catch (error) {
+                console.error('Failed to save role changes:', error);
+                Utils.showError(error.message || 'Ошибка при сохранении ролей');
+            } finally {
+                if (saveBtn) {
+                    saveBtn.disabled = false;
+                    saveBtn.textContent = 'Сохранить';
+                }
+            }
+        }
+
+        function updateMembersHeader(members) {
+            const container = document.getElementById('membersHeaderActions');
+            if (!container) return;
+
+            const membersData = members || currentMembersList;
+            if (!isCurrentUserOwner(membersData)) {
+                container.innerHTML = '';
+                return;
+            }
+
+            if (isEditingRoles) {
+                container.innerHTML = `
+                    <div style="display: flex; gap: var(--spacing-sm);">
+                        <button type="button" class="btn btn-sm" id="cancelRolesBtn">Отменить</button>
+                        <button type="button" class="btn btn-sm btn-primary" id="saveRolesBtn">Сохранить</button>
+                    </div>
+                `;
+                document.getElementById('cancelRolesBtn')?.addEventListener('click', cancelEditingRoles);
+                document.getElementById('saveRolesBtn')?.addEventListener('click', saveRoleChanges);
+            } else {
+                container.innerHTML = '<button type="button" class="btn btn-sm" id="editRolesBtn">Изменить роли</button>';
+                document.getElementById('editRolesBtn')?.addEventListener('click', startEditingRoles);
+            }
+        }
+
+        function canUserCreateAudioChannel(members) {
+            if (!members || !Array.isArray(members)) return false;
+            const currentMember = members.find(m => isCurrentMember(m));
+            return currentMember ? isMemberAdminOrOwner(currentMember) : false;
+        }
+
+        function showErrorModal(message) {
+            const modal = document.getElementById('errorModal');
+            const messageEl = document.getElementById('errorModalMessage');
+            if (!modal || !messageEl) {
+                Utils.showError(message);
+                return;
+            }
+            messageEl.textContent = message;
+            modal.classList.remove('hidden');
+        }
+
+        function hideErrorModal() {
+            document.getElementById('errorModal')?.classList.add('hidden');
+        }
+
+        function isCurrentMember(member) {
+            if (currentUserId && member.userId && String(member.userId) === String(currentUserId)) {
+                return true;
+            }
+            const memberName = (member.nickName || member.displayName || '').toLowerCase().trim();
+            const myName = (currentNickName || '').toLowerCase().trim();
+            return memberName && myName && memberName === myName;
+        }
+
+        async function leaveCurrentGroup() {
+            if (!currentGroupId) return;
+
+            try {
+                const audioModule = getAudioModule();
+                if (audioModule) {
+                    await audioModule.disconnect();
+                }
+                await Chat.leaveGroup();
+                await Groups.leaveGroup(currentGroupId);
+                window.location.href = 'groups.html';
+            } catch (error) {
+                // Ошибка уже показана в Groups.leaveGroup
+            }
+        }
+
         function displayMembers(members) {
             const container = document.getElementById('membersList');
+            currentMembersList = members || [];
+            updateMembersHeader(currentMembersList);
+
             if (!members || members.length === 0) {
                 container.innerHTML = '<p style="color: var(--text-secondary);">Участники не найдены</p>';
                 return;
             }
 
-            container.innerHTML = members.map(member => `
-                <div style="padding: var(--spacing-sm); margin-bottom: var(--spacing-sm); background-color: var(--bg-secondary); border-radius: var(--border-radius);">
-                    <div style="font-weight: 600;">${Utils.escapeHtml(member.nickName || member.userId || 'Пользователь')}</div>
-                    <div style="font-size: 12px; color: var(--text-secondary);">${member.role || 'Member'}</div>
+            const sortedMembers = [...members].sort((a, b) => {
+                const aIsMe = isCurrentMember(a);
+                const bIsMe = isCurrentMember(b);
+                if (aIsMe && !bIsMe) return -1;
+                if (!aIsMe && bIsMe) return 1;
+                return 0;
+            });
+
+            container.innerHTML = sortedMembers.map(member => {
+                const isYou = isCurrentMember(member);
+                const showLeaveButton = isYou && !isMemberOwner(member) && !isEditingRoles;
+                const showRoleSelect = isEditingRoles && isCurrentUserOwner(members) && !isMemberOwner(member) && !isYou;
+                const memberUserId = getMemberUserId(member);
+                const selectedRole = pendingRoleChanges[memberUserId] || getAssignableRoleFromMember(member);
+
+                return `
+                <div style="padding: var(--spacing-sm); margin-bottom: var(--spacing-sm); background-color: var(--bg-secondary); border-radius: var(--border-radius);${isYou ? ' border-left: 3px solid var(--accent-blue);' : ''}">
+                    <div style="display: flex; align-items: center; justify-content: space-between; gap: var(--spacing-sm);">
+                        <div style="min-width: 0;">
+                            <div style="font-weight: 600;${isYou ? ' color: var(--accent-blue);' : ''}">
+                                ${Utils.escapeHtml(member.nickName || member.userId || 'Пользователь')}${isYou ? ' (Вы)' : ''}
+                            </div>
+                            ${showRoleSelect ? '' : `<div style="font-size: 12px; color: var(--text-secondary);">${Utils.escapeHtml(getRoleLabel(member.role || member.Role))}</div>`}
+                        </div>
+                        <div style="display: flex; align-items: center; gap: var(--spacing-sm); flex-shrink: 0;">
+                            ${showRoleSelect ? `
+                                <select class="member-role-select" data-user-id="${Utils.escapeHtml(memberUserId)}" style="font-size: 12px; padding: 4px 8px;">
+                                    <option value="Member" ${selectedRole === 'Member' ? 'selected' : ''}>Участник</option>
+                                    <option value="Admin" ${selectedRole === 'Admin' ? 'selected' : ''}>Админ</option>
+                                </select>
+                            ` : ''}
+                            ${showLeaveButton ? `
+                                <button type="button" class="btn btn-sm leave-group-btn" title="Покинуть группу">Покинуть</button>
+                            ` : ''}
+                        </div>
+                    </div>
                 </div>
-            `).join('');
+            `;
+            }).join('');
+
+            container.querySelectorAll('.leave-group-btn').forEach(btn => {
+                btn.addEventListener('click', leaveCurrentGroup);
+            });
+
+            container.querySelectorAll('.member-role-select').forEach(select => {
+                select.addEventListener('change', (event) => {
+                    const target = event.target;
+                    const userId = target.dataset.userId;
+                    pendingRoleChanges[userId] = target.value;
+                });
+            });
         }
 
         // Загрузка сообщений
@@ -831,10 +1279,53 @@
                 }
             }
         };
+
+        window.onAudioReconnecting = () => {
+            if (!currentAudioChannel) return;
+            const indicator = document.getElementById(`micIndicator-${currentAudioChannel}`);
+            if (indicator) {
+                indicator.textContent = '🔄';
+            }
+            const statusDiv = document.getElementById(`audioStatus-${currentAudioChannel}`);
+            if (statusDiv) {
+                statusDiv.style.display = 'block';
+                statusDiv.textContent = 'Переподключение...';
+            }
+        };
+
+        window.onAudioReconnected = () => {
+            if (!currentAudioChannel) return;
+            const indicator = document.getElementById(`micIndicator-${currentAudioChannel}`);
+            if (indicator) {
+                indicator.textContent = '🎤 🔊';
+            }
+            const statusDiv = document.getElementById(`audioStatus-${currentAudioChannel}`);
+            if (statusDiv) {
+                statusDiv.textContent = '';
+            }
+            const audioModule = getAudioModule();
+            if (audioModule) {
+                audioModule.requestPublishersList();
+            }
+        };
+
+        window.onAudioReconnectFailed = () => {
+            Utils.showError('Не удалось переподключиться к аудио каналу. Нажмите «Отключиться» и подключитесь снова.');
+        };
         
         // Хранилище регуляторов громкости для каждого пользователя
         const participantVolumeControls = new Map();
         
+        function formatChannelParticipantsList(participants) {
+            if (!participants || participants.length === 0) {
+                return '<span style="color: var(--text-secondary);">Пусто</span>';
+            }
+            return participants.map(p => {
+                const name = Utils.escapeHtml(p.displayName || p.display || p.name || 'User');
+                return `<div style="line-height: 1.6;">${name}</div>`;
+            }).join('');
+        }
+
         // Отображение участников аудио канала
         function displayAudioParticipants(participants) {
             if (!currentAudioChannel) {
@@ -858,10 +1349,51 @@
                 return;
             }
             
-            container.innerHTML = participants.map(participant => {
+            // Проверяем, находится ли пользователь в этом канале
+            const isUserInChannel = currentAudioChannel !== null;
+
+            const audioModuleForSort = getAudioModule();
+            const effectiveParticipantIdForSort = currentParticipantId || (audioModuleForSort ? audioModuleForSort.participantId : null);
+            const isCurrentParticipant = (participant) => {
+                const name = participant.display || participant.displayName || participant.name || '';
+                const isYouById = participant.id && effectiveParticipantIdForSort && participant.id.toString() === effectiveParticipantIdForSort.toString();
+                const isYouByFlag = participant.isMe === true;
+                const isYouByName = currentNickName && name.toLowerCase().trim() === currentNickName.toLowerCase().trim();
+                return isYouById || isYouByFlag || isYouByName;
+            };
+
+            const sortedParticipants = [...participants].sort((a, b) => {
+                const aIsYou = isCurrentParticipant(a);
+                const bIsYou = isCurrentParticipant(b);
+                if (aIsYou && !bIsYou) return -1;
+                if (!aIsYou && bIsYou) return 1;
+                return 0;
+            });
+            
+            container.innerHTML = sortedParticipants.map(participant => {
                 const name = participant.display || participant.displayName || participant.name || 'Пользователь';
                 const participantId = participant.id || participant.userId || name;
-                const isYou = participant.id && currentParticipantId && participant.id.toString() === currentParticipantId.toString();
+                
+                // Проверяем, является ли это нами - несколько способов определения:
+                // 1. По флагу isMe (установленному в getFullParticipantsList)
+                // 2. По participantId (если он установлен)
+                // 3. По participantId из AudioModule (страховочный метод)
+                // 4. По displayName (сравниваем с текущим никнеймом)
+                const audioModule = getAudioModule();
+                const effectiveParticipantId = currentParticipantId || (audioModule ? audioModule.participantId : null);
+                
+                const isYouById = participant.id && effectiveParticipantId && participant.id.toString() === effectiveParticipantId.toString();
+                const isYouByFlag = participant.isMe === true;
+                const isYouByName = currentNickName && name.toLowerCase().trim() === currentNickName.toLowerCase().trim();
+                const isYou = isYouById || isYouByFlag || isYouByName;
+                
+                // Логируем для диагностики (только если есть проблемы)
+                if (!isYou && !isYouById && !isYouByFlag && !isYouByName) {
+                    // Это не мы, значит должен быть ползунок
+                } else if (isYou) {
+                    // Это мы, ползунка не будет
+                }
+                
                 const volumeKey = `${currentAudioChannel}-${participantId}`;
                 
                 // Получаем сохраненную громкость или используем 100%
@@ -875,14 +1407,19 @@
                     console.warn('Не удалось загрузить громкость:', e);
                 }
                 
+                // Ползунок громкости показывается только если:
+                // 1. Это не вы сами
+                // 2. Пользователь находится в этом канале (currentAudioChannel установлен)
+                const showVolumeSlider = !isYou && isUserInChannel;
+                
                 return `
-                    <div style="padding: var(--spacing-sm); margin-bottom: var(--spacing-sm); background-color: var(--bg-secondary); border-radius: var(--border-radius); ${isYou ? 'border-left: 3px solid var(--accent-green);' : ''}">
+                    <div style="padding: var(--spacing-sm); margin-bottom: var(--spacing-sm); background-color: var(--bg-secondary); border-radius: var(--border-radius); ${isYou ? 'border-left: 3px solid var(--accent-blue);' : ''}">
                         <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--spacing-xs);">
-                            <div style="font-weight: 600; font-size: 13px; ${isYou ? 'color: var(--accent-green);' : ''}">
-                                ${isYou ? '🎤 ' : '🔊 '}${Utils.escapeHtml(name)}${isYou ? ' (Вы)' : ''}
+                            <div style="font-weight: 600; font-size: 13px; ${isYou ? 'color: var(--accent-blue);' : ''}">
+                                ${Utils.escapeHtml(name)}${isYou ? ' (Вы)' : ''}
                             </div>
                         </div>
-                        ${!isYou ? `
+                        ${showVolumeSlider ? `
                             <div style="display: flex; align-items: center; gap: var(--spacing-xs);">
                                 <span style="font-size: 11px; color: var(--text-secondary); min-width: 30px;">🔊</span>
                                 <input type="range" 
@@ -893,7 +1430,7 @@
                                        value="${savedVolume}"
                                        data-participant-id="${participantId}"
                                        data-channel-id="${currentAudioChannel}"
-                                       style="flex: 1; height: 4px; cursor: pointer;"
+                                       style="flex: 1;"
                                        title="Громкость: ${savedVolume}%">
                                 <span style="font-size: 11px; color: var(--text-secondary); min-width: 35px; text-align: right;">${savedVolume}%</span>
                             </div>
@@ -958,38 +1495,127 @@
             await audioModule.setParticipantVolume(participantId, volume);
         }
         
+        // Страховочная функция: проверяет наличие ползунков и создает их при необходимости
+        function ensureVolumeSliders() {
+            if (!currentAudioChannel) return;
+            
+            const audioModule = getAudioModule();
+            if (!audioModule || !audioModule.streamVolumes) return;
+            
+            const effectiveParticipantId = currentParticipantId || (audioModule ? audioModule.participantId : null);
+            
+            // Проверяем, есть ли участники без ползунков
+            const container = document.getElementById('audioParticipantsList');
+            if (!container) return;
+            
+            let missingSliders = false;
+            
+            audioModule.streamVolumes.forEach((data, participantIdStr) => {
+                // Проверяем, это не мы
+                if (effectiveParticipantId && participantIdStr === effectiveParticipantId.toString()) {
+                    return; // Пропускаем себя
+                }
+                
+                const volumeKey = `${currentAudioChannel}-${participantIdStr}`;
+                const existingSlider = document.getElementById(`volume-${volumeKey}`);
+                
+                if (!existingSlider) {
+                    console.warn(`⚠️ Ползунок отсутствует для участника ${participantIdStr}`);
+                    missingSliders = true;
+                }
+            });
+            
+            // Если есть участники без ползунков, перерисовываем UI
+            if (missingSliders) {
+                console.log('🔄 Обнаружены участники без ползунков, перерисовываем...');
+                const participants = audioModule.getFullParticipantsList ? audioModule.getFullParticipantsList() : [];
+                if (participants.length > 0) {
+                    displayAudioParticipants(participants);
+                }
+            }
+        }
+        
+        // Запускаем проверку ползунков через 2 секунды после загрузки и каждые 5 секунд
+        setTimeout(() => {
+            ensureVolumeSliders();
+            setInterval(ensureVolumeSliders, 5000);
+        }, 2000);
+        
+        // Хранилище участников по каналам: Map<channelId, Map<participantId, participant>>
+        const channelParticipantsMap = new Map();
+        
+        // Участники текущего канала (для обратной совместимости)
         const participantsMap = new Map();
+
+        // Функция для обновления счетчика и краткого списка участников канала
+        function updateChannelParticipantsDisplay(channelId) {
+            const channelParticipants = channelParticipantsMap.get(channelId) || new Map();
+            const participantsArray = Array.from(channelParticipants.values());
+            const count = participantsArray.length;
+            
+            // Обновляем счетчик
+            const countEl = document.getElementById(`participantsCount-${channelId}`);
+            if (countEl) {
+                countEl.textContent = `${count} участников`;
+            }
+            
+            // Обновляем краткий список участников в карточке канала
+            const participantsContainer = document.getElementById(`channelParticipants-${channelId}`);
+            if (participantsContainer) {
+                participantsContainer.innerHTML = formatChannelParticipantsList(participantsArray);
+            }
+            
+            // Если это текущий канал, обновляем детальный список участников
+            if (channelId === currentAudioChannel) {
+                displayAudioParticipants(participantsArray);
+            }
+        }
 
         window.onParticipantsUpdate = (participants, participantId) => {
             console.log('🔄 Обновление UI участников:', participants);
             console.log('🔍 currentAudioChannel:', currentAudioChannel);
             console.log('🔍 participantId:', participantId);
+            console.log('🔍 currentParticipantId (до):', currentParticipantId);
+            
+            // Сохраняем старое значение для проверки изменения
+            const oldParticipantId = currentParticipantId;
             
             if (participantId !== undefined && participantId !== null) {
                 currentParticipantId = participantId;
                 console.log('✅ participantId установлен из параметра:', currentParticipantId);
             } else if (!currentParticipantId && participants && Array.isArray(participants) && participants.length > 0) {
+                // Страховка: пробуем получить participantId из AudioModule
                 const audioModule = getAudioModule();
-                const displayNameToFind = audioModule?.displayName || currentNickName;
-                console.log('🔍 Ищем себя в списке по displayName:', displayNameToFind);
-                
-                const self = participants.find(p => {
-                    const pDisplay = (p.display || p.displayName || '').trim().toLowerCase();
-                    const myDisplay = displayNameToFind.trim().toLowerCase();
-                    return pDisplay === myDisplay;
-                });
-                
-                if (self && self.id) {
-                    currentParticipantId = self.id;
-                    console.log('✅ Найден свой participantId из списка:', currentParticipantId);
-                    if (audioModule) {
-                        audioModule.participantId = self.id;
-                    }
+                if (audioModule && audioModule.participantId) {
+                    currentParticipantId = audioModule.participantId;
+                    console.log('✅ participantId получен из AudioModule:', currentParticipantId);
                 } else {
-                    console.warn('⚠️ Не удалось найти себя в списке участников. DisplayName для поиска:', displayNameToFind);
-                    console.warn('⚠️ Участники в списке:', participants.map(p => ({ id: p.id, display: p.display || p.displayName })));
+                    // Ищем по displayName
+                    const displayNameToFind = audioModule?.displayName || currentNickName;
+                    console.log('🔍 Ищем себя в списке по displayName:', displayNameToFind);
+                    
+                    const self = participants.find(p => {
+                        const pDisplay = (p.display || p.displayName || '').trim().toLowerCase();
+                        const myDisplay = displayNameToFind.trim().toLowerCase();
+                        return pDisplay === myDisplay;
+                    });
+                    
+                    if (self && self.id) {
+                        currentParticipantId = self.id;
+                        console.log('✅ Найден свой participantId из списка:', currentParticipantId);
+                        if (audioModule) {
+                            audioModule.participantId = self.id;
+                        }
+                    } else {
+                        console.warn('⚠️ Не удалось найти себя в списке участников. DisplayName для поиска:', displayNameToFind);
+                        console.warn('⚠️ Участники в списке:', participants.map(p => ({ id: p.id, display: p.display || p.displayName })));
+                    }
                 }
             }
+            
+            // Если participantId только что установился (был null, стал не null),
+            // нужно перерисовать UI, чтобы правильно определить "isYou" и показать ползунки
+            const needsRerender = (oldParticipantId === null && currentParticipantId !== null);
 
             if (participants && Array.isArray(participants)) {
                 participantsMap.clear();
@@ -1003,16 +1629,17 @@
             
             // Обновляем счетчик в карточке канала
             if (currentAudioChannel) {
-                const countEl = document.getElementById(`participantsCount-${currentAudioChannel}`);
-                if (countEl) {
-                    const count = Array.isArray(participants) ? participants.length : participantsMap.size;
-                    countEl.textContent = `${count} участников`;
-                    console.log(`📊 Обновлен счетчик для канала ${currentAudioChannel}: ${count} участников`);
-                }
+                updateChannelParticipantsDisplay(currentAudioChannel);
                 
-                // Обновляем список участников в sidebar
-                const participantsArray = Array.from(participantsMap.values());
-                displayAudioParticipants(participantsArray);
+                // ВАЖНО: Если participantId только что установился, перерисовываем участников
+                // чтобы правильно определить "isYou" и показать ползунки громкости
+                if (needsRerender && participants && Array.isArray(participants)) {
+                    console.log('🔄 Перерисовываем участников после установки participantId');
+                    // Небольшая задержка, чтобы DOM успел обновиться
+                    setTimeout(() => {
+                        displayAudioParticipants(participants);
+                    }, 100);
+                }
             } else {
                 console.warn('⚠️ currentAudioChannel не установлен, не могу обновить счетчик');
                 const section = document.getElementById('audioParticipantsSection');
@@ -1025,40 +1652,39 @@
         window.onAudioParticipantJoined = (data) => {
             console.log('🔊 Участник подключился к аудио каналу:', data);
             
-            if (data.channelId === currentAudioChannel) {
-                const participant = {
-                    id: data.participantId,
-                    display: data.displayName,
-                    displayName: data.displayName,
-                    userId: data.userId
-                };
-                
-                participantsMap.set(data.participantId.toString(), participant);
-                
-                const participantsArray = Array.from(participantsMap.values());
-                displayAudioParticipants(participantsArray);
-                
-                const countEl = document.getElementById(`participantsCount-${currentAudioChannel}`);
-                if (countEl) {
-                    countEl.textContent = `${participantsArray.length} участников`;
-                }
+            const participant = {
+                id: data.participantId,
+                display: data.displayName,
+                displayName: data.displayName,
+                userId: data.userId
+            };
+            
+            // Получаем или создаем Map участников для этого канала
+            if (!channelParticipantsMap.has(data.channelId)) {
+                channelParticipantsMap.set(data.channelId, new Map());
             }
+            const channelParticipants = channelParticipantsMap.get(data.channelId);
+            channelParticipants.set(data.participantId.toString(), participant);
+            
+            // Обновляем отображение для этого канала (счетчик и краткий список)
+            updateChannelParticipantsDisplay(data.channelId);
         };
 
         window.onAudioParticipantLeft = (data) => {
             console.log('🔇 Участник отключился от аудио канала:', data);
             
-            if (data.channelId === currentAudioChannel) {
-                participantsMap.delete(data.participantId.toString());
+            const channelParticipants = channelParticipantsMap.get(data.channelId);
+            if (channelParticipants) {
+                channelParticipants.delete(data.participantId.toString());
                 
-                const participantsArray = Array.from(participantsMap.values());
-                displayAudioParticipants(participantsArray);
-                
-                const countEl = document.getElementById(`participantsCount-${currentAudioChannel}`);
-                if (countEl) {
-                    countEl.textContent = `${participantsArray.length} участников`;
+                // Если участников не осталось, можно удалить Map для этого канала
+                if (channelParticipants.size === 0) {
+                    channelParticipantsMap.delete(data.channelId);
                 }
             }
+            
+            // Обновляем отображение для этого канала (счетчик и краткий список)
+            updateChannelParticipantsDisplay(data.channelId);
         };
         
         // Обработка получения нового сообщения
@@ -1083,12 +1709,7 @@
             const password = document.getElementById('groupPasswordInput').value.trim();
             
             try {
-                await Groups.joinGroup(currentGroupId, password || null);
-                document.getElementById('joinGroupModal').classList.add('hidden');
-                document.getElementById('joinGroupForm').reset();
-                
-                // Перезагружаем группу без полной перезагрузки страницы
-                await loadGroup();
+                await joinCurrentGroup(password || null);
             } catch (error) {
                 // Ошибка уже показана в Groups.joinGroup
             }
@@ -1102,12 +1723,7 @@
                 const participants = await API.get(`${API.baseUrls.audio}/api/audio/AudioChannels/${channelId}/participants`);
                 const container = document.getElementById(`channelParticipants-${channelId}`);
                 if (container) {
-                    if (participants && participants.length > 0) {
-                        const names = participants.map(p => p.displayName || 'User').join(', ');
-                        container.innerHTML = `<span style="color: var(--accent-green);">🎤 ${participants.length}:</span> ${Utils.escapeHtml(names)}`;
-                    } else {
-                        container.innerHTML = '<span style="color: var(--text-secondary);">Пусто</span>';
-                    }
+                    container.innerHTML = formatChannelParticipantsList(participants);
                 }
             } catch (error) {
                 // Игнорируем ошибки
@@ -1143,27 +1759,32 @@
         function displayAudioChannels(channels) {
             const container = document.getElementById('audioChannelsList');
             const mobileContainer = document.getElementById('mobileAudioChannelsList');
-
+            
             const channelHtml = !channels || channels.length === 0 
                 ? '<p style="color: var(--text-secondary);">Нет аудио каналов</p>'
-                : channels.map(channel => `
-                <div class="audio-channel" data-channel-id="${channel.id}" data-janus-room="${channel.janusRoomId}">
-                    <div style="font-weight: 600; margin-bottom: var(--spacing-sm);">${Utils.escapeHtml(channel.name)}</div>
-                    ${channel.description ? `<div style="font-size: 12px; color: var(--text-secondary); margin-bottom: var(--spacing-sm);">${Utils.escapeHtml(channel.description)}</div>` : ''}
-                    <div id="channelParticipants-${channel.id}" class="channel-participants" style="font-size: 12px; color: var(--text-secondary); margin-bottom: var(--spacing-sm);"></div>
+                : channels.map(channel => {
+                    // Обновляем отображение участников для этого канала после создания HTML
+                    setTimeout(() => updateChannelParticipantsDisplay(channel.id), 0);
+                    
+                    return `
+                    <div class="audio-channel" data-channel-id="${channel.id}" data-janus-room="${channel.janusRoomId}">
+                        <div style="font-weight: 600; margin-bottom: var(--spacing-sm);">${Utils.escapeHtml(channel.name)}</div>
+                        ${channel.description ? `<div style="font-size: 12px; color: var(--text-secondary); margin-bottom: var(--spacing-sm);">${Utils.escapeHtml(channel.description)}</div>` : ''}
+                        <div id="channelParticipants-${channel.id}" class="channel-participants" style="font-size: 12px; color: var(--text-secondary); margin-bottom: var(--spacing-sm);"></div>
                         <div id="participantsCount-${channel.id}" style="font-size: 12px; color: var(--text-secondary); margin-bottom: var(--spacing-sm);">0 участников</div>
-                        <div style="display: flex; gap: var(--spacing-sm); align-items: center;" class="audio-channel-controls">
-                        <button class="btn btn-sm btn-primary join-audio-btn" data-channel-id="${channel.id}" data-janus-room="${channel.janusRoomId}">Подключиться</button>
-                    </div>
+                        <div class="audio-channel-controls">
+                            <button class="btn btn-sm btn-primary join-audio-btn" data-channel-id="${channel.id}" data-janus-room="${channel.janusRoomId}">Подключиться</button>
+                        </div>
                         <!-- Список участников в канале -->
                         <div id="audioParticipantsList-${channel.id}" class="audio-participants-list" style="display: none; margin-top: var(--spacing-md); padding-top: var(--spacing-md); border-top: 1px solid var(--border-color);">
-                            <div style="font-weight: 600; margin-bottom: var(--spacing-sm); font-size: 14px;">🎤 Участники в канале:</div>
+                            <div style="font-weight: 600; margin-bottom: var(--spacing-sm); font-size: 14px;">Участники в канале:</div>
                             <div id="audioParticipantsContainer-${channel.id}" style="max-height: 200px; overflow-y: auto;">
                                 <p style="color: var(--text-secondary); font-size: 12px;">Загрузка...</p>
                             </div>
                         </div>
-                </div>
-            `).join('');
+                    </div>
+                `;
+                }).join('');
             
             if (container) {
                 container.innerHTML = channelHtml;
@@ -1179,13 +1800,13 @@
 
             // Обработчики подключения к каналам (для десктопа)
             if (container) {
-            container.querySelectorAll('.join-audio-btn').forEach(btn => {
-                btn.addEventListener('click', async () => {
-                    const channelId = btn.dataset.channelId;
-                    const janusRoomId = parseInt(btn.dataset.janusRoom);
-                    await connectToAudioChannel(channelId, janusRoomId, btn);
+                container.querySelectorAll('.join-audio-btn').forEach(btn => {
+                    btn.addEventListener('click', async () => {
+                        const channelId = btn.dataset.channelId;
+                        const janusRoomId = parseInt(btn.dataset.janusRoom);
+                        await connectToAudioChannel(channelId, janusRoomId, btn);
+                    });
                 });
-            });
             }
             
             // Обработчики подключения к каналам (для мобильного)
@@ -1217,28 +1838,30 @@
                 if (audioModule) {
                     await audioModule.disconnect();
                 }
+                // Очищаем информацию о видео-стримах при отключении
+                activeVideoStreamsBySignalR.clear();
                 currentAudioChannel = null;
                 currentParticipantId = null;
                 button.textContent = 'Подключиться';
                 button.closest('.audio-channel').classList.remove('active');
                 
-                // Убираем кнопки управления (mute и настройки)
+                // Убираем все кнопки управления
                 const channelCard = button.closest('.audio-channel');
-                const muteBtn = channelCard?.querySelector('.audio-mute-btn');
-                const settingsBtn = channelCard?.querySelector('.audio-settings-btn');
-                if (muteBtn) muteBtn.remove();
-                if (settingsBtn) settingsBtn.remove();
+                const controlsContainer = channelCard?.querySelector('.audio-channel-controls');
+                if (controlsContainer) {
+                    // Удаляем все кнопки кроме кнопки подключения
+                    controlsContainer.querySelectorAll('.audio-mute-btn, .audio-settings-btn, .audio-screen-share-btn, .audio-webcam-btn, .audio-watch-btn, .audio-effects-panel').forEach(btn => btn.remove());
+                }
                 
-                // Скрываем список участников в карточке канала
-                document.querySelectorAll('.audio-participants-list').forEach(el => {
-                    el.style.display = 'none';
-                });
+                // Скрываем список участников в карточке канала и оверлей видео
+                hideAudioChannelParticipantLists();
                 
                 // Скрываем индикатор аудио активности
                 const statusDiv = document.getElementById(`audioStatus-${channelId}`);
                 if (statusDiv) {
                     statusDiv.style.display = 'none';
                 }
+                closeVideoOverlayIfOpen();
                 return;
             }
 
@@ -1279,6 +1902,8 @@
                     } catch (disconnectError) {
                         console.warn('Error disconnecting from previous channel:', disconnectError);
                     }
+                    closeVideoOverlayIfOpen();
+                    hideAudioChannelParticipantLists();
                 }
                 
                 await audioModule.init(janusRoomId, channelId, currentNickName);
@@ -1329,6 +1954,150 @@
                             document.getElementById('audioSettingsModal').classList.remove('hidden');
                         };
                         controlsContainer.appendChild(settingsBtn);
+                    }
+                    
+                    // Кнопка Screen Share
+                    if (!controlsContainer.querySelector('.audio-screen-share-btn')) {
+                        const screenShareBtn = document.createElement('button');
+                        screenShareBtn.className = 'btn btn-sm audio-screen-share-btn';
+                        screenShareBtn.title = 'Демонстрация экрана';
+                        screenShareBtn.textContent = '🖥️';
+                        screenShareBtn.onclick = async () => {
+                            const audioModule = getAudioModule();
+                            if (!audioModule) return;
+                            
+                            if (audioModule.isScreenSharing) {
+                                // Останавливаем screen share
+                                await audioModule.stopVideo();
+                                screenShareBtn.style.opacity = '1';
+                                screenShareBtn.style.backgroundColor = '';
+                                // Обновляем UI
+                                updateWatchButtonVisibility();
+                                if (videoOverlayVisible) updateVideoOverlay();
+                                Utils.showSuccess('🖥️ Демонстрация экрана остановлена');
+                            } else {
+                                // Запускаем screen share
+                                const success = await audioModule.startScreenShare();
+                                if (success) {
+                                    screenShareBtn.style.opacity = '1';
+                                    screenShareBtn.style.backgroundColor = 'var(--accent-green)';
+                                    // Сбрасываем стиль кнопки webcam
+                                    const webcamBtn = controlsContainer.querySelector('.audio-webcam-btn');
+                                    if (webcamBtn) {
+                                        webcamBtn.style.backgroundColor = '';
+                                    }
+                                    // Обновляем UI
+                                    updateWatchButtonVisibility();
+                                    if (videoOverlayVisible) updateVideoOverlay();
+                                    Utils.showSuccess('🖥️ Демонстрация экрана запущена');
+                                } else {
+                                    Utils.showError('❌ Не удалось запустить демонстрацию экрана');
+                                }
+                            }
+                        };
+                        controlsContainer.appendChild(screenShareBtn);
+                    }
+                    
+                    // Кнопка Webcam
+                    if (!controlsContainer.querySelector('.audio-webcam-btn')) {
+                        const webcamBtn = document.createElement('button');
+                        webcamBtn.className = 'btn btn-sm audio-webcam-btn';
+                        webcamBtn.title = 'Веб-камера';
+                        webcamBtn.textContent = '📷';
+                        webcamBtn.onclick = async () => {
+                            const audioModule = getAudioModule();
+                            if (!audioModule) return;
+                            
+                            if (audioModule.isCameraEnabled) {
+                                // Останавливаем камеру
+                                await audioModule.stopVideo();
+                                webcamBtn.style.opacity = '1';
+                                webcamBtn.style.backgroundColor = '';
+                                // Обновляем UI
+                                updateWatchButtonVisibility();
+                                if (videoOverlayVisible) updateVideoOverlay();
+                                Utils.showSuccess('📷 Веб-камера отключена');
+                            } else {
+                                // Запускаем камеру
+                                const success = await audioModule.startCamera();
+                                if (success) {
+                                    webcamBtn.style.opacity = '1';
+                                    webcamBtn.style.backgroundColor = 'var(--accent-green)';
+                                    // Сбрасываем стиль кнопки screen share
+                                    const screenShareBtn = controlsContainer.querySelector('.audio-screen-share-btn');
+                                    if (screenShareBtn) {
+                                        screenShareBtn.style.backgroundColor = '';
+                                    }
+                                    // Обновляем UI
+                                    updateWatchButtonVisibility();
+                                    if (videoOverlayVisible) updateVideoOverlay();
+                                    Utils.showSuccess('📷 Веб-камера включена');
+                                } else {
+                                    Utils.showError('❌ Не удалось включить веб-камеру');
+                                }
+                            }
+                        };
+                        controlsContainer.appendChild(webcamBtn);
+                    }
+
+                    if (!controlsContainer.querySelector('.audio-effects-panel')) {
+                        const fxWrap = document.createElement('div');
+                        fxWrap.className = 'audio-effects-panel';
+                        fxWrap.style.marginTop = '10px';
+                        fxWrap.style.paddingTop = '8px';
+                        fxWrap.style.borderTop = '1px solid var(--border-color, rgba(255,255,255,0.12))';
+                        const fxLabel = document.createElement('div');
+                        fxLabel.textContent = 'Аудиоэффекты';
+                        fxLabel.style.fontSize = '12px';
+                        fxLabel.style.color = 'var(--text-secondary, #aaa)';
+                        fxLabel.style.marginBottom = '6px';
+                        fxWrap.appendChild(fxLabel);
+                        const row = document.createElement('div');
+                        row.style.display = 'flex';
+                        row.style.flexWrap = 'wrap';
+                        row.style.gap = '6px';
+                        const effects = [
+                            { id: 'pipe', label: '🔩', title: 'Металлическая труба' },
+                            { id: 'pain', label: '😣', title: 'Боль' },
+                            { id: 'hammer', label: '🔨', title: 'Удар молотком' },
+                            { id: 'screenshot', label: '📸', title: 'Звук скриншота' }
+                        ];
+                        effects.forEach(({ id, label, title }) => {
+                            const b = document.createElement('button');
+                            b.type = 'button';
+                            b.className = 'btn btn-sm audio-sfx-btn';
+                            b.title = title;
+                            b.textContent = label;
+                            b.onclick = () => {
+                                const audioModule = getAudioModule();
+                                if (!audioModule || typeof audioModule.playSoundEffect !== 'function') {
+                                    return;
+                                }
+                                if (audioModule.audioContext && audioModule.audioContext.state === 'suspended') {
+                                    audioModule.audioContext.resume();
+                                }
+                                audioModule.playSoundEffect(id).then((ok) => {
+                                    if (!ok) {
+                                        Utils.showError('Не удалось воспроизвести звук. Подождите загрузки или переподключитесь к каналу.');
+                                    }
+                                });
+                            };
+                            row.appendChild(b);
+                        });
+                        fxWrap.appendChild(row);
+                        controlsContainer.appendChild(fxWrap);
+                    }
+                    
+                    // Кнопка "Смотреть" (появляется когда есть видео)
+                    if (!controlsContainer.querySelector('.audio-watch-btn')) {
+                        const watchBtn = document.createElement('button');
+                        watchBtn.className = 'btn btn-sm audio-watch-btn hidden';
+                        watchBtn.title = 'Смотреть видео';
+                        watchBtn.textContent = '👁️ Смотреть';
+                        watchBtn.onclick = () => {
+                            toggleVideoOverlay();
+                        };
+                        controlsContainer.appendChild(watchBtn);
                     }
                 }
                 
@@ -1398,14 +2167,20 @@
                         }
                         
                         // Запрашиваем начальный список участников
-                        audioModule.requestParticipantsList();
+                        audioModule.requestPublishersList();
                     }
                 };
                 
                 // Устанавливаем обработчик ошибок для этого канала
                 window.onAudioError = (errorMsg) => {
                     console.error('Audio error:', errorMsg);
-                    if (errorMsg && errorMsg.includes('No such room')) {
+                    const audioModule = getAudioModule();
+                    const msg = String(errorMsg || '');
+                    if (audioModule && audioModule.isReconnecting &&
+                        (msg.includes('Lost connection') || msg.includes('server') || msg.includes('down'))) {
+                        return;
+                    }
+                    if (msg.includes('No such room')) {
                         Utils.showError('Комната в Janus не существует. Администратор группы должен пересоздать аудио канал.');
                         // Отключаемся от канала
                         button.textContent = 'Подключиться';
@@ -1435,12 +2210,24 @@
         }
 
         // Создание аудио канала
+        document.getElementById('errorModalCloseBtn').addEventListener('click', hideErrorModal);
+
         document.getElementById('createAudioChannelBtn').addEventListener('click', () => {
+            if (!currentCanCreateAudioChannel) {
+                showErrorModal('Создавать аудиоканалы могут только владелец или администратор группы.');
+                return;
+            }
             document.getElementById('createAudioChannelModal').classList.remove('hidden');
         });
 
         document.getElementById('createAudioChannelForm').addEventListener('submit', async (e) => {
             e.preventDefault();
+
+            if (!currentCanCreateAudioChannel) {
+                showErrorModal('Создавать аудиоканалы могут только владелец или администратор группы.');
+                return;
+            }
+
             const name = document.getElementById('audioChannelName').value.trim();
             const description = document.getElementById('audioChannelDescription').value.trim();
 
@@ -1481,109 +2268,13 @@
             const settings = audioModule.audioSettings || {
                 noiseSuppression: true,
                 echoCancellation: true,
-                autoGainControl: true,
-                useRNNoise: false
+                autoGainControl: true
             };
             
             document.getElementById('noiseSuppression').checked = settings.noiseSuppression !== false;
             document.getElementById('echoCancellation').checked = settings.echoCancellation !== false;
             document.getElementById('autoGainControl').checked = settings.autoGainControl !== false;
-            updateRnnoiseToggleButton();
-            syncRnnoiseUiState();
         }
-
-        function updateRnnoiseToggleButton() {
-            const audioModule = getAudioModule();
-            const btn = document.getElementById('rnnoiseToggleBtn');
-            const hint = document.getElementById('rnnoiseStatusHint');
-            if (!btn || !hint) return;
-
-            const enabled = audioModule?.rnnoiseEnabled === true || audioModule?.audioSettings?.useRNNoise === true;
-            const libOk = audioModule?.isRNNoiseLibraryAvailable?.() === true;
-            const inChannel = !!currentAudioChannel && !!audioModule?.localStream;
-            const activeInChain = enabled && !!audioModule?.rnnoiseProcessor;
-
-            btn.textContent = enabled ? '🔊 RNNoise: включён' : '🔇 RNNoise: выключен';
-            if (enabled) {
-                btn.style.backgroundColor = 'var(--accent-green, #2ecc71)';
-                btn.style.color = '#fff';
-            } else {
-                btn.style.backgroundColor = '';
-                btn.style.color = '';
-            }
-            btn.disabled = !libOk;
-
-            if (!libOk) {
-                hint.textContent = 'Библиотека RNNoise не загружена. Проверьте подключение к CDN.';
-                hint.style.color = 'var(--error, #e74c3c)';
-            } else if (enabled && inChannel && activeInChain) {
-                hint.textContent = 'RNNoise активен в цепи микрофона.';
-                hint.style.color = 'var(--success, #2ecc71)';
-            } else if (enabled && inChannel && !activeInChain) {
-                hint.textContent = 'RNNoise включён в настройках, но ещё не активен. Нажмите кнопку ещё раз или переподключитесь.';
-                hint.style.color = 'var(--warning, #f39c12)';
-            } else if (enabled) {
-                hint.textContent = 'RNNoise будет включён при подключении к голосовому каналу.';
-                hint.style.color = 'var(--text-secondary)';
-            } else {
-                hint.textContent = 'Нажмите, чтобы включить AI-шумоподавление RNNoise.';
-                hint.style.color = 'var(--text-secondary)';
-            }
-        }
-
-        function syncRnnoiseUiState() {
-            const audioModule = getAudioModule();
-            const noiseSuppression = document.getElementById('noiseSuppression');
-            if (!noiseSuppression) return;
-            const rnnoiseOn = audioModule?.rnnoiseEnabled === true || audioModule?.audioSettings?.useRNNoise === true;
-            noiseSuppression.disabled = rnnoiseOn;
-            if (rnnoiseOn) {
-                noiseSuppression.checked = false;
-            }
-        }
-
-        async function toggleRnnoiseFromSettings() {
-            const audioModule = getAudioModule();
-            if (!audioModule) {
-                Utils.showError('Аудио модуль не загружен');
-                return;
-            }
-            if (!audioModule.isRNNoiseLibraryAvailable()) {
-                Utils.showError('RNNoise недоступен в этом браузере');
-                return;
-            }
-
-            const btn = document.getElementById('rnnoiseToggleBtn');
-            const statusDiv = document.getElementById('audioSettingsStatus');
-            const next = !(audioModule.rnnoiseEnabled === true);
-            if (btn) btn.disabled = true;
-            statusDiv.style.display = 'block';
-            statusDiv.innerHTML = `<p style="color: var(--accent-blue);">⏳ ${next ? 'Включение' : 'Выключение'} RNNoise...</p>`;
-
-            try {
-                const ok = await audioModule.setUseRNNoise(next);
-                updateRnnoiseToggleButton();
-                syncRnnoiseUiState();
-                if (ok) {
-                    statusDiv.innerHTML = `<p style="color: var(--success);">✅ RNNoise ${next ? 'включён' : 'выключен'}.</p>`;
-                    Utils.showSuccess(next ? 'RNNoise включён' : 'RNNoise выключен');
-                } else {
-                    statusDiv.innerHTML = '<p style="color: var(--error);">❌ Не удалось включить RNNoise. Попробуйте переподключиться к каналу.</p>';
-                    Utils.showError('Не удалось включить RNNoise');
-                }
-            } catch (error) {
-                console.error('RNNoise toggle error:', error);
-                statusDiv.innerHTML = '<p style="color: var(--error);">❌ Ошибка переключения RNNoise.</p>';
-                Utils.showError('Ошибка переключения RNNoise');
-            } finally {
-                updateRnnoiseToggleButton();
-                if (btn && audioModule.isRNNoiseLibraryAvailable()) {
-                    btn.disabled = false;
-                }
-            }
-        }
-
-        document.getElementById('rnnoiseToggleBtn')?.addEventListener('click', toggleRnnoiseFromSettings);
 
         // Применение настроек аудио
         async function applyAudioSettings() {
@@ -1597,17 +2288,14 @@
             statusDiv.style.display = 'block';
             statusDiv.innerHTML = '<p style="color: var(--accent-blue);">⏳ Применение настроек...</p>';
             
-            const useRNNoise = audioModule.rnnoiseEnabled === true;
             const newSettings = {
-                useRNNoise,
-                noiseSuppression: useRNNoise ? false : document.getElementById('noiseSuppression').checked,
+                noiseSuppression: document.getElementById('noiseSuppression').checked,
                 echoCancellation: document.getElementById('echoCancellation').checked,
                 autoGainControl: document.getElementById('autoGainControl').checked
             };
             
+            // Обновляем настройки
             audioModule.updateAudioSettings(newSettings);
-            updateRnnoiseToggleButton();
-            syncRnnoiseUiState();
             
             // Если пользователь подключен к каналу, применяем изменения
             if (currentAudioChannel && audioModule.localStream) {
@@ -1684,6 +2372,441 @@
                 await audioModule.disconnect();
             }
         });
+        
+        // ============================================
+        // Video Overlay (демонстрация экрана / веб-камера)
+        // ============================================
+        
+        let videoOverlayVisible = false;
+
+        function closeVideoOverlayIfOpen() {
+            if (!videoOverlayVisible) return;
+            const overlay = document.getElementById('videoOverlay');
+            if (overlay) overlay.classList.add('hidden');
+            videoOverlayVisible = false;
+        }
+
+        function hideAudioChannelParticipantLists() {
+            document.querySelectorAll('.audio-participants-list').forEach(el => {
+                el.style.display = 'none';
+            });
+            const section = document.getElementById('audioParticipantsSection');
+            if (section) section.style.display = 'none';
+        }
+        
+        // Map для отслеживания активных видео-стримов по SignalR уведомлениям
+        // Ключ: userId, значение: {videoType, nickname, timestamp}
+        const activeVideoStreamsBySignalR = new Map();
+        
+        // Переключить видимость video overlay
+        function toggleVideoOverlay() {
+            const overlay = document.getElementById('videoOverlay');
+            if (!overlay) return;
+            
+            videoOverlayVisible = !videoOverlayVisible;
+            if (videoOverlayVisible) {
+                overlay.classList.remove('hidden');
+                updateVideoOverlay();
+            } else {
+                overlay.classList.add('hidden');
+            }
+        }
+        
+        // Обновить содержимое video overlay
+        function updateVideoOverlay() {
+            const container = document.getElementById('videoOverlayContainer');
+            if (!container) return;
+            
+            const audioModule = getAudioModule();
+            if (!audioModule) return;
+            
+            // Очищаем контейнер
+            container.innerHTML = '';
+            
+            // Собираем все видео-потоки (свои + чужие)
+            const allVideoStreams = [];
+            
+            // Добавляем свое видео, если есть
+            if (audioModule.localVideoStream && (audioModule.isScreenSharing || audioModule.isCameraEnabled)) {
+                allVideoStreams.push({
+                    id: 'local',
+                    stream: audioModule.localVideoStream,
+                    display: currentNickName + ' (Вы)',
+                    isLocal: true,
+                    hasStream: true
+                });
+            }
+            
+            // Добавляем удаленные видео-потоки (реальные потоки)
+            audioModule.remoteVideoStreams.forEach((videoData, publisherId) => {
+                allVideoStreams.push({
+                    id: publisherId,
+                    stream: videoData.stream,
+                    display: videoData.display || 'Пользователь',
+                    isLocal: false,
+                    hasStream: true
+                });
+            });
+            
+            // Добавляем видео-стримы из SignalR (даже если поток еще не получен)
+            activeVideoStreamsBySignalR.forEach((streamInfo, userId) => {
+                // Проверяем, не добавлен ли уже этот стрим как реальный поток
+                const alreadyAdded = allVideoStreams.some(vs => vs.id === userId || vs.userId === userId);
+                if (!alreadyAdded) {
+                    // Находим publisherId по userId (нужно найти в списке участников)
+                    const participants = audioModule.getFullParticipantsList ? audioModule.getFullParticipantsList() : [];
+                    const participant = participants.find(p => p.userId === userId);
+                    if (participant) {
+                        allVideoStreams.push({
+                            id: participant.participantId || userId,
+                            userId: userId,
+                            stream: null, // Поток еще не получен
+                            display: streamInfo.nickname || 'Пользователь',
+                            isLocal: false,
+                            hasStream: false, // Поток еще загружается
+                            videoType: streamInfo.videoType
+                        });
+                    }
+                }
+            });
+            
+            if (allVideoStreams.length === 0) {
+                container.innerHTML = '<p style="color: var(--text-secondary); text-align: center; padding: 20px; grid-column: 1 / -1;">Нет активных видео-трансляций</p>';
+                return;
+            }
+            
+            // Создаем grid для видео
+            allVideoStreams.forEach(videoData => {
+                const videoWrapper = document.createElement('div');
+                videoWrapper.className = 'video-wrapper';
+                videoWrapper.style.cssText = 'position: relative; background: var(--bg-secondary); border-radius: var(--border-radius); overflow: hidden; min-height: 200px;' + (videoData.isLocal ? ' border: 2px solid var(--accent-green);' : '');
+                
+                if (videoData.hasStream && videoData.stream) {
+                    // Создаем новый video элемент и привязываем к потоку
+                    const videoElement = document.createElement('video');
+                    videoElement.autoplay = true;
+                    videoElement.playsInline = true;
+                    videoElement.muted = true;
+                    videoElement.srcObject = videoData.stream;
+                    videoElement.style.cssText = 'width: 100%; height: 100%; object-fit: contain;';
+                    
+                    // Для локального видео - зеркальное отображение
+                    if (videoData.isLocal && videoData.videoType === 'camera') {
+                        videoElement.style.transform = 'scaleX(-1)';
+                    }
+                    
+                    videoElement.onerror = (error) => {
+                        console.error('❌ Ошибка воспроизведения видео:', error);
+                    };
+                    
+                    videoWrapper.appendChild(videoElement);
+                } else {
+                    // Поток еще не получен - показываем сообщение о загрузке
+                    const loadingDiv = document.createElement('div');
+                    loadingDiv.style.cssText = 'display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 20px; color: var(--text-secondary);';
+                    loadingDiv.innerHTML = `
+                        <div style="font-size: 24px; margin-bottom: 10px;">⏳</div>
+                        <div style="font-weight: bold; margin-bottom: 5px;">${videoData.display}</div>
+                        <div style="font-size: 14px;">Загрузка ${videoData.videoType === 'screen' ? 'демонстрации экрана' : 'веб-камеры'}...</div>
+                    `;
+                    videoWrapper.appendChild(loadingDiv);
+                }
+                
+                container.appendChild(videoWrapper);
+            });
+        }
+        
+        // Проверить, есть ли активные видео-трансляции
+        function hasActiveVideoStreams() {
+            const audioModule = getAudioModule();
+            if (!audioModule) return false;
+            
+            // Свое видео
+            if (audioModule.localVideoStream && (audioModule.isScreenSharing || audioModule.isCameraEnabled)) {
+                return true;
+            }
+            
+            // Чужие видео (реальные потоки)
+            if (audioModule.remoteVideoStreams.size > 0) {
+                return true;
+            }
+            
+            // Чужие видео (по SignalR уведомлениям, даже если поток еще не получен)
+            if (activeVideoStreamsBySignalR.size > 0) {
+                return true;
+            }
+            
+            return false;
+        }
+        
+        // Обновить видимость кнопки "Смотреть"
+        function updateWatchButtonVisibility() {
+            const hasVideo = hasActiveVideoStreams();
+            document.querySelectorAll('.audio-watch-btn').forEach(btn => {
+                if (hasVideo) {
+                    btn.classList.remove('hidden');
+                } else {
+                    btn.classList.add('hidden');
+                }
+            });
+        }
+        
+        // Callback для добавления видео-потока
+        window.onVideoStreamAdded = (publisherId, stream, displayName, videoElement) => {
+            console.log('📹 Видео-поток добавлен:', publisherId, displayName);
+            
+            // Обновляем видимость кнопки "Смотреть"
+            updateWatchButtonVisibility();
+            
+            // Обновляем overlay, если он видим
+            if (videoOverlayVisible) {
+                updateVideoOverlay();
+            }
+        };
+        
+        // Callback для удаления видео-потока
+        window.onVideoStreamRemoved = (publisherId) => {
+            console.log('🔴 Видео-поток удален:', publisherId);
+            
+            const publisherIdStr = String(publisherId);
+            
+            // Удаляем из SignalR map (по разным ключам - может быть participantId или odlUserId)
+            activeVideoStreamsBySignalR.forEach((value, key) => {
+                if (String(key) === publisherIdStr || String(value.participantId) === publisherIdStr) {
+                    activeVideoStreamsBySignalR.delete(key);
+                    console.log('🔴 Удален из activeVideoStreamsBySignalR:', key);
+                }
+            });
+            
+            // Проверяем, не наш ли это поток - обновляем стили кнопок
+            const audioModule = getAudioModule();
+            if (audioModule && String(audioModule.participantId) === publisherIdStr) {
+                console.log('🔴 Удален собственный видео-поток, сбрасываем стили кнопок');
+                // Сбрасываем стили кнопок
+                document.querySelectorAll('.audio-screen-share-btn, .audio-webcam-btn').forEach(btn => {
+                    btn.style.backgroundColor = '';
+                });
+            }
+            
+            // Обновляем видимость кнопки "Смотреть"
+            updateWatchButtonVisibility();
+            
+            // Обновляем или закрываем overlay
+            if (videoOverlayVisible) {
+                if (hasActiveVideoStreams()) {
+                    updateVideoOverlay();
+                } else {
+                    console.log('🔴 Нет активных видео-потоков, закрываем overlay');
+                    toggleVideoOverlay();
+                }
+            }
+        };
+        
+        // SignalR: Обработка уведомления о начале видео-трансляции
+        window.onVideoStreamStarted = async (data) => {
+            console.log('📹 SignalR: Видео-трансляция начата (ПОЛУЧЕНО):', data);
+            
+            // Проверяем, что это нужный канал
+            if (data.channelId === AudioModule.channelId) {
+                console.log(`📹 Пользователь ${data.nickname} начал трансляцию ${data.videoType}`);
+                
+                // ВАЖНО: Проверяем, не мы ли сами начали трансляцию
+                // Если это мы, то не нужно переподписываться на себя
+                const isSelf = data.userId === currentUserId || data.nickname === currentNickName;
+                if (isSelf) {
+                    console.log(`✅ Это наша собственная трансляция, переподписка не нужна`);
+                    // Просто обновляем видимость кнопки
+                    updateWatchButtonVisibility();
+                    return;
+                }
+                
+                // Сохраняем информацию о видео-стриме (даже если поток еще не получен)
+                activeVideoStreamsBySignalR.set(data.userId, {
+                    videoType: data.videoType,
+                    nickname: data.nickname,
+                    timestamp: data.timestamp
+                });
+                
+                console.log('📹 Активные видео-стримы по SignalR:', activeVideoStreamsBySignalR.size);
+                
+                // ВАЖНО: Обновляем видимость кнопки "Смотреть" СРАЗУ, не дожидаясь переподписки
+                updateWatchButtonVisibility();
+                
+                // ВАЖНО: Переподписываемся на publisher, чтобы получить видео-трек
+                // Это необходимо, потому что если мы уже подписаны на publisher (для аудио),
+                // то Janus не обновляет SDP автоматически при добавлении видео
+                // Делаем это асинхронно, чтобы не блокировать UI
+                if (AudioModule && typeof AudioModule.resubscribeToPublisherByNickname === 'function') {
+                    // Запускаем переподписку асинхронно, не блокируя UI
+                    AudioModule.resubscribeToPublisherByNickname(data.nickname).then(() => {
+                        console.log(`✅ Переподписка на ${data.nickname} завершена`);
+                        // Обновляем кнопку еще раз после переподписки
+                        updateWatchButtonVisibility();
+                    }).catch((error) => {
+                        console.error(`❌ Ошибка при переподписке на ${data.nickname}:`, error);
+                        // Если не удалось найти по nickname, пробуем переподписаться на всех publishers с видео
+                        console.log('🔄 Пробуем альтернативный подход: переподписка на всех publishers с видео...');
+                        AudioModule.resubscribeAllPublishersWithVideo().then(() => {
+                            updateWatchButtonVisibility();
+                        }).catch((altError) => {
+                            console.error('❌ Альтернативный подход тоже не сработал:', altError);
+                        });
+                    });
+                } else {
+                    console.warn('⚠️ Метод resubscribeToPublisherByNickname не доступен');
+                }
+                
+                // Показываем уведомление пользователю
+                const message = data.videoType === 'screen' 
+                    ? `${data.nickname} начал демонстрацию экрана`
+                    : `${data.nickname} включил веб-камеру`;
+                
+                // Можно добавить визуальное уведомление (тост)
+                console.log('💬', message);
+            }
+        };
+        
+        // SignalR: Обработка уведомления об остановке видео-трансляции
+        window.onVideoStreamStopped = (data) => {
+            console.log('🔴 SignalR: Видео-трансляция остановлена (ПОЛУЧЕНО):', data);
+            
+            // Проверяем, что это нужный канал
+            if (data.channelId === AudioModule.channelId) {
+                console.log(`🔴 Пользователь ${data.userId} остановил трансляцию`);
+                
+                // Удаляем информацию о видео-стриме
+                activeVideoStreamsBySignalR.delete(data.userId);
+                
+                console.log('📹 Активные видео-стримы по SignalR:', activeVideoStreamsBySignalR.size);
+                
+                // Обновляем видимость кнопки "Смотреть"
+                updateWatchButtonVisibility();
+            }
+        };
+        
+        // SignalR: Обработка списка активных видео-стримов (при подключении)
+        window.onActiveVideoStreams = async (data) => {
+            console.log('📹 SignalR: Активные видео-стримы (ПОЛУЧЕНО):', data);
+            
+            // Проверяем, что это нужный канал
+            if (data.channelId === AudioModule.channelId) {
+                // Очищаем старые данные
+                activeVideoStreamsBySignalR.clear();
+                
+                if (data.streams && data.streams.length > 0) {
+                    console.log(`📹 В канале ${data.streams.length} активных видео-стримов`);
+                    
+                    // Сохраняем информацию о всех активных стримах
+                    data.streams.forEach(stream => {
+                        // Нужно получить userId из stream, но если его нет, используем nickname как ключ
+                        const key = stream.userId || stream.nickname;
+                        activeVideoStreamsBySignalR.set(key, {
+                            videoType: stream.videoType,
+                            nickname: stream.nickname,
+                            timestamp: stream.timestamp
+                        });
+                        
+                        const streamType = stream.videoType === 'screen' ? 'демонстрацию экрана' : 'веб-камеру';
+                        console.log(`  - ${stream.nickname} показывает ${streamType}`);
+                    });
+                    
+                    console.log('📹 Активные видео-стримы по SignalR:', activeVideoStreamsBySignalR.size);
+                    
+                    // ВАЖНО: Переподписываемся на всех publishers, которые транслируют видео
+                    // Это нужно, если мы подключились к каналу, где уже идет трансляция
+                    if (AudioModule && typeof AudioModule.resubscribeToPublisherByNickname === 'function') {
+                        for (const stream of data.streams) {
+                            try {
+                                console.log(`🔄 Переподписываемся на ${stream.nickname} для получения видео (при подключении к каналу)...`);
+                                await AudioModule.resubscribeToPublisherByNickname(stream.nickname);
+                                console.log(`✅ Переподписка на ${stream.nickname} завершена`);
+                            } catch (error) {
+                                console.error(`❌ Ошибка при переподписке на ${stream.nickname}:`, error);
+                            }
+                        }
+                    }
+                    
+                    // Обновляем видимость кнопки "Смотреть"
+                    updateWatchButtonVisibility();
+                } else {
+                    console.log('📹 В канале нет активных видео-стримов');
+                }
+            }
+        };
+        
+        // Скрытая статистика участников аудиоканалов (только для администратора)
+        async function initHiddenStats() {
+            const statsElement = document.getElementById('hidden-stats');
+            const statsText = document.getElementById('stats-text');
+            
+            if (!statsElement || !statsText) return;
+            
+            // Показываем элемент
+            statsElement.style.display = 'block';
+            
+            // Функция получения статистики
+            async function updateStats() {
+                try {
+                    if (!currentGroupId) {
+                        statsText.textContent = 'Нет группы';
+                        return;
+                    }
+                    
+                    // Получаем все каналы группы
+                    const audioModule = getAudioModule();
+                    if (!audioModule || !audioModule.channelId) {
+                        // Если нет подключенного канала, получаем список всех каналов
+                        const channels = await API.get(`${API.baseUrls.audio}/api/audio/AudioChannels/groups/${currentGroupId}`);
+                        let totalCount = 0;
+                        
+                        for (const channel of channels) {
+                            try {
+                                const participants = await API.get(`${API.baseUrls.audio}/api/audio/AudioChannels/${channel.id}/participants`);
+                                totalCount += participants.length || 0;
+                            } catch (e) {
+                                console.warn('Ошибка получения участников канала:', channel.id, e);
+                            }
+                        }
+                        
+                        statsText.textContent = `📊 В каналах: ${totalCount}`;
+                    } else {
+                        // Если есть подключенный канал, получаем участников всех каналов группы
+                        const channels = await API.get(`${API.baseUrls.audio}/api/audio/AudioChannels/groups/${currentGroupId}`);
+                        let totalCount = 0;
+                        
+                        for (const channel of channels) {
+                            try {
+                                const participants = await API.get(`${API.baseUrls.audio}/api/audio/AudioChannels/${channel.id}/participants`);
+                                totalCount += participants.length || 0;
+                            } catch (e) {
+                                console.warn('Ошибка получения участников канала:', channel.id, e);
+                            }
+                        }
+                        
+                        statsText.textContent = `📊 В каналах: ${totalCount}`;
+                    }
+                } catch (error) {
+                    console.error('Ошибка получения статистики:', error);
+                    statsText.textContent = 'Ошибка';
+                }
+            }
+            
+            // Обновляем сразу
+            await updateStats();
+            
+            // Обновляем каждые 30 секунд
+            setInterval(updateStats, 30000);
+        }
     </script>
+    
+    <!-- Video Overlay -->
+    <div id="videoOverlay" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; height: 70vh; z-index: 1000; background: var(--bg-primary); border-bottom: 2px solid var(--border-color); box-shadow: 0 -2px 10px rgba(0,0,0,0.1); display: flex; flex-direction: column;">
+        <div style="flex: 1; padding: var(--spacing-md); overflow: auto; position: relative;">
+            <button onclick="toggleVideoOverlay()" class="btn btn-sm" style="position: absolute; top: var(--spacing-sm); right: var(--spacing-sm); z-index: 10; background: var(--error); color: white;">✕ Закрыть</button>
+            <div id="videoOverlayContainer" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: var(--spacing-md); height: 100%;">
+                <!-- Видео будут добавлены динамически -->
+            </div>
+        </div>
+    </div>
 </body>
 </html>

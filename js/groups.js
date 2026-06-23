@@ -50,14 +50,38 @@ const Groups = {
         }
     },
 
+    // Глобальный список групп (пагинация: page + pageSize)
+    async getBrowseGroups(page = 1, pageSize = 10) {
+        try {
+            const offset = (page - 1) * pageSize;
+            const params = new URLSearchParams({
+                query: '',
+                page: page.toString(),
+                pageSize: pageSize.toString(),
+                limit: pageSize.toString(),
+                offset: offset.toString()
+            });
+            return await API.get(`${API.baseUrls.groups}/api/Groups/search?${params}`);
+        } catch (error) {
+            console.error('Browse groups error:', error);
+            throw error;
+        }
+    },
+
     // Присоединиться к группе
     async joinGroup(groupId, password) {
         try {
+            const url = `${API.baseUrls.groups}/api/Groups/${groupId}/join`;
             const data = password ? { password } : {};
-            const response = await API.post(`${API.baseUrls.groups}/api/Groups/${groupId}/join`, data);
+            const response = await API.post(url, data);
             Utils.showSuccess('Вы успешно присоединились к группе!');
             return response;
         } catch (error) {
+            const message = (error.message || '').toLowerCase();
+            if (message.includes('already a member') || message.includes('уже')) {
+                Utils.showSuccess('Вы уже участник этой группы');
+                return { alreadyMember: true };
+            }
             Utils.showError(error.message || 'Ошибка при присоединении к группе');
             throw error;
         }
@@ -80,6 +104,37 @@ const Groups = {
             return await API.get(`${API.baseUrls.groups}/api/Groups/${groupId}/members`);
         } catch (error) {
             Utils.showError(error.message || 'Ошибка при получении участников');
+            throw error;
+        }
+    },
+
+    // Изменить роль участника (только владелец)
+    async updateMemberRole(groupId, userId, role, options = {}) {
+        const { showSuccess = true } = options;
+
+        try {
+            API.initBaseUrls();
+            const payload = {
+                groupId,
+                GroupId: groupId,
+                userId,
+                UserId: userId,
+                role,
+                Role: role
+            };
+            const response = await API.post(
+                `${API.baseUrls.groups}/api/Groups/member-role`,
+                payload
+            );
+            if (showSuccess) {
+                Utils.showSuccess('Роль участника обновлена');
+            }
+            return response;
+        } catch (error) {
+            const message = error.message || 'Ошибка при изменении роли';
+            Utils.showError(message.includes('404')
+                ? 'Сервис групп не поддерживает смену ролей. Перезапустите GroupsService.'
+                : message);
             throw error;
         }
     },

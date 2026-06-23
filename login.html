@@ -3,14 +3,50 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Вход - Audio Chat</title>
+    
+    <!-- Google Search Console verification -->
+    <meta name="google-site-verification" content="PRPqlizLVA5_5EYBf2n--OGEU-3jwQdbdv4002o7UH0" />
+    
+    <!-- SEO Meta Tags -->
+    <title>Вход - Audio Chat | Бесплатный голосовой чат</title>
+    <meta name="description" content="Войдите в Audio Chat - бесплатный голосовой чат на русском языке. Аналог Discord для голосового общения.">
+    <meta name="keywords" content="аудио чат вход, audio chat login, голосовой чат, аналог discord">
+    <meta name="robots" content="index, follow">
+    <link rel="canonical" href="https://audio-chat.ru/login.html">
+    
+    <!-- Open Graph -->
+    <meta property="og:title" content="Вход - Audio Chat">
+    <meta property="og:description" content="Войдите в Audio Chat - бесплатный голосовой чат на русском языке.">
+    <meta property="og:url" content="https://audio-chat.ru/login.html">
+    <meta property="og:type" content="website">
+    
     <link rel="stylesheet" href="css/main.css">
+    <script>
+        // Динамическое изменение названия в зависимости от домена
+        document.addEventListener('DOMContentLoaded', function() {
+            const hostname = window.location.hostname;
+            const brandElement = document.getElementById('navbarBrand');
+            
+            if (brandElement) {
+                if (hostname.includes('audio-chat.ru')) {
+                    brandElement.textContent = 'Audio Chat';
+                } else if (hostname.includes('audio-kostya.online')) {
+                    brandElement.textContent = 'Audio Kostya';
+                }
+                // По умолчанию остается "Audio Kostya" если домен не распознан
+            }
+        });
+    </script>
 </head>
 <body>
     <div class="page-container">
+        <div class="maintenance-banner" role="alert">
+            <div class="maintenance-banner__title">🍫 Ведутся технические шоколадки</div>
+            <p class="maintenance-banner__text">Почему-то упала система авторизации. Завтра надеюсь починю.</p>
+        </div>
         <nav class="navbar">
             <div class="navbar-content">
-                <div class="navbar-brand">Audio Kostya</div>
+                <div class="navbar-brand" id="navbarBrand">Audio Kostya</div>
                 <ul class="navbar-nav">
                     <li><a href="register.html">Регистрация</a></li>
                 </ul>
@@ -74,11 +110,20 @@
     <script src="js/utils.js"></script>
     <script src="js/auth.js"></script>
     <script>
+        function getLoginRedirectUrl() {
+            const params = new URLSearchParams(window.location.search);
+            const returnPath = params.get('return');
+            if (returnPath && !returnPath.includes('login.html') && !returnPath.includes('://') && !returnPath.startsWith('//')) {
+                return returnPath;
+            }
+            return 'groups.html';
+        }
+
         // Проверка, не авторизован ли уже пользователь
         document.addEventListener('DOMContentLoaded', async () => {
             try {
                 if (await Auth.isAuthenticated()) {
-                    window.location.href = 'groups.html';
+                    window.location.href = getLoginRedirectUrl();
                 }
             } catch (error) {
                 // Игнорируем ошибки при проверке - пользователь просто не авторизован
@@ -116,10 +161,16 @@
 
             try {
                 await Auth.login(nickName, password);
+
+                // access_token часто HttpOnly — в document.cookie его не видно, getToken() пустой, это нормально
+                const token = API.getToken();
+                console.log('🔑 Токен в JS (если не HttpOnly):', token ? 'есть' : 'нет (часто HttpOnly — ок)');
+                
                 setTimeout(() => {
-                    window.location.href = 'groups.html';
+                    window.location.href = getLoginRedirectUrl();
                 }, 1000);
             } catch (error) {
+                console.error('Ошибка логина:', error);
                 submitButton.disabled = false;
                 submitButton.textContent = 'Войти';
             }

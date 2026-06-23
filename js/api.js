@@ -12,12 +12,63 @@ const API = {
         notification: ''
     },
 
+    _baseUrlsInitialized: false,
+
+    initBaseUrls() {
+        const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
+        const host = window.location.hostname;
+        const port = window.location.port ? `:${window.location.port}` : '';
+        const baseUrl = `${protocol}//${host}${port}`;
+        const isProduction = host !== 'localhost' && host !== '127.0.0.1';
+        const isTestEnv = window.location.pathname.startsWith('/test/');
+        const apiPrefix = isTestEnv ? '/test' : '';
+        const isLocalTest = port === ':8001' || new URLSearchParams(window.location.search).get('test') === 'true';
+        const hostOnly = baseUrl.replace(/:\d+$/, '');
+
+        if (isProduction) {
+            const prodBase = `${baseUrl}${apiPrefix}`;
+            this.baseUrls.auth = prodBase;
+            this.baseUrls.groups = prodBase;
+            this.baseUrls.chat = prodBase;
+            this.baseUrls.audio = prodBase;
+            this.baseUrls.notification = prodBase;
+        } else if (isLocalTest) {
+            this.baseUrls.auth = `${hostOnly}:10001`;
+            this.baseUrls.groups = `${hostOnly}:10002`;
+            this.baseUrls.chat = `${hostOnly}:10003`;
+            this.baseUrls.audio = `${hostOnly}:10004`;
+            this.baseUrls.notification = `${hostOnly}:10005`;
+        } else {
+            this.baseUrls.auth = `${hostOnly}:5001`;
+            this.baseUrls.groups = `${hostOnly}:5002`;
+            this.baseUrls.chat = `${hostOnly}:5003`;
+            this.baseUrls.audio = `${hostOnly}:5004`;
+            this.baseUrls.notification = `${hostOnly}:5005`;
+        }
+
+        this._baseUrlsInitialized = true;
+    },
+
     // Флаг, что refresh уже в процессе
     _isRefreshing: false,
     _refreshPromise: null,
 
-    // Интервал автоматического обновления токена
+    // Таймер автоматического обновления токена (setTimeout)
     _refreshInterval: null,
+
+    /** Время истечения access JWT (ms) из cookie, если токен читается из JS; иначе null */
+    _getAccessTokenExpMs() {
+        const t = this.getToken();
+        if (!t || t.split('.').length < 2) return null;
+        try {
+            let b64 = t.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+            while (b64.length % 4) b64 += '=';
+            const payload = JSON.parse(atob(b64));
+            return typeof payload.exp === 'number' ? payload.exp * 1000 : null;
+        } catch {
+            return null;
+        }
+    },
 
     // Получить токен из cookies
     getToken() {
@@ -41,14 +92,96 @@ const API = {
         document.cookie = 'access_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT';
     },
 
+    saveTokenFromResponse(data) {
+        if (!data || typeof data !== 'object') return;
+        const token = data.accessToken || data.token || data.access_token || data.AccessToken;
+        if (token) {
+            this.setToken(token);
+        }
+    },
+
+    applyAuthHeader(headers) {
+        const token = this.getToken();
+        if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+        } else {
+            delete headers['Authorization'];
+        }
+    },
+
+    async _readResponseError(response) {
+        try {
+            const text = await response.text();
+            if (!text || !text.trim()) {
+                return { empty: true, message: null };
+            }
+            try {
+                const json = JSON.parse(text);
+                return { empty: false, message: json.error || json.message || text };
+            } catch {
+                return { empty: false, message: text };
+            }
+        } catch {
+            return { empty: true, message: null };
+        }
+    },
+
+    _isBusinessAuthorizationError(message) {
+        if (!message) {
+            return true;
+        }
+        const msg = String(message).toLowerCase();
+        return msg.includes('member') ||
+            msg.includes('must be a member') ||
+            msg.includes('only group owner') ||
+            msg.includes('invalid group password') ||
+            msg.includes('password is required');
+    },
+
+    _shouldLogoutOn401(errorInfo) {
+        if (errorInfo.empty) {
+            return false;
+        }
+        if (this._isBusinessAuthorizationError(errorInfo.message)) {
+            return false;
+        }
+        return true;
+    },
+
+    _shouldAttemptRefreshOn401(errorInfo, url) {
+        if (errorInfo.empty) {
+            return false;
+        }
+        if (this._isBusinessAuthorizationError(errorInfo.message)) {
+            return false;
+        }
+        if (url.includes('/members') && !url.includes('/members/role') && !url.includes('/member-role')) {
+            return false;
+        }
+        return true;
+    },
+
+    _handleUnauthorizedRedirect() {
+        const currentPath = window.location.pathname;
+        if (!currentPath.includes('login.html') &&
+            !currentPath.includes('register.html') &&
+            !currentPath.includes('group.html')) {
+            window.location.href = 'login.html';
+        }
+    },
+
     // Базовый метод для HTTP запросов
     async request(url, options = {}) {
+        this.initBaseUrls();
+
         const defaultOptions = {
             headers: {
                 'Content-Type': 'application/json',
             },
             credentials: 'include'
         };
+
+        this.applyAuthHeader(defaultOptions.headers);
 
         const finalOptions = {
             ...defaultOptions,
@@ -72,43 +205,44 @@ const API = {
                     throw new Error('Unauthorized');
                 }
 
-                // Пытаемся обновить токен
+                const errorInfo = await this._readResponseError(response);
+
+                if (!this._shouldAttemptRefreshOn401(errorInfo, url)) {
+                    throw new Error(errorInfo.message || 'Unauthorized');
+                }
+
                 const refreshed = await this.tryRefreshToken();
-                
+
                 if (refreshed) {
-                    // Повторяем оригинальный запрос
+                    this.applyAuthHeader(finalOptions.headers);
                     response = await fetch(url, finalOptions);
-                    
+
                     if (response.status === 401) {
-                        // Refresh не помог, токен недействителен
-                        this.removeToken();
-                        const currentPath = window.location.pathname;
-                        if (!currentPath.includes('login.html') && !currentPath.includes('register.html') && !currentPath.includes('group.html')) {
-                            window.location.href = 'login.html';
+                        const retryError = await this._readResponseError(response);
+                        if (this._shouldLogoutOn401(retryError)) {
+                            this.removeToken();
+                            this._handleUnauthorizedRedirect();
                         }
-                        throw new Error('Unauthorized');
+                        throw new Error(retryError.message || 'Unauthorized');
                     }
                 } else {
-                    // Refresh не удался
-                    this.removeToken();
-                    const currentPath = window.location.pathname;
-                    if (!currentPath.includes('login.html') && !currentPath.includes('register.html') && !currentPath.includes('group.html')) {
-                        window.location.href = 'login.html';
+                    if (this._shouldLogoutOn401(errorInfo)) {
+                        this.removeToken();
+                        this._handleUnauthorizedRedirect();
                     }
-                    throw new Error('Unauthorized');
+                    throw new Error(errorInfo.message || 'Unauthorized');
                 }
             }
             
             // Для 403 и 404 на странице группы не делаем редирект
             if ((response.status === 403 || response.status === 404) && window.location.pathname.includes('group.html')) {
-                // Позволяем обработать ошибку на странице группы
-                const error = await response.json().catch(() => ({ error: response.statusText }));
-                throw new Error(error.error || `HTTP ${response.status}`);
+                const errorInfo = await this._readResponseError(response);
+                throw new Error(errorInfo.message || `HTTP ${response.status}`);
             }
 
             if (!response.ok) {
-                const error = await response.json().catch(() => ({ error: response.statusText }));
-                throw new Error(error.error || `HTTP ${response.status}`);
+                const errorInfo = await this._readResponseError(response);
+                throw new Error(errorInfo.message || `HTTP ${response.status}`);
             }
 
             const contentType = response.headers.get('content-type');
@@ -130,10 +264,11 @@ const API = {
 
     // POST запрос
     async post(url, data) {
-        return this.request(url, {
-            method: 'POST',
-            body: JSON.stringify(data)
-        });
+        const options = { method: 'POST' };
+        if (data !== undefined) {
+            options.body = JSON.stringify(data);
+        }
+        return this.request(url, options);
     },
 
     // PUT запрос
@@ -168,7 +303,12 @@ const API = {
                 
                 if (response.ok) {
                     console.log('Token refreshed successfully');
-                    // Небольшая задержка чтобы cookie успел обновиться
+                    try {
+                        const data = await response.json();
+                        this.saveTokenFromResponse(data);
+                    } catch (e) {
+                        // Ответ без JSON — полагаемся на HttpOnly cookie
+                    }
                     await new Promise(resolve => setTimeout(resolve, 100));
                     return true;
                 }
@@ -196,33 +336,76 @@ const API = {
         return this._refreshPromise;
     },
 
-    // Запустить автоматическое обновление токена каждые 29 минут
+    // Плановое обновление: за несколько минут до exp JWT или каждые 15 мин (если exp не виден — HttpOnly)
     startAutoRefresh() {
-        // Останавливаем предыдущий интервал, если он есть
         this.stopAutoRefresh();
 
-        // 29 минут = 29 * 60 * 1000 миллисекунд
-        const REFRESH_INTERVAL_MS = 29 * 60 * 1000;
+        const scheduleNext = () => {
+            const now = Date.now();
+            const exp = this._getAccessTokenExpMs();
+            const beforeExpMs = 5 * 60 * 1000;
+            const fallbackMs = 15 * 60 * 1000;
+            const minDelayMs = 45 * 1000;
+            const maxDelayMs = 20 * 60 * 1000;
 
-        console.log('Starting automatic token refresh every 29 minutes');
-        
-        this._refreshInterval = setInterval(async () => {
-            console.log('Auto-refreshing token...');
-            const refreshed = await this.tryRefreshToken();
-            if (!refreshed) {
-                console.warn('Auto-refresh failed, stopping automatic refresh');
-                this.stopAutoRefresh();
+            let delay = fallbackMs;
+            if (exp) {
+                delay = exp - now - beforeExpMs;
+                delay = Math.max(minDelayMs, delay);
+                delay = Math.min(delay, maxDelayMs);
             }
-        }, REFRESH_INTERVAL_MS);
+
+            console.log(
+                `[API] Следующий auto-refresh через ${Math.round(delay / 1000 / 60)} мин` +
+                    (exp ? ` (exp JWT ~${new Date(exp).toISOString()})` : '')
+            );
+
+            this._refreshInterval = setTimeout(async () => {
+                console.log('Auto-refreshing token...');
+                const refreshed = await this.tryRefreshToken();
+                if (refreshed) {
+                    this._lastRefreshTime = Date.now();
+                    scheduleNext();
+                } else {
+                    console.warn('Auto-refresh failed, stopping automatic refresh');
+                    this.stopAutoRefresh();
+                }
+            }, delay);
+        };
+
+        scheduleNext();
     },
 
     // Остановить автоматическое обновление токена
     stopAutoRefresh() {
         if (this._refreshInterval !== null) {
-            clearInterval(this._refreshInterval);
+            clearTimeout(this._refreshInterval);
             this._refreshInterval = null;
             console.log('Stopped automatic token refresh');
         }
+    },
+    
+    // Время последнего обновления токена
+    _lastRefreshTime: null,
+    
+    // Обновить токен при возврате на вкладку / активности: без «мёртвой зоны» 5–25 минут
+    async refreshIfNeeded() {
+        const now = Date.now();
+        const debounceMs = 45 * 1000;
+        if (this._lastRefreshTime && now - this._lastRefreshTime < debounceMs) {
+            return true;
+        }
+
+        const exp = this._getAccessTokenExpMs();
+        if (!exp || exp - now > 3 * 60 * 1000) {
+            return true;
+        }
+
+        const refreshed = await this.tryRefreshToken();
+        if (refreshed) {
+            this._lastRefreshTime = now;
+        }
+        return refreshed;
     }
 };
 
@@ -237,9 +420,59 @@ document.addEventListener('keydown', async (event) => {
         const refreshed = await API.tryRefreshToken();
         
         if (refreshed) {
+            API._lastRefreshTime = Date.now();
             console.log('[DEBUG] ✅ Token refreshed successfully!');
         } else {
             console.log('[DEBUG] ❌ Token refresh failed!');
         }
     }
+});
+
+// При загрузке страницы: если пользователь уже авторизован, запускаем auto-refresh
+// Это критически важно, потому что после перезагрузки страницы auto-refresh не работает!
+document.addEventListener('DOMContentLoaded', async () => {
+    // Даем время на инициализацию API (baseUrls могут устанавливаться позже)
+    setTimeout(async () => {
+        // Проверяем, есть ли токен (через cookie)
+        const hasToken = document.cookie.split(';').some(c => c.trim().startsWith('access_token='));
+        
+        if (hasToken) {
+            console.log('[API] Обнаружен токен при загрузке страницы');
+            API._lastRefreshTime = Date.now();
+            API.startAutoRefresh();
+            console.log('[API] ✅ Auto-refresh запущен');
+        } else {
+            console.log('[API] Токен не найден при загрузке страницы');
+        }
+    }, 500); // Небольшая задержка для инициализации baseUrls
+});
+
+// ВАЖНО: Обновляем токен когда пользователь возвращается на вкладку
+// Браузер может "замораживать" неактивные вкладки и setInterval не сработает
+document.addEventListener('visibilitychange', async () => {
+    if (document.visibilityState === 'visible') {
+        const hasToken = document.cookie.split(';').some(c => c.trim().startsWith('access_token='));
+        if (hasToken) {
+            console.log('[API] Вкладка стала активной, проверяем токен...');
+            await API.refreshIfNeeded();
+        }
+    }
+});
+
+// Также обновляем токен при любой активности пользователя (каждые 10 минут максимум)
+let lastActivityRefresh = 0;
+const ACTIVITY_REFRESH_INTERVAL = 10 * 60 * 1000; // 10 минут
+
+['click', 'keydown', 'scroll', 'mousemove'].forEach(eventType => {
+    document.addEventListener(eventType, async () => {
+        const now = Date.now();
+        if (now - lastActivityRefresh > ACTIVITY_REFRESH_INTERVAL) {
+            const hasToken = document.cookie.split(';').some(c => c.trim().startsWith('access_token='));
+            if (hasToken) {
+                lastActivityRefresh = now;
+                // Проверяем в фоне, не блокируя
+                API.refreshIfNeeded().catch(e => console.warn('[API] Ошибка обновления токена:', e));
+            }
+        }
+    }, { passive: true });
 });

@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Админ-панель - Audio Chat</title>
+    <link rel="stylesheet" href="css/main.css">
+    <script>
+        // Динамическое изменение названия в зависимости от домена
+        document.addEventListener('DOMContentLoaded', function() {
+            const hostname = window.location.hostname;
+            const brandElement = document.getElementById('navbarBrand');
+            
+            if (brandElement) {
+                if (hostname.includes('audio-chat.ru')) {
+                    brandElement.textContent = 'Audio Chat';
+                } else if (hostname.includes('audio-kostya.online')) {
+                    brandElement.textContent = 'Audio Kostya';
+                }
+            }
+        });
+    </script>
+</head>
+<body>
+    <div class="page-container">
+        <div class="maintenance-banner" role="alert">
+            <div class="maintenance-banner__title">🍫 Ведутся технические шоколадки</div>
+            <p class="maintenance-banner__text">Почему-то упала система авторизации. Завтра надеюсь починю.</p>
+        </div>
+        <nav class="navbar">
+            <div class="navbar-content">
+                <div class="navbar-brand" id="navbarBrand">Audio Kostya</div>
+                <ul class="navbar-nav">
+                    <li><a href="groups.html">Мои группы</a></li>
+                    <li id="auth-nav">
+                        <a href="login.html">Вход</a>
+                    </li>
+                </ul>
+            </div>
+        </nav>
+
+        <main class="content">
+            <div class="container">
+                <h1>Админ-панель</h1>
+                <div id="admin-content" style="display: none;">
+                    <!-- Общая статистика -->
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: var(--spacing-md); margin-bottom: var(--spacing-lg);">
+                        <div class="card">
+                            <div class="card-title">Активных подключений</div>
+                            <div id="total-connections" style="font-size: 48px; font-weight: bold; color: var(--accent-green);">-</div>
+                            <div id="last-update" style="font-size: 12px; color: var(--text-secondary); margin-top: var(--spacing-sm);">Обновлено: -</div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-title">Информация</div>
+                        <div style="margin-top: var(--spacing-md); color: var(--text-secondary);">
+                            <p>Показывается количество активных SignalR подключений к NotificationHub.</p>
+                            <p>Статистика обновляется каждые 10 секунд.</p>
+                        </div>
+                    </div>
+                </div>
+                <div id="access-denied" style="display: none;">
+                    <div class="alert alert-error">
+                        <strong>Доступ запрещен</strong>
+                        <p>Эта страница доступна только администратору.</p>
+                        <a href="groups.html" class="btn btn-primary" style="margin-top: var(--spacing-md);">Вернуться к группам</a>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="js/api.js"></script>
+    <script src="js/utils.js"></script>
+    <script src="js/auth.js"></script>
+    <script>
+        let refreshInterval = null;
+
+        async function checkAccessAndLoadStats() {
+            try {
+                // Проверяем авторизацию
+                const isAuth = await Auth.isAuthenticated();
+                if (!isAuth) {
+                    window.location.href = 'login.html';
+                    return;
+                }
+
+                // Получаем текущего пользователя
+                const user = await Auth.getCurrentUser();
+                if (!user) {
+                    window.location.href = 'login.html';
+                    return;
+                }
+
+                // Проверяем nickname
+                const adminNickname = 'kiberkostya';
+                const userNickname = (user.nickName || '').toLowerCase().trim();
+                
+                if (userNickname !== adminNickname.toLowerCase()) {
+                    // Не администратор - показываем сообщение и редиректим
+                    document.getElementById('admin-content').style.display = 'none';
+                    document.getElementById('access-denied').style.display = 'block';
+                    setTimeout(() => {
+                        window.location.href = 'groups.html';
+                    }, 3000);
+                    return;
+                }
+
+                // Администратор - показываем панель
+                document.getElementById('admin-content').style.display = 'block';
+                document.getElementById('access-denied').style.display = 'none';
+
+                // Обновляем навигацию
+                const authNav = document.getElementById('auth-nav');
+                authNav.innerHTML = `
+                    <span style="color: var(--text-secondary); margin-right: var(--spacing-md);">
+                        ${user.nickName || user.email}
+                    </span>
+                    <a href="#" id="logout-link">Выход</a>
+                `;
+                document.getElementById('logout-link').onclick = async (e) => {
+                    e.preventDefault();
+                    await Auth.logout();
+                    window.location.href = 'login.html';
+                };
+
+                // Загружаем статистику
+                await loadStats();
+
+                // Обновляем каждые 10 секунд
+                if (refreshInterval) {
+                    clearInterval(refreshInterval);
+                }
+                refreshInterval = setInterval(loadStats, 10000);
+            } catch (error) {
+                console.error('Ошибка проверки доступа:', error);
+                window.location.href = 'groups.html';
+            }
+        }
+
+        async function loadStats() {
+            try {
+                // Проверяем наличие токена
+                const token = API.getToken();
+                if (!token) {
+                    console.error('❌ Токен не найден! Нужно войти в систему.');
+                    document.getElementById('total-connections').textContent = 'Ошибка: нет токена';
+                    document.getElementById('last-update').textContent = 'Войдите в систему';
+                    // Перенаправляем на логин через 2 секунды
+                    setTimeout(() => {
+                        window.location.href = 'login.html';
+                    }, 2000);
+                    return;
+                }
+                
+                // Определяем URL для API
+                const protocol = window.location.protocol;
+                const host = window.location.hostname;
+                const port = window.location.port ? `:${window.location.port}` : '';
+                const baseUrl = `${protocol}//${host}${port}`;
+                const isProduction = host !== 'localhost' && host !== '127.0.0.1';
+                
+                // Проверяем, находимся ли мы в тестовой среде (/test/)
+                const isTestEnv = window.location.pathname.startsWith('/test/');
+                const apiPrefix = isTestEnv ? '/test' : '';
+                
+                let statsUrl;
+                if (isProduction) {
+                    statsUrl = `${baseUrl}${apiPrefix}/api/Admin/stats`;
+                } else {
+                    // Локальная разработка - NotificationService на порту 5005
+                    statsUrl = `${baseUrl.replace(/:\d+$/, '')}:5005/api/Admin/stats`;
+                }
+                
+                console.log('📊 Fetching stats from:', statsUrl);
+                console.log('🔑 Token exists:', !!token);
+                const stats = await API.get(statsUrl);
+
+                // Обновляем статистику
+                document.getElementById('total-connections').textContent = stats.totalConnections || 0;
+                
+                // Обновляем время последнего обновления
+                const now = new Date();
+                const timeStr = now.toLocaleTimeString('ru-RU');
+                document.getElementById('last-update').textContent = `Обновлено: ${timeStr}`;
+            } catch (error) {
+                console.error('❌ Ошибка загрузки статистики:', error);
+                console.error('Error details:', {
+                    message: error.message,
+                    stack: error.stack
+                });
+                
+                if (error.message && (error.message.includes('403') || error.message.includes('Forbid'))) {
+                    // Доступ запрещен
+                    document.getElementById('admin-content').style.display = 'none';
+                    document.getElementById('access-denied').style.display = 'block';
+                    setTimeout(() => {
+                        window.location.href = 'groups.html';
+                    }, 3000);
+                } else if (error.message && (error.message.includes('401') || error.message.includes('Unauthorized'))) {
+                    // Не авторизован - перенаправляем на логин
+                    document.getElementById('total-connections').textContent = 'Ошибка: не авторизован';
+                    document.getElementById('last-update').textContent = 'Перенаправление на страницу входа...';
+                    setTimeout(() => {
+                        window.location.href = 'login.html';
+                    }, 2000);
+                } else {
+                    document.getElementById('total-connections').textContent = 'Ошибка';
+                    document.getElementById('last-update').textContent = `Ошибка: ${error.message || 'Неизвестная ошибка'}`;
+                }
+            }
+        }
+
+        // Запускаем при загрузке страницы
+        document.addEventListener('DOMContentLoaded', async () => {
+            // Даем время на инициализацию API
+            setTimeout(checkAccessAndLoadStats, 500);
+        });
+
+        // Очистка при закрытии страницы
+        window.addEventListener('beforeunload', () => {
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+            }
+        });
+    </script>
+</body>
+</html>

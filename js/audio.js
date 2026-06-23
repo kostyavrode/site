@@ -1,52 +1,382 @@
 // Создаем модуль с явным именем, чтобы избежать конфликтов
+// Аудиоэффекты: WAV в site/sounds/ (пути от корня сайта)
+var SOUND_EFFECT_URLS = {
+    pipe: 'sounds/pipe.wav',
+    pain: 'sounds/pain.wav',
+    hammer: 'sounds/hammer.wav',
+    screenshot: 'sounds/screenshot.wav'
+};
+
 var AudioModule = {
     janus: null,
-    audioBridge: null,
+    publisherHandle: null, // Handle для публикации потока (Videoroom)
+    subscriberHandles: new Map(), // Map<PublisherId, Handle> для подписок
     roomId: null,
     channelId: null,
     displayName: 'User',
-    participantId: null,
+    participantId: null, // Publisher ID в Videoroom
     localStream: null,
-    remoteAudio: null,
     isMuted: false,
     participantsUpdateInterval: null,
-    offerCreated: false,
-    jsepProcessed: false,
     
     // Настройки аудио
     audioSettings: {
         noiseSuppression: true,
         echoCancellation: true,
         autoGainControl: true,
-        useRNNoise: false
+        monitorLocalAudio: false // Воспроизведение локального аудио для мониторинга (side-tone) - по умолчанию выключено
     },
     
     // RNNoise настройки
     rnnoiseEnabled: false,
     rnnoiseModule: null,
-    micRawStream: null,
-    audioContext: null,
+    audioContext: null, // Web Audio API контекст для микширования
+    audioMixer: null, // Главный GainNode для микширования
     rnnoiseProcessor: null,
     rnnoiseSourceNode: null,
     rnnoiseDestinationNode: null,
     
-    // Управление громкостью участников
-    participantVolumes: new Map(), // Map<participantId, volume>
-    gainNodes: new Map(), // Map<participantId, GainNode>
-    remoteAudioContext: null, // AudioContext для удаленного аудио
-    participantStreams: new Map(), // Map<participantId, MediaStream> - отдельные потоки участников
-    participantSources: new Map(), // Map<participantId, MediaStreamAudioSourceNode>
-    subscriberHandles: new Map(), // Map<participantId, pluginHandle> - handles для подписки на publishers
-    masterGainNode: null, // Главный GainNode для микширования
-    mixerDestination: null, // Destination для микшированного потока
-    recreateRoomAttempts: 0, // Счетчик попыток пересоздания комнаты
-    maxRecreateAttempts: 3, // Максимальное количество попыток пересоздания
+    // Управление громкостью участников (клиентское микширование)
+    streamVolumes: new Map(), // Map<PublisherId, {gainNode, source, volume, display}>
+    remoteStreams: new Map(), // Map<PublisherId, MediaStream>
+    pendingPublishers: new Map(), // Map<PublisherId, {id, display}> - publishers, на которых подписались, но поток ещё не получен
+    publisherPrivateIds: new Map(), // Map<PublisherId, private_id> - для переподписки
+    
+    // Управление видео (screen share / webcam)
+    localVideoStream: null, // Локальный видео-поток (screen или camera)
+    isScreenSharing: false, // Флаг демонстрации экрана
+    isCameraEnabled: false, // Флаг веб-камеры
+    remoteVideoStreams: new Map(), // Map<PublisherId, {stream, videoElement, display}> - удаленные видео-потоки
+
+    /** Сырой поток микрофона (getUserMedia), не смешанный с Janus */
+    micRawStream: null,
+    /** MediaStreamDestination: один аудиотрек в эфир (мик + эффекты) */
+    publishDestination: null,
+    publishMixedStream: null,
+    micSourceNode: null,
+    micGainNode: null,
+    publishSumGain: null,
+    sfxLocalMonitorGain: null,
+    /** Side-tone: отдельный источник с micRawStream */
+    micMonitorSideToneSource: null,
+    micMonitorSideToneGain: null,
+    soundEffectBuffers: null,
+
+    // Авто-реконнект при обрыве сети
+    intentionalDisconnect: false,
+    wasConnected: false,
+    isReconnecting: false,
+    reconnectTimerId: null,
+    reconnectAttemptInFlight: false,
+    reconnectIntervalMs: 500,
+    reconnectMaxDurationMs: 600000,
+    reconnectStartedAt: null,
+    _isSoftTeardown: false,
+    _reconnectListenersBound: false,
+    _webrtcDownTimer: null,
+
+    getJanusServerUrl() {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const host = window.location.hostname;
+        const port = window.location.port ? `:${window.location.port}` : '';
+        let wsUrl = `${protocol}//${host}${port}/janus-ws`;
+        wsUrl = wsUrl.replace('http://', 'ws://').replace(':8088', ':8188');
+        return wsUrl;
+    },
+
+    _setupReconnectListeners() {
+        if (this._reconnectListenersBound) {
+            return;
+        }
+        this._reconnectListenersBound = true;
+        this._onNetworkOffline = () => this.handleConnectionLost('offline');
+        window.addEventListener('offline', this._onNetworkOffline);
+    },
+
+    handleConnectionLost(reason) {
+        if (this.intentionalDisconnect || !this.channelId || !this.roomId || !this.wasConnected) {
+            return;
+        }
+        if (this.isReconnecting) {
+            return;
+        }
+        console.warn('🔌 Connection lost, starting reconnect loop:', reason);
+        this.startReconnectLoop();
+    },
+
+    startReconnectLoop() {
+        if (this.intentionalDisconnect || !this.channelId || !this.roomId) {
+            return;
+        }
+        if (this.isReconnecting) {
+            return;
+        }
+        this.isReconnecting = true;
+        this.reconnectStartedAt = Date.now();
+        console.log('🔄 Reconnect loop started (every', this.reconnectIntervalMs, 'ms)');
+        if (window.onAudioReconnecting) {
+            window.onAudioReconnecting();
+        }
+        this.reconnectTimerId = setInterval(() => {
+            this.attemptReconnect();
+        }, this.reconnectIntervalMs);
+        this.attemptReconnect();
+    },
+
+    stopReconnectLoop() {
+        if (this.reconnectTimerId) {
+            clearInterval(this.reconnectTimerId);
+            this.reconnectTimerId = null;
+        }
+        if (this._webrtcDownTimer) {
+            clearTimeout(this._webrtcDownTimer);
+            this._webrtcDownTimer = null;
+        }
+        this.isReconnecting = false;
+        this.reconnectStartedAt = null;
+    },
+
+    onReconnectSuccess() {
+        console.log('✅ Auto-reconnect succeeded');
+        this.stopReconnectLoop();
+        if (window.onAudioReconnected) {
+            window.onAudioReconnected();
+        }
+        this.requestPublishersList();
+    },
+
+    waitForParticipantJoined(timeoutMs) {
+        if (this.participantId) {
+            return Promise.resolve();
+        }
+        return new Promise((resolve, reject) => {
+            const deadline = Date.now() + timeoutMs;
+            const timer = setInterval(() => {
+                if (this.participantId) {
+                    clearInterval(timer);
+                    resolve();
+                } else if (Date.now() >= deadline) {
+                    clearInterval(timer);
+                    reject(new Error('Joined event timeout'));
+                }
+            }, 50);
+        });
+    },
+
+    async attemptReconnect() {
+        if (this.reconnectAttemptInFlight || this.intentionalDisconnect) {
+            return;
+        }
+        if (!this.channelId || !this.roomId) {
+            this.stopReconnectLoop();
+            return;
+        }
+        if (this.reconnectStartedAt && Date.now() - this.reconnectStartedAt > this.reconnectMaxDurationMs) {
+            console.error('❌ Reconnect timeout exceeded');
+            this.stopReconnectLoop();
+            if (window.onAudioReconnectFailed) {
+                window.onAudioReconnectFailed();
+            }
+            return;
+        }
+
+        this.reconnectAttemptInFlight = true;
+        try {
+            await this.softTeardownJanusHandles();
+            await this.createJanusConnection(true);
+            await this.joinAsPublisher({ reuseMicrophone: true });
+            await this.waitForParticipantJoined(8000);
+            console.log('🔄 Reconnect attempt completed successfully');
+        } catch (error) {
+            console.warn('🔄 Reconnect attempt failed:', error.message || error);
+        } finally {
+            this.reconnectAttemptInFlight = false;
+        }
+    },
+
+    createJanusConnection(isReconnectAttempt) {
+        return new Promise((resolve, reject) => {
+            const wsUrl = this.getJanusServerUrl();
+            console.log('🔌 Janus URL:', wsUrl);
+
+            this.janus = new Janus({
+                server: wsUrl,
+                success: () => {
+                    console.log('✅ Janus connected successfully');
+                    this.initializeAudioContext();
+                    resolve();
+                },
+                error: (error) => {
+                    const errorMsg = (error && error.message) ? error.message : String(error || 'Ошибка подключения к Janus Gateway');
+                    console.error('Janus connection error:', errorMsg);
+                    if (isReconnectAttempt) {
+                        reject(new Error(errorMsg));
+                        return;
+                    }
+                    if (this.wasConnected && !this.intentionalDisconnect && this.channelId) {
+                        this.handleConnectionLost('janus-error');
+                        return;
+                    }
+                    if (window.onAudioError) {
+                        window.onAudioError(errorMsg);
+                    }
+                    reject(new Error(errorMsg));
+                },
+                destroyed: () => {
+                    console.log('Janus connection destroyed');
+                    if (this._isSoftTeardown) {
+                        return;
+                    }
+                    if (this.wasConnected && !this.intentionalDisconnect && this.channelId) {
+                        this.handleConnectionLost('janus-destroyed');
+                        return;
+                    }
+                    if (window.onAudioDisconnected) {
+                        window.onAudioDisconnected();
+                    }
+                },
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' },
+                    { urls: 'stun:stun2.l.google.com:19302' }
+                ]
+            });
+        });
+    },
+
+    async softTeardownJanusHandles() {
+        this._isSoftTeardown = true;
+        try {
+            this.subscriberHandles.forEach((handle) => {
+                try {
+                    handle.detach();
+                } catch (e) {
+                    console.warn('softTeardown subscriber detach:', e);
+                }
+            });
+            this.subscriberHandles.clear();
+
+            this.streamVolumes.forEach((streamData) => {
+                try {
+                    if (streamData.source) {
+                        streamData.source.disconnect();
+                    }
+                    if (streamData.gainNode) {
+                        streamData.gainNode.disconnect();
+                    }
+                    if (streamData.audioElement) {
+                        streamData.audioElement.pause();
+                        streamData.audioElement.srcObject = null;
+                        if (streamData.audioElement.parentNode) {
+                            streamData.audioElement.parentNode.removeChild(streamData.audioElement);
+                        }
+                    }
+                } catch (e) {
+                    console.warn('softTeardown stream cleanup:', e);
+                }
+            });
+            this.streamVolumes.clear();
+            this.remoteStreams.clear();
+            this.pendingPublishers.clear();
+            this.publisherPrivateIds.clear();
+
+            this.remoteVideoStreams.forEach((videoData) => {
+                try {
+                    if (videoData.videoElement) {
+                        videoData.videoElement.pause();
+                        videoData.videoElement.srcObject = null;
+                        if (videoData.videoElement.parentNode) {
+                            videoData.videoElement.parentNode.removeChild(videoData.videoElement);
+                        }
+                    }
+                } catch (e) {
+                    console.warn('softTeardown remote video cleanup:', e);
+                }
+            });
+            this.remoteVideoStreams.clear();
+
+            if (this.publisherHandle) {
+                try {
+                    this.publisherHandle.send({ message: { request: 'leave' } });
+                    this.publisherHandle.detach();
+                } catch (e) {
+                    console.warn('softTeardown publisher detach:', e);
+                }
+                this.publisherHandle = null;
+            }
+
+            this.participantId = null;
+
+            if (this.janus) {
+                await new Promise((resolve) => {
+                    try {
+                        this.janus.destroy({
+                            success: () => resolve(),
+                            error: () => resolve()
+                        });
+                    } catch (e) {
+                        resolve();
+                    }
+                });
+                this.janus = null;
+            }
+        } finally {
+            this._isSoftTeardown = false;
+        }
+    },
+
+    _onPublisherWebRtcState(on, handle) {
+        console.log('WebRTC state:', on ? 'up' : 'down');
+        if (on) {
+            if (this._webrtcDownTimer) {
+                clearTimeout(this._webrtcDownTimer);
+                this._webrtcDownTimer = null;
+            }
+            console.log('✅ WebRTC соединение установлено - аудио пакеты передаются!');
+
+            if (this.localStream) {
+                this.localStream.getAudioTracks().forEach(track => {
+                    track.enabled = !this.isMuted;
+                });
+            }
+
+            if (handle.webrtcStuff && handle.webrtcStuff.pc) {
+                const pc = handle.webrtcStuff.pc;
+                pc.getTransceivers().forEach(transceiver => {
+                    if (transceiver.sender && transceiver.sender.track && transceiver.sender.track.kind === 'audio') {
+                        transceiver.sender.track.enabled = !this.isMuted;
+                        if (transceiver.direction !== 'sendonly' && transceiver.direction !== 'sendrecv') {
+                            transceiver.direction = 'sendonly';
+                        }
+                    }
+                });
+                pc.getSenders().forEach(sender => {
+                    if (sender.track && sender.track.kind === 'audio') {
+                        sender.track.enabled = !this.isMuted;
+                    }
+                });
+            }
+
+            if (window.onAudioConnected) {
+                window.onAudioConnected();
+            }
+        } else {
+            console.log('❌ WebRTC соединение разорвано');
+            if (!this.isReconnecting && this.wasConnected && !this.intentionalDisconnect) {
+                this._webrtcDownTimer = setTimeout(() => {
+                    this.handleConnectionLost('webrtc-down');
+                }, 2000);
+            }
+        }
+    },
 
     async init(roomId, channelId = null, displayName = 'User') {
         console.log('🎯 Audio.init:', roomId, channelId, displayName);
         this.roomId = roomId;
         this.channelId = channelId;
         this.displayName = displayName;
+        this.intentionalDisconnect = false;
+        this.stopReconnectLoop();
         
         // Загружаем сохраненные настройки аудио
         this.loadAudioSettings();
@@ -69,63 +399,31 @@ var AudioModule = {
             throw new Error('Библиотека Janus не загружена. Проверьте подключение к интернету и обновите страницу.');
         }
         
-        const janusUrl = 'wss://audio-kostya.online/janus-ws';
-        
         return new Promise((resolve, reject) => {
             try {
                 console.log('Initializing Janus...');
-                
-                // Убеждаемся, что adapter доступен глобально для Janus.useDefaultDependencies()
+
                 if (typeof adapter === 'undefined' && typeof window !== 'undefined') {
                     window.adapter = adapterObj;
                     console.log('Set window.adapter for Janus');
                 }
-                
-                // Не передаем dependencies - Janus.useDefaultDependencies() автоматически
-                // использует глобальный adapter и другие зависимости по умолчанию
+
                 Janus.init({
                     debug: 'all',
-                    callback: () => {
+                    callback: async () => {
                         if (!Janus.isWebrtcSupported()) {
                             reject(new Error('WebRTC не поддерживается в этом браузере'));
                             return;
                         }
-
-                        // Используем HTTP для REST API, WebSocket для реального времени
-                        // Заменяем порт 8088 на 8188 и протокол http на ws
-                        let wsUrl = janusUrl;
-                        // Заменяем протокол
-                        wsUrl = wsUrl.replace('http://', 'ws://');
-                        // Заменяем порт 8088 на 8188
-                        wsUrl = wsUrl.replace(':8088', ':8188');
-                        
-                        this.janus = new Janus({
-                            server: wsUrl,
-                            success: () => {
-                                console.log('✅ Janus connected successfully, attaching AudioBridge...');
-                                this.attachAudioBridge();
-                                resolve();
-                            },
-                            error: (error) => {
-                                console.error('Janus connection error:', error);
-                                const errorMsg = error.message || 'Ошибка подключения к Janus Gateway';
-                                if (window.onAudioError) {
-                                    window.onAudioError(errorMsg);
-                                }
-                                reject(new Error(errorMsg));
-                            },
-                            destroyed: () => {
-                                console.log('Janus connection destroyed');
-                                if (window.onAudioDisconnected) {
-                                    window.onAudioDisconnected();
-                                }
-                            },
-                            iceServers: [
-                                { urls: 'stun:stun.l.google.com:19302' },
-                                { urls: 'stun:stun1.l.google.com:19302' },
-                                { urls: 'stun:stun2.l.google.com:19302' }
-                            ]
-                        });
+                        try {
+                            this._setupReconnectListeners();
+                            await this.createJanusConnection(false);
+                            await this.joinAsPublisher();
+                            resolve();
+                        } catch (error) {
+                            console.error('Janus init error:', error);
+                            reject(error);
+                        }
                     }
                 });
             } catch (error) {
@@ -135,120 +433,565 @@ var AudioModule = {
         });
     },
 
-    // Присоединиться к VideoRoom плагину
-    attachAudioBridge() {
-        console.log('🔌 Присоединяемся к VideoRoom плагину...');
-        this.janus.attach({
-            plugin: 'janus.plugin.videoroom',
-            success: (pluginHandle) => {
-                console.log('✅ VideoRoom плагин успешно подключен, handle:', pluginHandle);
-                this.audioBridge = pluginHandle;
-                console.log('🚪 Вызываем joinRoom()...');
-                this.joinRoom();
-            },
-            error: (error) => {
-                console.error('AudioBridge attach error:', error);
-                if (window.onAudioError) {
-                    window.onAudioError(error);
-                }
-            },
-            iceState: (state) => {
-                console.log('ICE state:', state);
-            },
-            webrtcState: (on) => {
-                console.log('WebRTC state:', on ? 'up' : 'down');
-                if (on) {
-                    console.log('✅ WebRTC соединение установлено - аудио пакеты передаются!');
-                    if (window.onAudioConnected) {
-                        window.onAudioConnected();
-                    }
-                } else {
-                    console.log('❌ WebRTC соединение разорвано');
-                }
-            },
-            onmessage: (msg, jsep) => {
-                // ВАЖНО: Janus.js АВТОМАТИЧЕСКИ обрабатывает JSEP answer
-                // Мы НЕ должны вызывать handleRemoteJsep вручную
-                // Просто обрабатываем события для логирования и UI
-                this.handleMessage(msg, jsep);
-                
-                // Janus.js автоматически обработает JSEP, если он есть
-                // Нам нужно только логировать и обновлять UI
-            },
-            onlocalstream: (stream) => {
-                this.localStream = stream;
-                console.log('🎤 Локальный аудио поток получен:', stream);
-                // Проверяем активность микрофона
-                if (stream.getAudioTracks().length > 0) {
-                    const track = stream.getAudioTracks()[0];
-                    console.log('🎤 Микрофон активен:', track.enabled, 'Muted:', track.muted);
-                    // Мониторинг уровня звука (если доступно)
-                    if (window.AudioContext && track.getSettings) {
-                        console.log('🎤 Настройки микрофона:', track.getSettings());
-                    }
-                }
-                if (window.onLocalStream) {
-                    window.onLocalStream(stream);
-                }
-            },
-            // Новый API Janus.js - onlocaltrack
-            onlocaltrack: (track, on) => {
-                console.log('🎤 Локальный трек:', { kind: track.kind, on: on, id: track.id, enabled: track.enabled });
-                if (track.kind === 'audio' && on) {
-                    console.log('✅ Локальный аудио трек отправляется на сервер!');
-                }
-            },
-            // Новый API Janus.js - onremotetrack (для VideoRoom publisher handle не используется)
-            onremotetrack: (track, mid, on) => {
-                console.log('🔊 Удаленный трек получен на publisher handle:', { kind: track.kind, mid: mid, on: on, id: track.id });
-                // В VideoRoom publisher handle используется только для публикации, не для получения
-            },
-            // Старый API для совместимости
-            onremotestream: (stream) => {
-                console.log('🔊 [Legacy] Удаленный аудио поток получен:', stream);
-                if (stream && stream.getAudioTracks().length > 0) {
-                    console.log('🔊 Получено аудио от другого участника! Количество треков:', stream.getAudioTracks().length);
-                    
-                    if (!this.remoteAudio) {
-                        this.remoteAudio = document.createElement('audio');
-                        this.remoteAudio.id = 'remoteAudio';
-                        this.remoteAudio.autoplay = true;
-                        document.body.appendChild(this.remoteAudio);
-                    }
-                    
-                    this.remoteAudio.srcObject = stream;
-                    this.remoteAudio.play().then(() => {
-                        console.log('✅ Удаленный аудио поток воспроизводится');
-                    }).catch((error) => {
-                        console.error('❌ Ошибка воспроизведения удаленного аудио:', error);
-                    });
-                }
-                if (window.onRemoteStream) {
-                    window.onRemoteStream(stream);
-                }
-            },
-            oncleanup: () => {
-                console.log('🧹 Очистка WebRTC ресурсов...');
-                if (this.localStream) {
-                    this.localStream.getTracks().forEach(track => track.stop());
-                    this.localStream = null;
-                }
-                if (this.remoteAudio) {
-                    this.remoteAudio.pause();
-                    this.remoteAudio.srcObject = null;
-                }
-                this.offerCreated = false;
-                this.jsepProcessed = false;
+    // Инициализация AudioContext для клиентского микширования
+    initializeAudioContext() {
+        if (this.audioContext) {
+            if (this.audioContext.state === 'suspended') {
+                this.audioContext.resume();
             }
-        });
+            return;
+        }
+        
+        // Создаем AudioContext (48 kHz — совместимость с Opus / RNNoise)
+        const ACtx = window.AudioContext || window.webkitAudioContext;
+        try {
+            this.audioContext = new ACtx({ sampleRate: 48000 });
+        } catch (e) {
+            this.audioContext = new ACtx();
+        }
+        
+        // Создаем главный микшер
+        this.audioMixer = this.audioContext.createGain();
+        this.audioMixer.gain.value = 1.0;
+        this.audioMixer.connect(this.audioContext.destination);
+        
+        console.log('✅ AudioContext инициализирован для клиентского микширования');
+    },
+
+    teardownPublishAudioGraph() {
+        try {
+            if (this.micMonitorSideToneGain) {
+                try {
+                    this.micMonitorSideToneGain.disconnect();
+                } catch (e) {
+                    /* ignore */
+                }
+                this.micMonitorSideToneGain = null;
+            }
+            if (this.micMonitorSideToneSource) {
+                try {
+                    this.micMonitorSideToneSource.disconnect();
+                } catch (e) {
+                    /* ignore */
+                }
+                this.micMonitorSideToneSource = null;
+            }
+            if (this.rnnoiseProcessor) {
+                try {
+                    this.rnnoiseProcessor.disconnect();
+                } catch (e) {
+                    /* ignore */
+                }
+                this.rnnoiseProcessor = null;
+            }
+            if (this.micSourceNode) {
+                try {
+                    this.micSourceNode.disconnect();
+                } catch (e) {
+                    /* ignore */
+                }
+                this.micSourceNode = null;
+            }
+            if (this.micGainNode) {
+                try {
+                    this.micGainNode.disconnect();
+                } catch (e) {
+                    /* ignore */
+                }
+                this.micGainNode = null;
+            }
+            if (this.publishSumGain) {
+                try {
+                    this.publishSumGain.disconnect();
+                } catch (e) {
+                    /* ignore */
+                }
+                this.publishSumGain = null;
+            }
+            if (this.sfxLocalMonitorGain) {
+                try {
+                    this.sfxLocalMonitorGain.disconnect();
+                } catch (e) {
+                    /* ignore */
+                }
+                this.sfxLocalMonitorGain = null;
+            }
+            if (this.publishDestination) {
+                try {
+                    this.publishDestination.disconnect();
+                } catch (e) {
+                    /* ignore */
+                }
+                this.publishDestination = null;
+            }
+        } catch (e) {
+            console.warn('teardownPublishAudioGraph:', e);
+        }
+
+        if (this.publishMixedStream) {
+            try {
+                this.publishMixedStream.getTracks().forEach((t) => {
+                    try {
+                        t.stop();
+                    } catch (e2) {
+                        /* ignore */
+                    }
+                });
+            } catch (e) {
+                /* ignore */
+            }
+        }
+        this.publishMixedStream = null;
+
+        if (this.micRawStream) {
+            try {
+                this.micRawStream.getTracks().forEach((t) => t.stop());
+            } catch (e) {
+                /* ignore */
+            }
+            this.micRawStream = null;
+        }
+        this.rnnoiseSourceNode = null;
+        this.rnnoiseDestinationNode = null;
+        this.rnnoiseEnabled = false;
+        this.localStream = null;
+        this.soundEffectBuffers = null;
+    },
+
+    /**
+     * Граф: micRawStream -> micGain -> publishSumGain -> MediaStreamDestination (эфир).
+     * Эффекты подключаются к publishSumGain на время воспроизведения.
+     */
+    async buildPublishAudioGraph(micStream) {
+        this.teardownPublishAudioGraph();
+        this.initializeAudioContext();
+        const ctx = this.audioContext;
+        if (ctx.state === 'suspended') {
+            await ctx.resume();
+        }
+
+        this.micRawStream = micStream;
+        this.publishDestination = ctx.createMediaStreamDestination();
+        this.publishSumGain = ctx.createGain();
+        this.publishSumGain.gain.value = 1.0;
+        this.publishSumGain.connect(this.publishDestination);
+
+        this.micGainNode = ctx.createGain();
+        this.micGainNode.gain.value = 1.0;
+        this.micSourceNode = ctx.createMediaStreamSource(this.micRawStream);
+        this.micSourceNode.connect(this.micGainNode);
+        this.micGainNode.connect(this.publishSumGain);
+
+        this.sfxLocalMonitorGain = ctx.createGain();
+        this.sfxLocalMonitorGain.gain.value = 0.55;
+        this.sfxLocalMonitorGain.connect(ctx.destination);
+
+        this.publishMixedStream = this.publishDestination.stream;
+        this.localStream = this.publishMixedStream;
+        this.soundEffectBuffers = {};
+        this.preloadSoundEffects().catch((e) => console.warn('SFX preload:', e));
+    },
+
+    getSoundEffectUrl(effectId) {
+        const rel = SOUND_EFFECT_URLS[effectId];
+        if (!rel) {
+            return null;
+        }
+        return typeof window !== 'undefined' && window.location
+            ? new URL(rel, window.location.href).toString()
+            : rel;
+    },
+
+    ensureAudioContextRunning() {
+        const ctx = this.audioContext;
+        if (ctx && ctx.state === 'suspended') {
+            ctx.resume();
+        }
+    },
+
+    async loadEffectBuffer(effectId) {
+        const rel = SOUND_EFFECT_URLS[effectId];
+        if (!rel || !this.audioContext) {
+            return null;
+        }
+        if (!this.soundEffectBuffers) {
+            this.soundEffectBuffers = {};
+        }
+        if (this.soundEffectBuffers[effectId]) {
+            return this.soundEffectBuffers[effectId];
+        }
+        const url = this.getSoundEffectUrl(effectId);
+        const res = await fetch(url);
+        if (!res.ok) {
+            throw new Error(`fetch failed ${url} ${res.status}`);
+        }
+        const arr = await res.arrayBuffer();
+        const buffer = await this.audioContext.decodeAudioData(arr.slice(0));
+        this.soundEffectBuffers[effectId] = buffer;
+        return buffer;
+    },
+
+    async preloadSoundEffects() {
+        if (!this.publishSumGain || !this.audioContext) {
+            return;
+        }
+        const ctx = this.audioContext;
+        if (ctx.state === 'suspended') {
+            await ctx.resume();
+        }
+        const ids = Object.keys(SOUND_EFFECT_URLS);
+        await Promise.all(ids.map((id) => this.loadEffectBuffer(id)));
+        console.log('✅ SFX preloaded:', ids.length);
+    },
+
+    _startSoundEffectBuffer(effectId) {
+        const buffer = this.soundEffectBuffers && this.soundEffectBuffers[effectId];
+        if (!buffer || !this.publishSumGain || !this.audioContext) {
+            return false;
+        }
+        const ctx = this.audioContext;
+        this.ensureAudioContextRunning();
+        if (ctx.state === 'suspended') {
+            console.warn('playSoundEffect: AudioContext still suspended');
+            return false;
+        }
+
+        const src = ctx.createBufferSource();
+        src.buffer = buffer;
+        const gSend = ctx.createGain();
+        gSend.gain.value = 0.42;
+        const gLoc = ctx.createGain();
+        gLoc.gain.value = 0.48;
+        src.connect(gSend);
+        gSend.connect(this.publishSumGain);
+        src.connect(gLoc);
+        if (this.sfxLocalMonitorGain) {
+            gLoc.connect(this.sfxLocalMonitorGain);
+        } else {
+            gLoc.connect(ctx.destination);
+        }
+        src.onended = () => {
+            try {
+                src.disconnect();
+                gSend.disconnect();
+                gLoc.disconnect();
+            } catch (e) {
+                /* ignore */
+            }
+        };
+        src.start(0);
+        return true;
+    },
+
+    /** Аудиотрек, уходящий в Janus (из Web Audio MediaStreamDestination). */
+    getPublishAudioTrack() {
+        if (!this.localStream || !this.localStream.getAudioTracks) {
+            return null;
+        }
+        return this.localStream.getAudioTracks()[0] || null;
+    },
+
+    /**
+     * Объект media для Janus createOffer: без поля audio Janus делает capture=true = новый getUserMedia,
+     * игнорируя stream — тогда в эфир не попадает смешанный граф (только локальный monitor SFX).
+     */
+    buildJanusAudioPublisherMedia(hasAudio, extra) {
+        const media = Object.assign(
+            {
+                audioRecv: false,
+                videoRecv: false,
+                audioSend: hasAudio,
+                videoSend: false
+            },
+            extra || {}
+        );
+        if (hasAudio) {
+            const at = this.getPublishAudioTrack();
+            if (at) {
+                media.audio = at;
+            }
+        }
+        return media;
+    },
+
+    /**
+     * Воспроизвести эффект в эфир (смешивание) и локально у отправителя.
+     * @param {string} effectId pipe | pain | hammer | screenshot
+     */
+    async playSoundEffect(effectId) {
+        const rel = SOUND_EFFECT_URLS[effectId];
+        if (!rel || !this.publishSumGain || !this.audioContext) {
+            console.warn('playSoundEffect: нет графа или неизвестный id', effectId);
+            return false;
+        }
+        this.ensureAudioContextRunning();
+        try {
+            if (!this.soundEffectBuffers || !this.soundEffectBuffers[effectId]) {
+                await this.loadEffectBuffer(effectId);
+            }
+            return this._startSoundEffectBuffer(effectId);
+        } catch (e) {
+            console.error('playSoundEffect:', e);
+            return false;
+        }
+    },
+
+    // Присоединиться к Videoroom как Publisher
+    async joinAsPublisher(options = {}) {
+        console.log('🔌 Присоединяемся к Videoroom как Publisher...');
+        
+        const reuseMicrophone = options.reuseMicrophone === true;
+        const constraints = this.getAudioConstraints();
+        const hasLiveMic = reuseMicrophone && this.micRawStream &&
+            this.micRawStream.getAudioTracks().some((track) => track.readyState === 'live');
+        
+        try {
+            if (hasLiveMic && this.publishMixedStream && this.localStream) {
+                console.log('🎤 Reusing existing microphone stream for reconnect');
+                this.micRawStream.getAudioTracks().forEach((track) => {
+                    track.enabled = !this.isMuted;
+                });
+                if (this.audioContext && this.audioContext.state === 'suspended') {
+                    await this.audioContext.resume();
+                }
+            } else if (hasLiveMic) {
+                console.log('🎤 Rebuilding publish graph from existing microphone');
+                await this.buildPublishAudioGraph(this.micRawStream);
+                if (this.audioContext && this.audioContext.state === 'suspended') {
+                    await this.audioContext.resume();
+                }
+            } else {
+                const micStream = await navigator.mediaDevices.getUserMedia(constraints);
+
+                micStream.getAudioTracks().forEach((track) => {
+                    track.enabled = true;
+                    if (track.muted) {
+                        console.warn(`⚠️ Локальный трек ${track.id} muted, пытаемся исправить...`);
+                    }
+                    console.log(`✅ Локальный трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
+                });
+
+                await this.buildPublishAudioGraph(micStream);
+
+                if (this.audioContext && this.audioContext.state === 'suspended') {
+                    await this.audioContext.resume();
+                }
+
+                if (this.audioSettings.monitorLocalAudio && this.audioContext && this.audioMixer && this.micRawStream) {
+                    try {
+                        this.micMonitorSideToneSource = this.audioContext.createMediaStreamSource(this.micRawStream);
+                        this.micMonitorSideToneGain = this.audioContext.createGain();
+                        this.micMonitorSideToneGain.gain.value = 0.3;
+                        this.micMonitorSideToneSource.connect(this.micMonitorSideToneGain);
+                        this.micMonitorSideToneGain.connect(this.audioMixer);
+                        console.log('🎧 Локальный аудио поток подключен для мониторинга (side-tone)');
+                    } catch (error) {
+                        console.warn('⚠️ Не удалось подключить локальный поток для мониторинга:', error);
+                    }
+                }
+            }
+
+            await new Promise((resolve, reject) => {
+                if (!this.janus) {
+                    reject(new Error('Janus session not initialized'));
+                    return;
+                }
+
+                this.janus.attach({
+                plugin: 'janus.plugin.videoroom',
+                opaqueId: this.displayName,
+                success: (handle) => {
+                    this.publisherHandle = handle;
+                    
+                    // Присоединяемся к комнате как publisher
+                    handle.send({
+                        message: {
+                            request: 'join',
+                            room: this.roomId,
+                            ptype: 'publisher', // Ключевое отличие: всегда publisher
+                            display: this.displayName
+                        },
+                        success: (result) => {
+                            console.log('✅ Присоединились к комнате как Publisher:', result);
+                            // participantId будет установлен в handlePublisherMessage при получении события 'joined'
+                            
+                            if (this.micRawStream) {
+                                this.micRawStream.getAudioTracks().forEach((track) => {
+                                    track.enabled = !this.isMuted;
+                                    console.log(`✅ Перед публикацией (mic) трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
+                                });
+                            }
+
+                            const hasAudio = this.localStream && this.localStream.getAudioTracks().length > 0;
+
+                            handle.createOffer({
+                                media: this.buildJanusAudioPublisherMedia(hasAudio),
+                                stream: this.localStream,
+                                success: (jsep) => {
+                                    if (this.micRawStream) {
+                                        this.micRawStream.getAudioTracks().forEach((track) => {
+                                            track.enabled = !this.isMuted;
+                                        });
+                                    }
+                                    if (this.localStream) {
+                                        this.localStream.getAudioTracks().forEach((track) => {
+                                            track.enabled = !this.isMuted;
+                                        });
+                                    }
+                                    
+                                    // Контролируем через RTCPeerConnection и RTCRtpTransceiver
+                                    if (handle.webrtcStuff && handle.webrtcStuff.pc) {
+                                        const pc = handle.webrtcStuff.pc;
+                                        
+                                        // Убеждаемся что все transceivers настроены правильно
+                                        const transceivers = pc.getTransceivers();
+                                        transceivers.forEach(transceiver => {
+                                            if (transceiver.sender && transceiver.sender.track && transceiver.sender.track.kind === 'audio') {
+                                                transceiver.sender.track.enabled = !this.isMuted;
+                                                // Убеждаемся что direction правильный
+                                                if (transceiver.direction !== 'sendonly' && transceiver.direction !== 'sendrecv') {
+                                                    transceiver.direction = 'sendonly';
+                                                }
+                                                console.log(`✅ RTCRtpTransceiver: track=${transceiver.sender.track.id}, enabled=${transceiver.sender.track.enabled}, direction=${transceiver.direction}`);
+                                            }
+                                        });
+                                        
+                                        // Также проверяем senders
+                                        const senders = pc.getSenders();
+                                        senders.forEach(sender => {
+                                            if (sender.track && sender.track.kind === 'audio') {
+                                                sender.track.enabled = !this.isMuted;
+                                                console.log(`✅ RTCRtpSender перед publish: ${sender.track.id} enabled=${sender.track.enabled}, muted=${sender.track.muted}`);
+                                            }
+                                        });
+                                    }
+                                    
+                                    handle.send({
+                                        message: {
+                                            request: 'publish',
+                                            audio: hasAudio,
+                                            video: false
+                                        },
+                                        jsep: jsep
+                                    });
+                                },
+                                error: (error) => {
+                                    console.error('❌ Create offer error:', error);
+                                    reject(error);
+                                }
+                            });
+                            
+                            // Подписываемся на существующих publishers
+                            this.requestPublishersList();
+                            resolve();
+                        },
+                        error: (error) => {
+                            console.error('❌ Join error:', error);
+                            if (!this.isReconnecting && window.onAudioError) {
+                                window.onAudioError(error);
+                            }
+                            reject(error);
+                        }
+                    });
+                    
+                    // Обработка сообщений от сервера
+                    handle.onmessage = (msg, jsep) => {
+                        this.handlePublisherMessage(msg, jsep);
+                    };
+                    
+                    handle.onlocalstream = (stream) => {
+                        if (this.publishMixedStream) {
+                            this.localStream = this.publishMixedStream;
+                        } else {
+                            this.localStream = stream;
+                        }
+                        console.log('🎤 Локальный аудио поток (publish):', this.localStream);
+                        
+                        // Убеждаемся, что все треки enabled и не muted
+                        stream.getAudioTracks().forEach(track => {
+                            track.enabled = !this.isMuted;
+                            console.log(`✅ onlocalstream трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
+                        });
+                        
+                        // Убеждаемся, что треки отправляются через RTCRtpSender
+                        if (handle.webrtcStuff && handle.webrtcStuff.pc) {
+                            const pc = handle.webrtcStuff.pc;
+                            const senders = pc.getSenders();
+                            senders.forEach(sender => {
+                                if (sender.track && sender.track.kind === 'audio') {
+                                    sender.track.enabled = !this.isMuted;
+                                    console.log(`✅ RTCRtpSender трек ${sender.track.id}: enabled=${sender.track.enabled}, muted=${sender.track.muted}`);
+                                }
+                            });
+                        }
+                        
+                        if (window.onLocalStream) {
+                            window.onLocalStream(stream);
+                        }
+                    };
+                    
+                    handle.webrtcState = (on) => {
+                        this._onPublisherWebRtcState(on, handle);
+                    };
+                },
+                error: (error) => {
+                    console.error('Videoroom attach error:', error);
+                    if (!this.isReconnecting && window.onAudioError) {
+                        window.onAudioError(error);
+                    }
+                    reject(error);
+                }
+            });
+            });
+        } catch (error) {
+            if (this.isReconnecting) {
+                throw error;
+            }
+            console.error('❌ Ошибка получения медиа:', error);
+            
+            // Формируем понятное сообщение в зависимости от типа ошибки
+            let errorMessage = 'Ошибка доступа к микрофону';
+            let errorDetails = '';
+            
+            if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+                errorMessage = 'Доступ к микрофону заблокирован';
+                errorDetails = 'Пожалуйста, разрешите доступ к микрофону в настройках браузера. ' +
+                             'Обычно это значок замка или камеры в адресной строке браузера. ' +
+                             'После разрешения доступа обновите страницу.';
+            } else if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
+                errorMessage = 'Микрофон не найден';
+                errorDetails = 'Пожалуйста, подключите микрофон и обновите страницу.';
+            } else if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
+                errorMessage = 'Не удалось получить доступ к микрофону';
+                errorDetails = 'Возможно, микрофон используется другим приложением. ' +
+                             'Закройте другие приложения, использующие микрофон, и обновите страницу.';
+            } else if (error.name === 'OverconstrainedError' || error.name === 'ConstraintNotSatisfiedError') {
+                errorMessage = 'Микрофон не поддерживает требуемые настройки';
+                errorDetails = 'Попробуйте использовать другой микрофон или обновите драйверы.';
+            } else if (error.name === 'TypeError') {
+                errorMessage = 'Ошибка браузера';
+                errorDetails = 'Убедитесь, что используете современный браузер (Chrome, Firefox, Edge) и сайт открыт по HTTPS.';
+            } else {
+                errorMessage = error.message || 'Неизвестная ошибка доступа к микрофону';
+                errorDetails = 'Попробуйте обновить страницу или использовать другой браузер.';
+            }
+            
+            console.error(`❌ ${errorMessage}:`, errorDetails);
+            
+            if (window.onAudioError) {
+                window.onAudioError(`${errorMessage}. ${errorDetails}`);
+            }
+            
+            // Также показываем alert для пользователя
+            alert(`${errorMessage}\n\n${errorDetails}`);
+        }
     },
 
     // Получить настройки аудио constraints
     getAudioConstraints() {
-        const useRNNoise = this.rnnoiseEnabled === true;
         return {
             audio: {
-                noiseSuppression: useRNNoise ? false : this.audioSettings.noiseSuppression,
+                noiseSuppression: this.audioSettings.noiseSuppression,
                 echoCancellation: this.audioSettings.echoCancellation,
                 autoGainControl: this.audioSettings.autoGainControl
             },
@@ -256,109 +999,10 @@ var AudioModule = {
         };
     },
 
-    isRNNoiseLibraryAvailable() {
-        const noiseSuppressor =
-            typeof webNoiseSuppressor !== 'undefined'
-                ? webNoiseSuppressor
-                : typeof window !== 'undefined' && window.webNoiseSuppressor
-                  ? window.webNoiseSuppressor
-                  : null;
-        return !!(
-            noiseSuppressor &&
-            (typeof noiseSuppressor.createRnnoiseWorkletNode === 'function' ||
-                typeof noiseSuppressor.RnnoiseWorkletNode !== 'undefined')
-        );
-    },
-
-    teardownRNNoiseGraph() {
-        if (this.rnnoiseProcessor) {
-            try {
-                this.rnnoiseProcessor.disconnect();
-                if (typeof this.rnnoiseProcessor.destroy === 'function') {
-                    this.rnnoiseProcessor.destroy();
-                }
-            } catch (e) {
-                /* ignore */
-            }
-            this.rnnoiseProcessor = null;
-        }
-        if (this.rnnoiseSourceNode) {
-            try {
-                this.rnnoiseSourceNode.disconnect();
-            } catch (e) {
-                /* ignore */
-            }
-            this.rnnoiseSourceNode = null;
-        }
-        this.rnnoiseDestinationNode = null;
-    },
-
-    async buildPublishStream(rawStream) {
-        if (!this.rnnoiseEnabled) {
-            return rawStream;
-        }
-        const processedStream = await this.initRNNoise(rawStream);
-        if (processedStream && processedStream.getAudioTracks().length > 0) {
-            return processedStream;
-        }
-        console.warn('⚠️ RNNoise недоступен, используем сырой микрофон');
-        this.rnnoiseEnabled = false;
-        this.audioSettings.useRNNoise = false;
-        try {
-            localStorage.setItem('audioSettings', JSON.stringify(this.audioSettings));
-            localStorage.setItem('rnnoiseEnabled', 'false');
-        } catch (e) {
-            /* ignore */
-        }
-        return rawStream;
-    },
-
-    async capturePublishAudioTrack() {
-        if (this.micRawStream) {
-            this.micRawStream.getTracks().forEach((track) => track.stop());
-            this.micRawStream = null;
-        }
-        this.teardownRNNoiseGraph();
-
-        const rawStream = await navigator.mediaDevices.getUserMedia(this.getAudioConstraints());
-        this.micRawStream = rawStream;
-        const publishStream = await this.buildPublishStream(rawStream);
-        const publishTrack = publishStream.getAudioTracks()[0];
-        if (!publishTrack) {
-            throw new Error('Не удалось получить аудио трек для публикации');
-        }
-        return { rawStream, publishStream, publishTrack };
-    },
-
-    async setUseRNNoise(enabled) {
-        const wantEnabled = enabled === true;
-        this.updateAudioSettings({
-            useRNNoise: wantEnabled,
-            ...(wantEnabled ? { noiseSuppression: false } : {})
-        });
-
-        if (this.audioBridge && this.localStream) {
-            return this.replaceAudioTrack();
-        }
-        return true;
-    },
-
     // Обновить настройки аудио
     updateAudioSettings(settings) {
         const oldSettings = { ...this.audioSettings };
         this.audioSettings = { ...this.audioSettings, ...settings };
-
-        if (settings.useRNNoise !== undefined) {
-            this.rnnoiseEnabled = settings.useRNNoise === true;
-            if (this.rnnoiseEnabled) {
-                this.audioSettings.noiseSuppression = false;
-            }
-            try {
-                localStorage.setItem('rnnoiseEnabled', String(this.rnnoiseEnabled));
-            } catch (e) {
-                /* ignore */
-            }
-        }
         
         // Сохраняем в localStorage
         try {
@@ -407,54 +1051,40 @@ var AudioModule = {
     
     // Пересоздать аудио трек с новыми настройками (во время разговора)
     async replaceAudioTrack() {
-        if (!this.audioBridge || !this.localStream) {
-            console.warn('⚠️ Невозможно заменить трек: нет активного соединения');
+        if (!this.publisherHandle || !this.micRawStream || !this.micGainNode || !this.audioContext) {
+            console.warn('⚠️ Невозможно заменить трек: нет активного соединения или графа публикации');
             return false;
         }
-        
+
         try {
-            console.log('🔄 Пересоздаем аудио трек с настройками:', this.audioSettings);
-            
-            const oldTrack = this.localStream.getAudioTracks()[0];
-            if (!oldTrack) {
-                console.warn('⚠️ Не найден старый аудио трек');
+            console.log('🔄 Пересоздаём вход микрофона в графе публикации:', this.audioSettings);
+            const constraints = this.getAudioConstraints();
+            const newStream = await navigator.mediaDevices.getUserMedia(constraints);
+            const newTrack = newStream.getAudioTracks()[0];
+            if (!newTrack) {
+                console.error('❌ Не удалось получить новый аудио трек');
+                newStream.getTracks().forEach((t) => t.stop());
                 return false;
             }
 
-            const { publishStream, publishTrack } = await this.capturePublishAudioTrack();
-            
-            const webrtcStuff = this.audioBridge.webrtcStuff;
-            if (!webrtcStuff || !webrtcStuff.pc) {
-                console.error('❌ RTCPeerConnection не найден');
-                return false;
-            }
-            
-            const pc = webrtcStuff.pc;
-            const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'audio');
-            
-            if (!sender) {
-                console.error('❌ Не найден RTCRtpSender для замены трека');
-                return false;
-            }
-            
-            await sender.replaceTrack(publishTrack);
-            console.log('✅ Аудио трек заменен успешно');
-            
-            if (oldTrack.id !== publishTrack.id) {
-                oldTrack.stop();
-            }
-            this.localStream = publishStream;
-            
-            if (webrtcStuff.localStream) {
-                const janusOldTrack = webrtcStuff.localStream.getAudioTracks()[0];
-                if (janusOldTrack && janusOldTrack.id !== publishTrack.id) {
-                    webrtcStuff.localStream.removeTrack(janusOldTrack);
-                }
-                if (!webrtcStuff.localStream.getAudioTracks().some((t) => t.id === publishTrack.id)) {
-                    webrtcStuff.localStream.addTrack(publishTrack);
+            this.micRawStream.getTracks().forEach((t) => t.stop());
+            this.micRawStream = newStream;
+            newStream.getVideoTracks().forEach((t) => t.stop());
+
+            if (this.micSourceNode) {
+                try {
+                    this.micSourceNode.disconnect();
+                } catch (e) {
+                    /* ignore */
                 }
             }
-            
+            this.micSourceNode = this.audioContext.createMediaStreamSource(this.micRawStream);
+            if (this.rnnoiseEnabled && this.rnnoiseProcessor) {
+                this.micSourceNode.connect(this.rnnoiseProcessor);
+            } else {
+                this.micSourceNode.connect(this.micGainNode);
+            }
+            console.log('✅ Микрофон в графе публикации обновлён');
             return true;
         } catch (error) {
             console.error('❌ Ошибка при замене аудио трека:', error);
@@ -462,570 +1092,3272 @@ var AudioModule = {
         }
     },
 
-    // Запросить список участников (VideoRoom)
-    // ВАЖНО: 'list' возвращает список КОМНАТ, а не publishers!
-    // Для получения списка участников нужно использовать 'listparticipants'
-    requestParticipantsList() {
-        this.requestParticipantsListCorrect();
-    },
-    
-    requestParticipantsListCorrect() {
-        if (this.audioBridge && this.roomId) {
-            console.log('📋 Запрашиваем список participants для комнаты', this.roomId, '...');
-            this.audioBridge.send({
-                message: { 
-                    request: 'listparticipants',
-                    room: this.roomId
-                },
-                success: (result) => {
-                    console.log('✅ Ответ на listparticipants запрос (success callback):', JSON.stringify(result, null, 2));
-                    if (result) {
-                        this.handleParticipantsListResponse(result);
-                    }
-                },
-                error: (error) => {
-                    console.error('❌ Ошибка при запросе списка participants:', error);
-                }
-            });
-        } else {
-            console.warn('⚠️ audioBridge или roomId не доступен, не могу запросить список участников');
-        }
-    },
-    
-    handleParticipantsListResponse(event) {
-        console.log('📋 Обработка ответа на listparticipants:', event);
-        
-        let publishers = event.participants || event.publishers || event.list;
-        
-        // Если publishers это объект с массивом, извлекаем массив
-        if (publishers && typeof publishers === 'object' && !Array.isArray(publishers)) {
-            if (publishers.list && Array.isArray(publishers.list)) {
-                publishers = publishers.list;
-            } else if (publishers.publishers && Array.isArray(publishers.publishers)) {
-                publishers = publishers.publishers;
-            } else if (publishers.participants && Array.isArray(publishers.participants)) {
-                publishers = publishers.participants;
-            } else {
-                // Пытаемся найти массив в объекте
-                const keys = Object.keys(publishers);
-                for (const key of keys) {
-                    if (Array.isArray(publishers[key])) {
-                        publishers = publishers[key];
-                        break;
-                    }
-                }
-            }
-        }
-        
-        const participants = Array.isArray(publishers) ? publishers : [];
-        console.log('📋 Список publishers (VideoRoom):', participants.length, 'участников', participants);
-        console.log('📋 Детали publishers:', JSON.stringify(participants, null, 2));
-        
-        if (!this.participantId && participants.length > 0) {
-            const self = participants.find(p => {
-                const pDisplay = (p.display || p.displayName || '').trim();
-                const myDisplay = this.displayName.trim();
-                return pDisplay === myDisplay;
-            });
-            if (self && self.id) {
-                this.participantId = self.id;
-                console.log('✅ Найден свой participantId из списка:', this.participantId);
-            }
-        }
-        
-        // Подписываемся на всех publishers (кроме себя)
-        console.log(`🔍 Подписываемся на publishers. Мой ID: ${this.participantId}, Всего: ${participants.length}`);
-        this.subscribeToPublishers(participants);
-        
-        // Инициализируем Web Audio API микшер если еще не инициализирован
-        if (!this.remoteAudioContext) {
-            this.initWebAudioMixer();
-        }
-        
-        console.log('🔍 Вызываем onParticipantsUpdate с', participants.length, 'участниками');
-        if (window.onParticipantsUpdate) {
-            window.onParticipantsUpdate(participants, this.participantId);
-            console.log('✅ onParticipantsUpdate вызван');
-        } else {
-            console.warn('⚠️ window.onParticipantsUpdate не определен при обработке listparticipants');
-        }
-    },
+    // Старые методы удалены - используются новые методы для Videoroom
+    // requestParticipantsList -> requestPublishersList
+    // joinRoom -> joinAsPublisher (вызывается автоматически при init)
+    // handleMessage -> handlePublisherMessage
 
-    // Присоединиться к комнате (VideoRoom)
-    async joinRoom() {
-        if (!this.audioBridge) {
-            console.error('❌ audioBridge не инициализирован, не могу присоединиться к комнате');
-            return;
+    // Установить громкость потока (клиентское управление)
+    setParticipantVolume(publisherId, volume) {
+        // Преобразуем publisherId в строку для поиска в Map
+        const publisherIdStr = String(publisherId);
+        
+        // Если volume больше 1, предполагаем что это проценты (0-100), преобразуем в 0.0-1.0
+        let normalizedVolume = volume;
+        if (volume > 1.0) {
+            normalizedVolume = volume / 100.0;
         }
-        if (!this.roomId) {
-            console.error('❌ roomId не установлен, не могу присоединиться к комнате');
+        
+        const streamData = this.streamVolumes.get(publisherIdStr);
+        if (!streamData) {
+            // Пробуем найти по числовому ID
+            const numericId = typeof publisherId === 'string' ? parseInt(publisherId, 10) : publisherId;
+            const streamDataByNum = this.streamVolumes.get(String(numericId));
+            if (streamDataByNum && streamDataByNum.gainNode) {
+                const clampedVolume = Math.max(0.0, Math.min(2.0, normalizedVolume));
+                streamDataByNum.gainNode.gain.value = clampedVolume;
+                streamDataByNum.volume = clampedVolume;
+                console.log(`✅ Громкость потока ${numericId} установлена: ${Math.round(clampedVolume * 100)}%`);
+                return;
+            }
+            console.warn(`⚠️ Поток ${publisherId} не найден для установки громкости. Доступные потоки:`, Array.from(this.streamVolumes.keys()));
             return;
         }
         
-        // Проверяем существование комнаты перед подключением
-        if (this.channelId) {
-            try {
-                console.log('🔍 Проверяем существование комнаты для канала:', this.channelId);
-                const channelInfo = await API.get(`${API.baseUrls.audio}/api/audio/AudioChannels/${this.channelId}`);
-                if (!channelInfo || !channelInfo.janusRoomId) {
-                    console.warn('⚠️ Комната не существует, пытаемся пересоздать...');
-                    await API.post(`${API.baseUrls.audio}/api/audio/AudioChannels/${this.channelId}/recreate-room`);
-                    console.log('✅ Комната пересоздана, обновляем roomId...');
-                    const updatedChannel = await API.get(`${API.baseUrls.audio}/api/audio/AudioChannels/${this.channelId}`);
-                    if (updatedChannel && updatedChannel.janusRoomId) {
-                        this.roomId = updatedChannel.janusRoomId;
-                        console.log('✅ roomId обновлен:', this.roomId);
-                    }
-                }
-            } catch (error) {
-                console.warn('⚠️ Не удалось проверить/пересоздать комнату, продолжаем подключение:', error);
-            }
-        }
+        // Ограничиваем значение (0.0 - 2.0)
+        const clampedVolume = Math.max(0.0, Math.min(2.0, normalizedVolume));
         
-        console.log('🚪 Отправляем запрос на присоединение к VideoRoom:', this.roomId);
-        const joinRequest = {
-            request: 'join',
-            room: this.roomId,
-            ptype: 'publisher',
-            display: this.displayName
-        };
-        console.log('📤 Отправляем join запрос (publisher):', joinRequest);
-        try {
-            this.audioBridge.send({ message: joinRequest });
-            console.log('✅ Join запрос (publisher) отправлен успешно');
-        } catch (error) {
-            console.error('❌ Ошибка при отправке join запроса:', error);
+        if (streamData.gainNode) {
+            // Устанавливаем громкость через GainNode (Web Audio API)
+            streamData.gainNode.gain.value = clampedVolume;
+            streamData.volume = clampedVolume;
+            
+            // Проверяем, что значение действительно установлено
+            const actualGain = streamData.gainNode.gain.value;
+            console.log(`✅ Громкость потока ${publisherIdStr}: запрошено ${Math.round(clampedVolume * 100)}%, фактически gain.value=${actualGain.toFixed(3)}`);
+            
+            // Также устанавливаем громкость на audioElement как запасной вариант
+            if (streamData.audioElement) {
+                streamData.audioElement.volume = Math.min(1.0, clampedVolume);
+                console.log(`🔊 Также установлена громкость audioElement: ${streamData.audioElement.volume}`);
+            }
+        } else if (streamData.audioElement) {
+            // Устанавливаем громкость через HTMLAudioElement (только 0.0-1.0)
+            streamData.audioElement.volume = Math.min(1.0, clampedVolume);
+            streamData.volume = clampedVolume;
+            console.log(`✅ Громкость потока ${publisherIdStr} установлена через audioElement: ${Math.round(Math.min(1.0, clampedVolume) * 100)}%`);
+        } else {
+            console.warn(`⚠️ Ни GainNode, ни audioElement не найдены для потока ${publisherIdStr}`);
         }
     },
 
-    // Обработка сообщений от Janus
-    async handleMessage(msg, jsep) {
-        console.log('📨 Получено сообщение от Janus:', JSON.stringify(msg, null, 2));
-        console.log('🔍 Структура msg:', {
-            has_plugindata: 'plugindata' in msg,
-            plugindata: msg.plugindata,
-            jsep: jsep ? 'есть' : 'нет',
-            msg_keys: Object.keys(msg),
-            has_audiobridge: 'audiobridge' in msg,
-            has_videoroom: 'videoroom' in msg
-        });
-        
-        // Пытаемся извлечь event из разных структур
-        let event = null;
-        if (msg.plugindata && msg.plugindata.data) {
-            // Стандартная структура: msg.plugindata.data
-            event = msg.plugindata.data;
-            console.log('✅ event извлечен из msg.plugindata.data');
-        } else if (msg.plugindata && msg.plugindata.data && msg.plugindata.plugin === 'janus.plugin.videoroom') {
-            // VideoRoom через plugindata
-            event = msg.plugindata.data;
-            console.log('✅ event извлечен из msg.plugindata.data (VideoRoom)');
-        } else if (msg.videoroom) {
-            // VideoRoom прямая структура
-            event = msg;
-            console.log('✅ event извлечен напрямую из msg (VideoRoom)');
-        } else if (msg.audiobridge) {
-            // AudioBridge прямая структура (для обратной совместимости)
-            event = msg;
-            console.log('⚠️ event извлечен из AudioBridge (старая структура). Возможно, комната не была пересоздана в VideoRoom.');
-        } else {
-            // Пытаемся использовать msg напрямую, если он содержит нужные поля
-            if (msg.list || msg.publishers || msg.error_code || msg.videoroom === 'joined' || msg.videoroom === 'event') {
-                event = msg;
-                console.log('✅ event извлечен напрямую из msg (прямая структура)');
-            } else {
-                console.warn('⚠️ Не удалось извлечь event из сообщения:', msg);
-            }
-        }
-        
-        console.log('🔍 event извлечен:', event);
-        
-        if (event) {
-            console.log('📦 Данные события:', event);
-            console.log('🔍 Проверка события VideoRoom:', {
-                videoroom: event.videoroom,
-                audiobridge: event.audiobridge,
-                has_publishers: 'publishers' in event,
-                has_participants: 'participants' in event,
-                publishers_count: event.publishers ? event.publishers.length : 'N/A',
-                participants_count: event.participants ? event.participants.length : 'N/A',
-                event_keys: Object.keys(event)
-            });
-            
-            // Проверяем разные варианты события joined (VideoRoom)
-            const isOurJoin = (event.videoroom === 'joined' || event.audiobridge === 'joined') && event.id; 
-                           
-                           
-            
-            if (isOurJoin) {
-                console.log('✅ УСЛОВИЕ JOINED СРАБОТАЛО! Присоединились к аудио комнате:', event.room);
-                this.participantId = event.id;
-                console.log('✅ Сохранен participantId:', this.participantId);
-                const participants = event.publishers || event.participants || [];
-                console.log('👥 Publishers в комнате (из joined):', participants.length, participants);
+    // Переключить микрофон (mute/unmute)
+    toggleMute() {
+        this.isMuted = !this.isMuted;
+        if (this.publisherHandle && this.localStream) {
+            // Отключаем трек в WebRTC transceiver
+            if (this.publisherHandle.webrtcStuff && this.publisherHandle.webrtcStuff.pc) {
+                const pc = this.publisherHandle.webrtcStuff.pc;
+                const transceivers = pc.getTransceivers();
                 
-                // Регистрируем подключение на сервере сразу после получения participantId
-                if (this.channelId && this.participantId) {
-                    console.log('📝 Регистрируем подключение:', { channelId: this.channelId, participantId: this.participantId });
-                    if (window.registerAudioConnection) {
-                        window.registerAudioConnection(this.channelId, this.participantId);
-                    } else {
-                        console.warn('⚠️ window.registerAudioConnection не определена!');
+                transceivers.forEach(transceiver => {
+                    if (transceiver.sender && transceiver.sender.track && 
+                        transceiver.sender.track.kind === 'audio') {
+                        transceiver.sender.track.enabled = !this.isMuted;
                     }
+                });
+            }
+            
+            // Также отключаем локальные треки
+            this.localStream.getAudioTracks().forEach(track => {
+                track.enabled = !this.isMuted;
+            });
+        }
+        console.log(`Микрофон ${this.isMuted ? 'отключен' : 'включен'}`);
+        return this.isMuted;
+    },
+
+    // Отключиться
+    async disconnect(userInitiated = true) {
+        this.stopReconnectLoop();
+        if (userInitiated) {
+            this.intentionalDisconnect = true;
+        }
+
+        // Уведомляем через SignalR об остановке видео-трансляции (если была активна)
+        if (userInitiated && (this.isScreenSharing || this.isCameraEnabled) && typeof Chat !== 'undefined' && Chat && this.channelId) {
+            await Chat.stopVideoStream(this.channelId);
+        }
+        
+        // Регистрируем отключение на сервере только при явном выходе
+        if (userInitiated && this.channelId && this.participantId && window.registerAudioDisconnection) {
+            await window.registerAudioDisconnection(this.channelId, this.participantId);
+        }
+        
+        // Закрываем все subscriber handles
+        this.subscriberHandles.forEach((handle, publisherId) => {
+            try {
+                handle.detach();
+            } catch (e) {
+                console.warn(`Ошибка при закрытии subscriber handle для ${publisherId}:`, e);
+            }
+        });
+        this.subscriberHandles.clear();
+        
+        // Отключаем все потоки от микшера и удаляем аудио элементы
+        this.streamVolumes.forEach((streamData, publisherId) => {
+            try {
+                if (streamData.source) {
+                    streamData.source.disconnect();
+                }
+                if (streamData.gainNode) {
+                    streamData.gainNode.disconnect();
+                }
+                // Удаляем HTMLAudioElement из DOM
+                if (streamData.audioElement) {
+                    streamData.audioElement.pause();
+                    streamData.audioElement.srcObject = null;
+                    if (streamData.audioElement.parentNode) {
+                        streamData.audioElement.parentNode.removeChild(streamData.audioElement);
+                    }
+                }
+            } catch (e) {
+                console.warn(`Ошибка при отключении потока ${publisherId}:`, e);
+            }
+        });
+        this.streamVolumes.clear();
+        this.remoteStreams.clear();
+        this.pendingPublishers.clear();
+        
+        let publisherPc = null;
+        if (this.publisherHandle && this.publisherHandle.webrtcStuff && this.publisherHandle.webrtcStuff.pc) {
+            publisherPc = this.publisherHandle.webrtcStuff.pc;
+        }
+        if (publisherPc) {
+            console.log('🛑 Останавливаем треки из PeerConnection publisher...');
+            publisherPc.getSenders().forEach((sender) => {
+                if (sender.track) {
+                    try {
+                        sender.track.stop();
+                    } catch (e) {
+                        /* ignore */
+                    }
+                }
+            });
+            if (publisherPc.getTransceivers) {
+                publisherPc.getTransceivers().forEach((transceiver) => {
+                    if (transceiver.sender && transceiver.sender.track) {
+                        try {
+                            transceiver.sender.track.stop();
+                        } catch (e) {
+                            /* ignore */
+                        }
+                    }
+                });
+            }
+        }
+
+        if (this.publisherHandle) {
+            try {
+                this.publisherHandle.send({ message: { request: 'leave' } });
+                this.publisherHandle.detach();
+            } catch (error) {
+                console.error('Leave room error:', error);
+            }
+            this.publisherHandle = null;
+        }
+
+        this.teardownPublishAudioGraph();
+
+        // Останавливаем видео-поток
+        if (this.localVideoStream) {
+            console.log('🛑 Останавливаем localVideoStream при disconnect...');
+            this.localVideoStream.getTracks().forEach(track => {
+                console.log('🛑 Останавливаем трек:', track.id, track.kind, track.label);
+                track.stop();
+            });
+            this.localVideoStream = null;
+        }
+        this.isScreenSharing = false;
+        this.isCameraEnabled = false;
+        
+        // Уведомляем UI об удалении своего видео
+        if (window.onVideoStreamRemoved && this.participantId) {
+            window.onVideoStreamRemoved(this.participantId);
+        }
+        
+        console.log('✅ Все медиа-треки остановлены');
+        
+        // Очищаем удаленные видео-потоки
+        this.remoteVideoStreams.forEach((videoData, publisherId) => {
+            try {
+                if (videoData.videoElement) {
+                    videoData.videoElement.pause();
+                    videoData.videoElement.srcObject = null;
+                    if (videoData.videoElement.parentNode) {
+                        videoData.videoElement.parentNode.removeChild(videoData.videoElement);
+                    }
+                }
+                if (videoData.stream) {
+                    videoData.stream.getTracks().forEach(track => track.stop());
+                }
+            } catch (e) {
+                console.warn(`Ошибка при очистке видео-потока ${publisherId}:`, e);
+            }
+        });
+        this.remoteVideoStreams.clear();
+        
+        // Закрываем AudioContext
+        if (this.audioContext && this.audioContext.state !== 'closed') {
+            try {
+                await this.audioContext.close();
+            } catch (e) {
+                console.warn('Ошибка при закрытии AudioContext:', e);
+            }
+        }
+        this.audioContext = null;
+        this.audioMixer = null;
+        
+        // Очищаем RNNoise ресурсы
+        if (this.rnnoiseProcessor) {
+            try {
+                this.rnnoiseProcessor.disconnect();
+            } catch (e) {
+                console.warn('Ошибка при отключении RNNoise процессора:', e);
+            }
+            this.rnnoiseProcessor = null;
+        }
+        if (this.rnnoiseSourceNode) {
+            try {
+                this.rnnoiseSourceNode.disconnect();
+            } catch (e) {
+                console.warn('Ошибка при отключении RNNoise источника:', e);
+            }
+            this.rnnoiseSourceNode = null;
+        }
+        this.rnnoiseDestinationNode = null;
+        this.rnnoiseEnabled = false;
+        
+        // Закрываем Janus соединение
+        if (this.janus) {
+            this.janus.destroy();
+            this.janus = null;
+        }
+        
+        this.participantId = null;
+        this.roomId = null;
+        this.channelId = null;
+        this.isMuted = false;
+        this.wasConnected = false;
+        this.intentionalDisconnect = false;
+    },
+
+    // ============================================
+    // Методы для работы с видео (screen share / webcam)
+    // ============================================
+    
+    // Запустить демонстрацию экрана
+    async startScreenShare() {
+        if (this.isScreenSharing) {
+            console.warn('⚠️ Демонстрация экрана уже активна');
+            return false;
+        }
+        
+        if (!this.publisherHandle) {
+            console.error('❌ Publisher handle не найден. Подключитесь к каналу сначала.');
+            return false;
+        }
+        
+        try {
+            console.log('🖥️ Запускаем демонстрацию экрана...');
+            
+            // Останавливаем камеру, если она была включена
+            if (this.isCameraEnabled) {
+                console.log('🛑 Останавливаем камеру перед запуском screen share...');
+                await this.stopVideo();
+                // Ждем немного, чтобы WebRTC успел обработать удаление видео
+                await new Promise(resolve => setTimeout(resolve, 300));
+            }
+            
+            // ВАЖНО: Убеждаемся, что предыдущий поток полностью очищен
+            if (this.localVideoStream) {
+                console.warn('⚠️ localVideoStream все еще существует, очищаем...');
+                this.localVideoStream.getTracks().forEach(track => {
+                    track.stop();
+                    console.log('🛑 Остановлен старый трек:', track.id);
+                });
+                this.localVideoStream = null;
+            }
+            this.isCameraEnabled = false; // Убеждаемся, что флаг камеры сброшен
+            
+            // Запрашиваем доступ к экрану с оптимизациями для низкой задержки
+            console.log('🖥️ Запрашиваем доступ к экрану через getDisplayMedia...');
+            const stream = await navigator.mediaDevices.getDisplayMedia({
+                video: {
+                    cursor: 'always',
+                    displaySurface: 'monitor',
+                    // Оптимизации для низкой задержки - HD разрешение
+                    frameRate: { ideal: 30, max: 30 }, // Ограничиваем FPS для стабильности
+                    width: { ideal: 1280, max: 1280 }, // HD разрешение
+                    height: { ideal: 720, max: 720 }
+                },
+                audio: false // Экран не передает аудио
+            });
+            
+            // Проверяем, что получили именно экран, а не камеру
+            const videoTrack = stream.getVideoTracks()[0];
+            if (!videoTrack) {
+                throw new Error('Не получен видео-трек от экрана');
+            }
+            
+            // ВАЖНО: Проверяем настройки трека, чтобы убедиться, что это экран, а не камера
+            let trackSettings = null;
+            if (videoTrack.getSettings) {
+                trackSettings = videoTrack.getSettings();
+            } else if (videoTrack.getConstraints) {
+                trackSettings = videoTrack.getConstraints();
+            }
+            
+            // КРИТИЧНО: Логируем ВСЕ детали потока для диагностики
+            console.log('🖥️ ========== ПОЛУЧЕН ПОТОК ОТ getDisplayMedia ==========');
+            console.log('🖥️ Track ID:', videoTrack.id);
+            console.log('🖥️ Track Label:', videoTrack.label);
+            console.log('🖥️ Track Kind:', videoTrack.kind);
+            console.log('🖥️ Track ReadyState:', videoTrack.readyState);
+            console.log('🖥️ Track Settings:', trackSettings);
+            console.log('🖥️ Track Enabled:', videoTrack.enabled);
+            console.log('🖥️ Track Muted:', videoTrack.muted);
+            console.log('🖥️ ====================================================');
+            
+            // ВАЖНО: Проверяем label трека - камеры обычно имеют специфичные названия
+            const trackLabel = videoTrack.label.toLowerCase();
+            const cameraKeywords = ['camera', 'cam', 'webcam', 'video capture', 'camo', 'obs', 'virtual', 'droidcam'];
+            const isLabelCamera = cameraKeywords.some(keyword => trackLabel.includes(keyword));
+            
+            console.log('🔍 Проверка label:', {
+                originalLabel: videoTrack.label,
+                lowerLabel: trackLabel,
+                isLabelCamera: isLabelCamera,
+                matchedKeywords: cameraKeywords.filter(keyword => trackLabel.includes(keyword))
+            });
+            
+            // Проверяем, что это действительно экран
+            if (trackSettings) {
+                // Проверяем displaySurface - это основной индикатор screen share
+                const hasDisplaySurface = trackSettings.displaySurface !== undefined;
+                const hasFacingMode = trackSettings.facingMode !== undefined;
+                
+                // Если есть displaySurface - это точно экран
+                // Если есть facingMode - это точно камера
+                // Если label содержит слова камеры - это камера
+                
+                if (hasFacingMode || isLabelCamera) {
+                    console.error('❌ КРИТИЧНО: Получен поток от камеры вместо экрана!');
+                    console.error('🔍 Настройки трека:', trackSettings);
+                    console.error('🔍 Label трека:', videoTrack.label);
+                    console.error('🔍 Причина:', hasFacingMode ? 'facingMode определен' : 'label содержит слова камеры');
+                    // Останавливаем неправильный поток
+                    videoTrack.stop();
+                    throw new Error(`Получен поток от камеры "${videoTrack.label}" вместо экрана. В диалоге браузера выберите "Экран" или "Окно", а не камеру.`);
+                }
+                
+                if (hasDisplaySurface) {
+                    console.log('✅ Подтверждено: это поток от экрана (displaySurface:', trackSettings.displaySurface, ')');
+                } else if (!isLabelCamera) {
+                    // Если нет displaySurface, но и label не указывает на камеру - возможно, это экран
+                    console.warn('⚠️ displaySurface не определен, но label не указывает на камеру, продолжаем...');
+                    console.warn('🔍 Label:', videoTrack.label);
                 } else {
-                    console.warn('⚠️ Не могу зарегистрировать подключение:', { 
-                        channelId: this.channelId, 
-                        participantId: this.participantId,
-                        hasRegisterFunction: !!window.registerAudioConnection
+                    // Label указывает на камеру, но нет displaySurface - это странно, но считаем камерой
+                    console.error('❌ Label указывает на камеру, но displaySurface не определен');
+                    videoTrack.stop();
+                    throw new Error(`Получен поток от камеры "${videoTrack.label}" вместо экрана.`);
+                }
+            } else {
+                // Если не удалось получить настройки, проверяем только label
+                if (isLabelCamera) {
+                    console.error('❌ КРИТИЧНО: Label трека указывает на камеру:', videoTrack.label);
+                    videoTrack.stop();
+                    throw new Error(`Получен поток от камеры "${videoTrack.label}" вместо экрана. В диалоге браузера выберите "Экран" или "Окно".`);
+                } else {
+                    console.warn('⚠️ Не удалось получить настройки трека, но label не указывает на камеру, продолжаем...');
+                    console.warn('🔍 Label:', videoTrack.label);
+                }
+            }
+            
+            // ВАЖНО: Сохраняем поток ДО публикации
+            this.localVideoStream = stream;
+            this.isScreenSharing = true;
+            this.isCameraEnabled = false; // Убеждаемся, что камера отключена
+            
+            // КРИТИЧНО: Проверяем, что сохранили правильный поток
+            const savedVideoTrack = this.localVideoStream.getVideoTracks()[0];
+            if (savedVideoTrack !== videoTrack) {
+                console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: Сохраненный трек не совпадает с полученным!');
+                console.error('❌ Полученный трек:', videoTrack.id, videoTrack.label);
+                console.error('❌ Сохраненный трек:', savedVideoTrack?.id, savedVideoTrack?.label);
+                throw new Error('Ошибка: сохраненный трек не совпадает с полученным');
+            }
+            
+            // Обработка остановки пользователем через UI браузера
+            videoTrack.addEventListener('ended', () => {
+                console.log('🖥️ Пользователь остановил демонстрацию экрана через UI браузера');
+                this.stopVideo();
+            });
+            
+            // Публикуем видео-трек (передаем именно поток от экрана)
+            console.log('📤 ========== ПУБЛИКУЕМ ПОТОК ОТ ЭКРАНА ==========');
+            console.log('📤 Track ID:', videoTrack.id);
+            console.log('📤 Track Label:', videoTrack.label);
+            console.log('📤 isScreenSharing:', this.isScreenSharing);
+            console.log('📤 isCameraEnabled:', this.isCameraEnabled);
+            console.log('📤 localVideoStream === stream:', this.localVideoStream === stream);
+            console.log('📤 localVideoStream.getVideoTracks()[0] === videoTrack:', this.localVideoStream.getVideoTracks()[0] === videoTrack);
+            console.log('📤 ===============================================');
+            await this.publishVideo(stream);
+            
+            // Уведомляем через SignalR о начале видео-трансляции
+            console.log('🔔 Отправляем SignalR уведомление о screen share...', {
+                hasChatModule: typeof Chat !== 'undefined',
+                chatConnectionState: typeof Chat !== 'undefined' ? Chat.connection?.state : 'N/A',
+                channelId: this.channelId
+            });
+            if (typeof Chat !== 'undefined' && Chat && this.channelId) {
+                if (Chat.connection && Chat.connection.state === signalR.HubConnectionState.Connected) {
+                    await Chat.startVideoStream(this.channelId, 'screen');
+                } else {
+                    console.warn('⚠️ SignalR не подключен, не могу отправить уведомление:', {
+                        connectionState: Chat.connection?.state
+                    });
+                }
+            } else {
+                console.warn('⚠️ Не могу отправить SignalR уведомление:', {
+                    hasChatModule: typeof Chat !== 'undefined',
+                    channelId: this.channelId
+                });
+            }
+            
+            console.log('✅ Демонстрация экрана запущена');
+            return true;
+        } catch (error) {
+            console.error('❌ Ошибка при запуске демонстрации экрана:', error);
+            this.isScreenSharing = false;
+            this.localVideoStream = null;
+            
+            // Обрабатываем специфичные ошибки
+            if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+                console.error('❌ Пользователь отклонил запрос на доступ к экрану');
+                // Можно показать уведомление пользователю
+                if (window.alert) {
+                    alert('Для демонстрации экрана необходимо разрешить доступ к экрану в диалоге браузера.');
+                }
+            } else if (error.name === 'NotFoundError') {
+                console.error('❌ Не найдено устройство для захвата экрана');
+            } else if (error.name === 'NotReadableError') {
+                console.error('❌ Устройство захвата экрана уже используется другим приложением');
+            }
+            
+            return false;
+        }
+    },
+    
+    // Запустить веб-камеру
+    async startCamera() {
+        if (this.isCameraEnabled) {
+            console.warn('⚠️ Веб-камера уже активна');
+            return false;
+        }
+        
+        if (!this.publisherHandle) {
+            console.error('❌ Publisher handle не найден. Подключитесь к каналу сначала.');
+            return false;
+        }
+        
+        try {
+            console.log('📷 Запускаем веб-камеру...');
+            
+            // Останавливаем screen share, если он был включен
+            if (this.isScreenSharing) {
+                await this.stopVideo();
+            }
+            
+            // Запрашиваем доступ к камере
+            console.log('📷 Запрашиваем доступ к камере через getUserMedia...');
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: {
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 },
+                    facingMode: 'user'
+                },
+                audio: false // Аудио уже идет отдельно
+            });
+            
+            // Проверяем, что получили именно камеру
+            const videoTrack = stream.getVideoTracks()[0];
+            if (!videoTrack) {
+                throw new Error('Не получен видео-трек от камеры');
+            }
+            
+            // Проверяем настройки трека для диагностики
+            let trackSettings = null;
+            if (videoTrack.getSettings) {
+                trackSettings = videoTrack.getSettings();
+            }
+            
+            console.log('📷 Получен поток от камеры:', {
+                trackId: videoTrack.id,
+                label: videoTrack.label,
+                kind: videoTrack.kind,
+                readyState: videoTrack.readyState,
+                settings: trackSettings
+            });
+            
+            // ВАЖНО: Убеждаемся, что предыдущий поток полностью очищен
+            if (this.localVideoStream) {
+                console.warn('⚠️ localVideoStream все еще существует, очищаем...');
+                this.localVideoStream.getTracks().forEach(track => {
+                    track.stop();
+                    console.log('🛑 Остановлен старый трек:', track.id);
+                });
+                this.localVideoStream = null;
+            }
+            
+            this.localVideoStream = stream;
+            this.isCameraEnabled = true;
+            this.isScreenSharing = false; // Убеждаемся, что флаг screen share сброшен
+            
+            // Публикуем видео-трек
+            await this.publishVideo(stream);
+            
+            // Уведомляем через SignalR о начале видео-трансляции
+            console.log('🔔 Отправляем SignalR уведомление о camera...', {
+                hasChatModule: typeof Chat !== 'undefined',
+                chatConnectionState: typeof Chat !== 'undefined' ? Chat.connection?.state : 'N/A',
+                channelId: this.channelId
+            });
+            if (typeof Chat !== 'undefined' && Chat && this.channelId) {
+                if (Chat.connection && Chat.connection.state === signalR.HubConnectionState.Connected) {
+                    await Chat.startVideoStream(this.channelId, 'camera');
+                } else {
+                    console.warn('⚠️ SignalR не подключен, не могу отправить уведомление:', {
+                        connectionState: Chat.connection?.state
+                    });
+                }
+            } else {
+                console.warn('⚠️ Не могу отправить SignalR уведомление:', {
+                    hasChatModule: typeof Chat !== 'undefined',
+                    channelId: this.channelId
+                });
+            }
+            
+            console.log('✅ Веб-камера запущена');
+            return true;
+        } catch (error) {
+            console.error('❌ Ошибка при запуске веб-камеры:', error);
+            this.isCameraEnabled = false;
+            this.localVideoStream = null;
+            return false;
+        }
+    },
+    
+    // Остановить видео (screen share или webcam)
+    async stopVideo() {
+        // ВАЖНО: Разрешаем остановку даже если флаги не установлены (для очистки)
+        const hasVideoStream = this.localVideoStream !== null;
+        const hasFlags = this.isScreenSharing || this.isCameraEnabled;
+        
+        if (!hasVideoStream && !hasFlags) {
+            console.warn('⚠️ Видео не активно');
+            return false;
+        }
+        
+        // Если нет publisherHandle, но есть локальный поток - все равно останавливаем
+        if (!this.publisherHandle && !hasVideoStream) {
+            console.error('❌ Publisher handle не найден и нет локального потока');
+            return false;
+        }
+        
+        try {
+            const wasScreenSharing = this.isScreenSharing;
+            const wasCameraEnabled = this.isCameraEnabled;
+            
+            console.log('🛑 Останавливаем видео...', {
+                wasScreenSharing: wasScreenSharing,
+                wasCameraEnabled: wasCameraEnabled,
+                hasVideoStream: hasVideoStream
+            });
+            
+            // СРАЗУ сбрасываем флаги, чтобы можно было перезапустить
+            this.isScreenSharing = false;
+            this.isCameraEnabled = false;
+            
+            // ВАЖНО: Сначала удаляем видео-треки из WebRTC, потом останавливаем локальные треки
+            // Удаляем видео-треки из WebRTC PeerConnection
+            if (this.publisherHandle.webrtcStuff && this.publisherHandle.webrtcStuff.pc) {
+                const pc = this.publisherHandle.webrtcStuff.pc;
+                const senders = pc.getSenders();
+                const videoSenders = senders.filter(sender => sender.track && sender.track.kind === 'video');
+                console.log(`🛑 Найдено ${videoSenders.length} видео-треков в PeerConnection для удаления`);
+                
+                // Удаляем все видео-треки синхронно
+                const removePromises = videoSenders.map(async (sender) => {
+                    console.log('🛑 Удаляем видео-трек из WebRTC sender:', sender.track.id, sender.track.label);
+                    try {
+                        await sender.replaceTrack(null);
+                        // Останавливаем трек после удаления
+                        if (sender.track && sender.track.stop) {
+                            sender.track.stop();
+                        }
+                    } catch (err) {
+                        console.warn('⚠️ Ошибка при удалении видео-трека из sender:', err);
+                    }
+                });
+                
+                // Ждем удаления всех треков
+                await Promise.all(removePromises);
+                
+                // ВАЖНО: Также проверяем transceivers и останавливаем их треки
+                if (pc.getTransceivers) {
+                    const transceivers = pc.getTransceivers();
+                    transceivers.forEach(transceiver => {
+                        if (transceiver.sender && transceiver.sender.track && transceiver.sender.track.kind === 'video') {
+                            console.log('🛑 Останавливаем видео-трек из transceiver:', transceiver.sender.track.id);
+                            try {
+                                transceiver.sender.track.stop();
+                            } catch (err) {
+                                console.warn('⚠️ Ошибка при остановке трека из transceiver:', err);
+                            }
+                        }
                     });
                 }
                 
-                // Подписываемся на всех publishers (кроме себя)
-                this.subscribeToPublishers(participants);
+                console.log('✅ Все видео-треки удалены из PeerConnection');
+            }
+            
+            // Останавливаем видео-трек локально
+            if (this.localVideoStream) {
+                const tracks = this.localVideoStream.getTracks();
+                console.log(`🛑 Останавливаем ${tracks.length} треков из localVideoStream`);
+                tracks.forEach(track => {
+                    track.stop();
+                    console.log('🛑 Трек остановлен:', track.id, track.kind);
+                });
+                this.localVideoStream = null;
+            }
+            
+            // Создаем новый offer только с аудио
+            if (this.localStream) {
+                this.publisherHandle.createOffer({
+                    media: this.buildJanusAudioPublisherMedia(true, {
+                        replaceAudio: true,
+                        removeVideo: true
+                    }),
+                    stream: this.localStream,
+                    success: (jsep) => {
+                        console.log('✅ Offer создан без видео');
+                        
+                        // Отправляем configure без видео
+                        this.publisherHandle.send({
+                            message: {
+                                request: 'configure',
+                                video: false,
+                                audio: true
+                            },
+                            jsep: jsep
+                        });
+                    },
+                    error: (error) => {
+                        console.error('❌ Ошибка создания offer без видео:', error);
+                    }
+                });
+            }
+            
+            // Уведомляем через SignalR об остановке видео-трансляции
+            if (typeof Chat !== 'undefined' && Chat && this.channelId) {
+                try {
+                    await Chat.stopVideoStream(this.channelId);
+                    console.log('✅ SignalR уведомление об остановке видео отправлено');
+                } catch (e) {
+                    console.warn('⚠️ Ошибка отправки SignalR уведомления:', e);
+                }
+            }
+            
+            // Уведомляем UI об удалении своего видео
+            if (window.onVideoStreamRemoved && this.participantId) {
+                window.onVideoStreamRemoved(this.participantId);
+            }
+            
+            // Убеждаемся, что все очищено (флаги уже сброшены в начале)
+            this.localVideoStream = null;
+            
+            console.log('✅ Видео остановлено, флаги сброшены, можно перезапустить');
+            return true;
+        } catch (error) {
+            console.error('❌ Ошибка при остановке видео:', error);
+            // Сбрасываем флаги даже при ошибке
+            this.isScreenSharing = false;
+            this.isCameraEnabled = false;
+            this.localVideoStream = null;
+            return false;
+        }
+    },
+    
+    // Публиковать видео-трек в Janus
+    async publishVideo(stream) {
+        if (!this.publisherHandle) {
+            console.error('❌ Publisher handle не найден');
+            return false;
+        }
+        
+        const videoTrack = stream.getVideoTracks()[0];
+        if (!videoTrack) {
+            console.error('❌ Видео-трек не найден в потоке');
+            return false;
+        }
+        
+        // ВАЖНО: Проверяем, что используем правильный поток
+        const isScreenShare = this.isScreenSharing && this.localVideoStream === stream;
+        const isCamera = this.isCameraEnabled && this.localVideoStream === stream;
+        
+        console.log('📤 ========== ПУБЛИКАЦИЯ ВИДЕО-ТРЕКА ==========');
+        console.log('📤 Track ID:', videoTrack.id);
+        console.log('📤 Track Label:', videoTrack.label);
+        console.log('📤 isScreenSharing:', this.isScreenSharing);
+        console.log('📤 isCameraEnabled:', this.isCameraEnabled);
+        console.log('📤 localVideoStream === stream:', this.localVideoStream === stream);
+        console.log('📤 isScreenShare:', isScreenShare);
+        console.log('📤 isCamera:', isCamera);
+        console.log('📤 streamSource:', isScreenShare ? 'screen' : (isCamera ? 'camera' : 'unknown'));
+        
+        // КРИТИЧНО: Проверяем настройки трека ПЕРЕД публикацией
+        if (videoTrack.getSettings) {
+            try {
+                const settings = videoTrack.getSettings();
+                console.log('📤 displaySurface:', settings.displaySurface);
+                console.log('📤 facingMode:', settings.facingMode);
+                console.log('📤 deviceId:', settings.deviceId);
                 
-                // Инициализируем Web Audio API микшер
-                if (!this.remoteAudioContext) {
-                    this.initWebAudioMixer();
+                if (this.isScreenSharing) {
+                    if (settings.displaySurface !== undefined) {
+                        console.log('✅ ПУБЛИКУЕМ ЭКРАН (displaySurface=' + settings.displaySurface + ')');
+                    } else if (settings.facingMode !== undefined) {
+                        console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: При screen sharing публикуется камера! (facingMode=' + settings.facingMode + ')');
+                    } else {
+                        const trackLabel = videoTrack.label.toLowerCase();
+                        const cameraKeywords = ['camera', 'cam', 'webcam', 'video capture', 'camo', 'obs', 'virtual', 'droidcam'];
+                        const isLabelCamera = cameraKeywords.some(keyword => trackLabel.includes(keyword));
+                        if (isLabelCamera) {
+                            console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: При screen sharing публикуется камера! (label=' + videoTrack.label + ')');
+                        } else {
+                            console.warn('⚠️ Не удалось определить тип трека, но label не указывает на камеру');
+                        }
+                    }
+                }
+            } catch (e) {
+                console.warn('⚠️ Ошибка при получении настроек трека:', e);
+            }
+        }
+        console.log('📤 ============================================');
+        
+        // КРИТИЧНО: Проверяем настройки трека для диагностики
+        console.log('🔍 ========== ПРОВЕРКА ТРЕКА В publishVideo ==========');
+        console.log('🔍 isScreenSharing:', this.isScreenSharing);
+        console.log('🔍 isCameraEnabled:', this.isCameraEnabled);
+        console.log('🔍 localVideoStream === stream:', this.localVideoStream === stream);
+        console.log('🔍 Track ID:', videoTrack.id);
+        console.log('🔍 Track Label:', videoTrack.label);
+        
+        if (videoTrack.getSettings) {
+            const settings = videoTrack.getSettings();
+            console.log('🔍 ========== НАСТРОЙКИ ВИДЕО-ТРЕКА ==========');
+            console.log('🔍 width:', settings.width);
+            console.log('🔍 height:', settings.height);
+            console.log('🔍 frameRate:', settings.frameRate);
+            console.log('🔍 displaySurface:', settings.displaySurface, '(должно быть "monitor", "window" или "browser" для screen share)');
+            console.log('🔍 facingMode:', settings.facingMode, '(должно быть undefined для screen share)');
+            console.log('🔍 deviceId:', settings.deviceId);
+            console.log('🔍 label:', videoTrack.label);
+            console.log('🔍 ============================================');
+            
+            // ВАЖНО: Проверяем, что при screen sharing используется экран, а не камера
+            if (this.isScreenSharing) {
+                console.log('🔍 ========== ПРОВЕРКА ДЛЯ SCREEN SHARING ==========');
+                const trackLabel = videoTrack.label.toLowerCase();
+                const cameraKeywords = ['camera', 'cam', 'webcam', 'video capture', 'camo', 'obs', 'virtual', 'droidcam'];
+                const isLabelCamera = cameraKeywords.some(keyword => trackLabel.includes(keyword));
+                
+                console.log('🔍 Проверка label:', {
+                    originalLabel: videoTrack.label,
+                    lowerLabel: trackLabel,
+                    isLabelCamera: isLabelCamera,
+                    matchedKeywords: cameraKeywords.filter(keyword => trackLabel.includes(keyword))
+                });
+                console.log('🔍 Проверка facingMode:', settings.facingMode !== undefined);
+                console.log('🔍 Проверка displaySurface:', settings.displaySurface !== undefined, '=', settings.displaySurface);
+                
+                if (settings.facingMode !== undefined || isLabelCamera) {
+                    console.error('❌ ========== КРИТИЧЕСКАЯ ОШИБКА ==========');
+                    console.error('❌ При screen sharing получен поток от камеры вместо экрана!');
+                    console.error('❌ Настройки трека:', settings);
+                    console.error('❌ Label трека:', videoTrack.label);
+                    console.error('❌ Причина:', settings.facingMode !== undefined ? 'facingMode определен' : 'label содержит слова камеры');
+                    console.error('❌ ===========================================');
+                    
+                    // Останавливаем неправильный поток
+                    videoTrack.stop();
+                    this.isScreenSharing = false;
+                    this.localVideoStream = null;
+                    
+                    throw new Error(`ОШИБКА: При демонстрации экрана получен поток от камеры "${videoTrack.label}". В диалоге браузера выберите "Экран" или "Окно", а не камеру.`);
                 }
                 
-                // Обновляем счетчик участников (даже если пустой массив)
-                console.log('📊 Обновляем счетчик участников через onParticipantsUpdate...');
-                if (window.onParticipantsUpdate) {
-                    window.onParticipantsUpdate(participants, this.participantId);
-                    console.log('✅ onParticipantsUpdate вызван с', participants.length, 'участниками');
+                if (settings.displaySurface === undefined && !isLabelCamera) {
+                    console.warn('⚠️ displaySurface не определен для screen share, но label не указывает на камеру');
+                } else if (settings.displaySurface !== undefined) {
+                    console.log('✅ Подтверждено: это поток от экрана (displaySurface:', settings.displaySurface, ')');
+                }
+                console.log('🔍 ============================================');
+            }
+        } else {
+            console.warn('⚠️ videoTrack.getSettings() не доступен!');
+        }
+        console.log('🔍 ============================================');
+        
+        try {
+            // КРИТИЧНО: Удаляем ВСЕ старые видео-треки из PeerConnection перед публикацией нового
+            // Это гарантирует, что отправляется только один видео-трек (выбранный пользователем)
+            let hasVideoTransceiver = false;
+            if (this.publisherHandle.webrtcStuff && this.publisherHandle.webrtcStuff.pc) {
+                const pc = this.publisherHandle.webrtcStuff.pc;
+                const senders = pc.getSenders();
+                const videoSenders = senders.filter(sender => sender.track && sender.track.kind === 'video');
+                hasVideoTransceiver = videoSenders.length > 0;
+                
+                console.log('🔍 Проверка видео transceiver:', {
+                    hasVideoTransceiver: hasVideoTransceiver,
+                    sendersCount: senders.length,
+                    videoSendersCount: videoSenders.length,
+                    videoSenders: videoSenders.map(s => ({
+                        trackId: s.track.id,
+                        trackLabel: s.track.label,
+                        trackKind: s.track.kind,
+                        trackReadyState: s.track.readyState
+                    }))
+                });
+                
+                // КРИТИЧНО: Удаляем ВСЕ старые видео-треки из PeerConnection
+                if (videoSenders.length > 0) {
+                    console.log(`🛑 Удаляем ${videoSenders.length} старых видео-треков из PeerConnection...`);
+                    for (const sender of videoSenders) {
+                        console.log(`🛑 Удаляем видео-трек: ${sender.track.id} (${sender.track.label})`);
+                        try {
+                            // Заменяем трек на null, что удаляет его из PeerConnection
+                            await sender.replaceTrack(null);
+                            // Останавливаем трек
+                            if (sender.track && sender.track.stop) {
+                                sender.track.stop();
+                            }
+                        } catch (err) {
+                            console.warn(`⚠️ Ошибка при удалении видео-трека ${sender.track.id}:`, err);
+                        }
+                    }
+                    console.log('✅ Все старые видео-треки удалены из PeerConnection');
+                    // Ждем немного, чтобы WebRTC успел обработать удаление
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                    
+                    // КРИТИЧНО: Проверяем, остались ли видео-треки после удаления
+                    const remainingSenders = pc.getSenders();
+                    const remainingVideoSenders = remainingSenders.filter(sender => sender.track && sender.track.kind === 'video');
+                    if (remainingVideoSenders.length > 0) {
+                        console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: После удаления остались видео-треки!');
+                        remainingVideoSenders.forEach(sender => {
+                            console.error('❌ Оставшийся трек:', sender.track.id, sender.track.label);
+                        });
+                        // Пытаемся удалить еще раз
+                        for (const sender of remainingVideoSenders) {
+                            try {
+                                await sender.replaceTrack(null);
+                                if (sender.track && sender.track.stop) {
+                                    sender.track.stop();
+                                }
+                            } catch (err) {
+                                console.warn('⚠️ Ошибка при повторном удалении:', err);
+                            }
+                        }
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                    }
+                    
+                    // Проверяем transceivers
+                    const transceivers = pc.getTransceivers();
+                    const videoTransceivers = transceivers.filter(t => t.sender && t.sender.track && t.sender.track.kind === 'video');
+                    if (videoTransceivers.length > 0) {
+                        console.log('🔍 Найдено видео transceivers после удаления:', videoTransceivers.length);
+                        // Если transceiver существует, но без трека - используем replaceVideo
+                        hasVideoTransceiver = videoTransceivers.some(t => t.sender.track !== null);
+                        console.log('🔍 Есть активный трек в transceiver:', hasVideoTransceiver);
+                    } else {
+                        hasVideoTransceiver = false;
+                        console.log('🔍 Видео transceivers не найдены после удаления');
+                    }
+                }
+            }
+            
+            // ВАЖНО: Проверяем наличие видео transceiver для выбора действия
+            const videoAction = hasVideoTransceiver ? 'replace' : 'add';
+            console.log('🔍 Действие с видео:', videoAction, hasVideoTransceiver ? '(заменяем существующий transceiver)' : '(добавляем новый transceiver)');
+            
+            // КРИТИЧНО: Используем новый tracks API Janus.js
+            // Передаем videoTrack напрямую в capture, чтобы Janus.js НЕ вызывал getUserMedia!
+            console.log('📤 ========== ИСПОЛЬЗУЕМ TRACKS API ==========');
+            console.log('📤 Передаем видео-трек напрямую (capture: videoTrack)');
+            console.log('📤 Track ID:', videoTrack.id);
+            console.log('📤 Track Label:', videoTrack.label);
+            console.log('📤 ============================================');
+            
+            // Формируем tracks для Janus.js
+            // ВАЖНО: НЕ добавляем аудио-трек! Аудио уже опубликовано при подключении к каналу.
+            // Добавление аудио-трека здесь приводит к задвоению голоса.
+            const tracks = [];
+            
+            // КРИТИЧНО: Добавляем ТОЛЬКО видео-трек напрямую (НЕ capture: true!)
+            // С оптимизациями для низкой задержки
+            tracks.push({
+                type: 'video',
+                capture: videoTrack, // Передаем трек напрямую! Janus.js НЕ будет вызывать getUserMedia!
+                recv: false,
+                [videoAction]: true, // add или replace
+                // Оптимизации для низкой задержки
+                simulcast: false, // Отключаем simulcast для уменьшения задержки
+                // Предпочитаем VP8 - меньше задержка чем VP9/AV1
+                // (кодек выбирается через SDP munging или server-side)
+            });
+            console.log('📤 Добавлен видео-трек в tracks:', videoTrack.id, videoTrack.label);
+            console.log('📤 Итого треков:', tracks.length);
+            
+            // Используем Janus.js createOffer с tracks API
+            this.publisherHandle.createOffer({
+                tracks: tracks, // Используем tracks вместо media!
+                success: (jsep) => {
+                    console.log('✅ Offer создан для видео через Janus.js');
+                    
+                    // КРИТИЧНО: Проверяем, что в PeerConnection находится ТОЛЬКО правильный трек
+                    if (this.publisherHandle.webrtcStuff && this.publisherHandle.webrtcStuff.pc) {
+                        const pc = this.publisherHandle.webrtcStuff.pc;
+                        const senders = pc.getSenders();
+                        const videoSenders = senders.filter(sender => sender.track && sender.track.kind === 'video');
+                        
+                        console.log('🔍 ========== ПРОВЕРКА ПОСЛЕ СОЗДАНИЯ OFFER ==========');
+                        console.log('🔍 Видео-треков в PeerConnection:', videoSenders.length);
+                        console.log('🔍 Ожидаемый трек ID:', videoTrack.id);
+                        console.log('🔍 Ожидаемый трек Label:', videoTrack.label);
+                        
+                        videoSenders.forEach((sender, index) => {
+                            const track = sender.track;
+                            const isCorrectTrack = track.id === videoTrack.id || track === videoTrack;
+                            console.log(`🔍 Sender ${index}:`, {
+                                trackId: track.id,
+                                trackLabel: track.label,
+                                isCorrectTrack: isCorrectTrack,
+                                status: isCorrectTrack ? '✅ ПРАВИЛЬНЫЙ' : '❌ НЕПРАВИЛЬНЫЙ!'
+                            });
+                            
+                            if (!isCorrectTrack) {
+                                console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: В PeerConnection находится НЕПРАВИЛЬНЫЙ видео-трек!');
+                                console.error('❌ Ожидался:', videoTrack.id, videoTrack.label);
+                                console.error('❌ Найден:', track.id, track.label);
+                            }
+                        });
+                        
+                        if (videoSenders.length === 0) {
+                            console.warn('⚠️ В PeerConnection нет видео-треков после создания offer');
+                        } else if (videoSenders.length > 1) {
+                            console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: В PeerConnection больше одного видео-трека!');
+                        } else if (videoSenders[0].track.id !== videoTrack.id && videoSenders[0].track !== videoTrack) {
+                            console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: В PeerConnection находится НЕПРАВИЛЬНЫЙ видео-трек!');
+                        } else {
+                            console.log('✅ Подтверждено: в PeerConnection находится правильный видео-трек');
+                        }
+                        console.log('🔍 ============================================');
+                    }
+                    
+                    // Проверяем SDP offer на наличие видео
+                    if (jsep && jsep.sdp) {
+                        const hasVideoInOffer = jsep.sdp.includes('m=video') || jsep.sdp.includes('video');
+                        console.log(`🔍 [publishVideo] SDP offer анализ: hasVideo=${hasVideoInOffer}`);
+                        if (!hasVideoInOffer) {
+                            console.error('❌ КРИТИЧНО: Видео отсутствует в SDP offer!');
+                        }
+                    }
+                    
+                    // Отправляем configure
+                    this.publisherHandle.send({
+                        message: {
+                            request: 'configure',
+                            video: true,
+                            audio: true
+                        },
+                        jsep: jsep,
+                        success: (result) => {
+                            console.log('✅ Видео опубликовано, ответ:', result);
+                            
+                            // Проверяем, что видео действительно опубликовано
+                            if (result && result.videoroom === 'event' && result.configured === 'ok') {
+                                console.log('✅ Видео успешно сконфигурировано в Janus');
+                            } else {
+                                console.warn('⚠️ Неожиданный ответ от Janus при публикации видео:', result);
+                            }
+                        },
+                        error: (error) => {
+                            console.error('❌ Ошибка публикации видео:', error);
+                        }
+                    });
+                },
+                error: (error) => {
+                    console.error('❌ Ошибка создания offer для видео:', error);
+                }
+            });
+            
+            // Уведомляем UI о своем видео
+            if (window.onVideoStreamAdded) {
+                window.onVideoStreamAdded(this.participantId, stream, this.displayName + ' (Вы)', null);
+            }
+            
+            return true;
+        } catch (error) {
+            console.error('❌ Ошибка при публикации видео:', error);
+            return false;
+        }
+    },
+    
+    // Обработать удаленный видео-поток
+    handleRemoteVideoStream(stream, publisherId, displayName) {
+        const publisherIdStr = String(publisherId);
+        console.log(`📹 Обрабатываем удаленный видео-поток от ${publisherIdStr} (${displayName})`);
+        
+        // Проверяем наличие видео-треков
+        const videoTracks = stream.getVideoTracks();
+        if (videoTracks.length === 0) {
+            console.warn(`⚠️ Нет видео-треков в потоке от ${publisherIdStr}`);
+            return;
+        }
+        
+        // Проверяем состояние треков - игнорируем ended треки
+        const activeTracks = videoTracks.filter(track => track.readyState !== 'ended');
+        if (activeTracks.length === 0) {
+            console.warn(`⚠️ Все видео-треки от ${publisherIdStr} уже ended, пропускаем обработку`);
+            return;
+        }
+        
+        // Проверяем состояние треков
+        videoTracks.forEach(track => {
+            console.log(`🔍 Видео-трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
+            
+            // КРИТИЧНО: Проверяем тип трека (экран или камера) для remote tracks
+            console.log(`🔍 ========== ПРОВЕРКА ТИПА ВИДЕО-ТРЕКА (подписчик) ==========`);
+            console.log(`🔍 Publisher ID: ${publisherIdStr}`);
+            console.log(`🔍 Track ID: ${track.id}`);
+            console.log(`🔍 Track Label: ${track.label}`);
+            
+            // Для remote tracks getSettings() может не работать, используем альтернативные способы
+            let trackType = 'unknown';
+            if (track.getSettings) {
+                try {
+                    const settings = track.getSettings();
+                    console.log(`🔍 displaySurface: ${settings.displaySurface}`);
+                    console.log(`🔍 facingMode: ${settings.facingMode}`);
+                    console.log(`🔍 deviceId: ${settings.deviceId}`);
+                    
+                    if (settings.displaySurface !== undefined) {
+                        trackType = 'screen';
+                        console.log(`✅ ЭТО ЭКРАН (displaySurface=${settings.displaySurface})`);
+                    } else if (settings.facingMode !== undefined) {
+                        trackType = 'camera';
+                        console.log(`❌ ЭТО КАМЕРА (facingMode=${settings.facingMode})`);
+                    } else {
+                        // Проверяем по label
+                        const trackLabel = track.label.toLowerCase();
+                        const cameraKeywords = ['camera', 'cam', 'webcam', 'video capture', 'camo', 'obs', 'virtual', 'droidcam'];
+                        const isLabelCamera = cameraKeywords.some(keyword => trackLabel.includes(keyword));
+                        if (isLabelCamera) {
+                            trackType = 'camera';
+                            console.log(`❌ ЭТО КАМЕРА (label содержит слова камеры)`);
+                        } else {
+                            trackType = 'unknown';
+                            console.log(`⚠️ Не удалось определить тип трека`);
+                        }
+                    }
+                } catch (e) {
+                    console.warn(`⚠️ Ошибка при получении настроек трека:`, e);
+                }
+            } else {
+                // Если getSettings() не доступен, проверяем только по label
+                const trackLabel = track.label.toLowerCase();
+                const cameraKeywords = ['camera', 'cam', 'webcam', 'video capture', 'camo', 'obs', 'virtual', 'droidcam'];
+                const isLabelCamera = cameraKeywords.some(keyword => trackLabel.includes(keyword));
+                if (isLabelCamera) {
+                    trackType = 'camera';
+                    console.log(`❌ ЭТО КАМЕРА (label содержит слова камеры: ${trackLabel})`);
+                } else if (trackLabel.includes('screen') || trackLabel.includes('display') || trackLabel.includes('window')) {
+                    trackType = 'screen';
+                    console.log(`✅ ЭТО ЭКРАН (label содержит слова экрана: ${trackLabel})`);
                 } else {
-                    console.warn('⚠️ window.onParticipantsUpdate не определен!');
+                    trackType = 'unknown';
+                    console.log(`⚠️ Не удалось определить тип трека по label: ${trackLabel}`);
+                }
+            }
+            console.log(`🔍 ============================================================`);
+        });
+        
+        // Проверяем, есть ли уже видео для этого publisher
+        const existingVideoData = this.remoteVideoStreams.get(publisherIdStr);
+        if (existingVideoData) {
+            // Проверяем, не тот ли это же трек
+            const existingTrack = existingVideoData.stream?.getVideoTracks()[0];
+            const newTrack = activeTracks[0];
+            
+            if (existingTrack && newTrack && existingTrack.id === newTrack.id && existingTrack.readyState === 'live') {
+                console.log(`✅ Видео-поток для ${publisherIdStr} уже обрабатывается с тем же треком, обновляем только srcObject`);
+                // Обновляем srcObject без пересоздания элемента
+                if (existingVideoData.videoElement) {
+                    existingVideoData.videoElement.srcObject = stream;
+                    // Пытаемся воспроизвести, если еще не воспроизводится
+                    if (existingVideoData.videoElement.paused) {
+                        existingVideoData.videoElement.play().catch(error => {
+                            // Игнорируем AbortError - это нормально при обновлении
+                            if (error.name !== 'AbortError') {
+                                console.error(`❌ Ошибка воспроизведения видео от ${publisherIdStr}:`, error);
+                            }
+                        });
+                    }
+                }
+                // Обновляем stream в данных
+                existingVideoData.stream = stream;
+                return;
+            } else {
+                console.log(`⚠️ Видео-поток для ${publisherIdStr} уже существует, но трек другой, обновляем...`);
+                this.removeRemoteVideoStream(publisherId);
+            }
+        }
+        
+        // Создаем video элемент с оптимизациями для низкой задержки
+        const videoElement = document.createElement('video');
+        videoElement.autoplay = true;
+        videoElement.playsInline = true;
+        videoElement.muted = true; // Видео без звука (аудио идет отдельно)
+        
+        // ОПТИМИЗАЦИИ ДЛЯ НИЗКОЙ ЗАДЕРЖКИ
+        videoElement.preload = 'none'; // Не буферизировать заранее
+        videoElement.disablePictureInPicture = true;
+        videoElement.disableRemotePlayback = true;
+        
+        // Для Chrome/Edge - отключаем буферизацию (экспериментально)
+        if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+            // Браузер поддерживает низкозадержечный режим
+            console.log('🚀 Браузер поддерживает requestVideoFrameCallback для низкой задержки');
+        }
+        
+        // Устанавливаем атрибут для низкой задержки (некоторые браузеры)
+        videoElement.setAttribute('playsinline', '');
+        videoElement.setAttribute('webkit-playsinline', '');
+        
+        videoElement.srcObject = stream;
+        
+        // Явно запускаем воспроизведение
+        videoElement.play().catch(error => {
+            // Игнорируем AbortError - это может произойти при быстром обновлении
+            if (error.name === 'AbortError') {
+                console.log(`ℹ️ Воспроизведение видео от ${publisherIdStr} прервано (возможно, элемент обновляется)`);
+            } else {
+                console.error(`❌ Ошибка воспроизведения видео от ${publisherIdStr}:`, error);
+            }
+        });
+        
+        // Обработка событий трека
+        videoTracks.forEach(track => {
+            track.addEventListener('ended', () => {
+                console.log(`🔴 Видео-трек ${track.id} от ${publisherIdStr} завершен`);
+                this.removeRemoteVideoStream(publisherId);
+            });
+            
+            track.addEventListener('mute', () => {
+                console.warn(`⚠️ Видео-трек ${track.id} от ${publisherIdStr} стал muted`);
+            });
+            
+            track.addEventListener('unmute', () => {
+                console.log(`✅ Видео-трек ${track.id} от ${publisherIdStr} стал unmuted`);
+            });
+        });
+        
+        // Сохраняем данные
+        this.remoteVideoStreams.set(publisherIdStr, {
+            stream: stream,
+            videoElement: videoElement,
+            display: displayName
+        });
+        
+        // Уведомляем UI о новом видео-потоке
+        if (window.onVideoStreamAdded) {
+            window.onVideoStreamAdded(publisherId, stream, displayName, videoElement);
+        }
+        
+        console.log(`✅ Видео-поток от ${publisherIdStr} обработан`);
+    },
+    
+    // Удалить удаленный видео-поток
+    removeRemoteVideoStream(publisherId) {
+        const publisherIdStr = String(publisherId);
+        console.log(`🔴 Удаляем видео-поток от ${publisherIdStr}`);
+        
+        const videoData = this.remoteVideoStreams.get(publisherIdStr);
+        if (videoData) {
+            try {
+                // Останавливаем видео элемент
+                if (videoData.videoElement) {
+                    videoData.videoElement.pause();
+                    videoData.videoElement.srcObject = null;
                 }
                 
-                // Явно запрашиваем список участников
-                console.log('📋 Запрашиваем список publishers...');
-                this.requestParticipantsList();
-                
-                // Устанавливаем периодический запрос списка участников
-                if (this.participantsUpdateInterval) {
-                    clearInterval(this.participantsUpdateInterval);
+                // Останавливаем треки
+                if (videoData.stream) {
+                    videoData.stream.getTracks().forEach(track => track.stop());
                 }
-                this.participantsUpdateInterval = setInterval(() => {
-                    console.log('🔄 Периодический запрос списка participants...');
-                    this.requestParticipantsListCorrect();
-                }, 2000);
                 
-                // Публикуем свой поток (VideoRoom)
-                if (!this.localStream && !this.offerCreated) {
-                    console.log('🎤 Запрашиваем доступ к микрофону для публикации...');
-                    this.capturePublishAudioTrack()
-                        .then(({ publishStream, publishTrack }) => {
-                            console.log('✅ Доступ к микрофону получен, публикуем поток...');
-                            this.localStream = publishStream;
-                            this.audioBridge.createOffer({
-                                tracks: [{ type: 'audio', capture: publishTrack, recv: true }],
-                                success: (jsepOffer) => {
-                                    console.log('✅ WebRTC offer создан, публикуем поток...');
-                                    this.offerCreated = true;
-                                    this.audioBridge.send({
+                // Уведомляем UI об удалении видео
+                if (window.onVideoStreamRemoved) {
+                    window.onVideoStreamRemoved(publisherId);
+                }
+            } catch (e) {
+                console.warn(`Ошибка при удалении видео-потока ${publisherIdStr}:`, e);
+            }
+            
+            this.remoteVideoStreams.delete(publisherIdStr);
+        }
+    },
+
+    // Обработка сообщений от Publisher handle
+    async handlePublisherMessage(msg, jsep) {
+        console.log('📨 Получено сообщение от Publisher:', msg);
+        
+        // Обработка JSEP answer от сервера
+        if (jsep) {
+            this.publisherHandle.handleRemoteJsep({ jsep: jsep });
+        }
+        
+        // Извлекаем данные события
+        let event = null;
+        if (msg.plugindata && msg.plugindata.data) {
+            event = msg.plugindata.data;
+        } else if (msg.videoroom) {
+            event = msg;
+        }
+        
+        if (event) {
+            // Событие 'joined' - мы присоединились к комнате
+            if (event.videoroom === 'joined' && event.id) {
+                this.participantId = event.id;
+                this.wasConnected = true;
+                console.log('✅ Сохранен participantId (publisher ID):', this.participantId);
+                
+                // Регистрируем подключение на сервере
+                if (this.channelId && this.participantId && window.registerAudioConnection) {
+                    window.registerAudioConnection(this.channelId, this.participantId);
+                }
+
+                if (this.isReconnecting) {
+                    this.onReconnectSuccess();
+                }
+                
+                // Запрашиваем список publishers после присоединения
+                this.requestPublishersList();
+                
+                // Запрашиваем активные видео-стримы через SignalR
+                if (typeof Chat !== 'undefined' && Chat && this.channelId) {
+                    await Chat.getActiveVideoStreams(this.channelId);
+                }
+            }
+            
+            // Новые publishers
+            if (event.publishers) {
+                console.log('📋 Новые publishers:', event.publishers.length);
+                
+                // Сохраняем pending publishers для UI (они ещё не в streamVolumes)
+                event.publishers.forEach(publisher => {
+                    // Пропускаем себя (id из Janus может быть number|string — иначе подпишемся на свой feed = задержка + эхо)
+                    if (String(publisher.id) !== String(this.participantId)) {
+                        // Сохраняем private_id для будущей переподписки
+                        if (publisher.private_id) {
+                            this.publisherPrivateIds.set(String(publisher.id), publisher.private_id);
+                        }
+                        // Добавляем в pending list для UI
+                        this.pendingPublishers.set(String(publisher.id), {
+                            id: publisher.id,
+                            display: publisher.display || `Publisher ${publisher.id}`
+                        });
+                        this.subscribeToPublisher(publisher);
+                    }
+                });
+                
+                // Обновляем UI - используем комбинированный список (себя + streamVolumes + pending)
+                this.notifyParticipantsUpdate();
+            }
+            
+            // Событие 'configured' - конфигурация медиа завершена
+            if (event.videoroom === 'event' && event.configured === 'ok') {
+                console.log('✅ Publisher сконфигурирован:', {
+                    audio_codec: event.audio_codec,
+                    video_codec: event.video_codec,
+                    streams: event.streams,
+                    streamsCount: event.streams ? event.streams.length : 0
+                });
+                
+                // Проверяем, что видео действительно опубликовано
+                if (event.streams && event.streams.length > 0) {
+                    const hasVideoStream = event.streams.some(stream => 
+                        stream.type === 'video' || stream.video === true
+                    );
+                    if (hasVideoStream) {
+                        console.log('✅ Видео-поток подтвержден в Janus');
+                    } else {
+                        console.warn('⚠️ Видео-поток не найден в streams, хотя должен быть опубликован');
+                    }
+                }
+            }
+            
+            // Удаленные publishers
+            if (event.unpublished) {
+                console.log('🔴 Publisher отключился:', event.unpublished);
+                this.removePublisher(event.unpublished);
+            }
+            
+            // Ошибки
+            if (event.error_code) {
+                console.error('❌ Ошибка от Janus:', event.error_code, event.error);
+                
+                // Ошибка 426 - комната не существует (после перезагрузки Janus)
+                // Автоматически создаем комнату и повторяем подключение
+                if (event.error_code === 426) {
+                    console.log('🔄 Комната не существует, создаем автоматически...');
+                    this.createRoomAndRejoin();
+                    return; // Не показываем ошибку пользователю
+                }
+                
+                if (window.onAudioError) {
+                    window.onAudioError(event.error || `Ошибка ${event.error_code}`);
+                }
+            }
+        }
+    },
+    
+    // Создать комнату и повторить подключение
+    async createRoomAndRejoin() {
+        if (!this.publisherHandle) {
+            console.error('❌ publisherHandle не найден для создания комнаты');
+            return;
+        }
+        
+        console.log(`📦 Создаем комнату ${this.roomId}...`);
+        
+        // Создаем комнату через Janus API
+        this.publisherHandle.send({
+            message: {
+                request: 'create',
+                room: this.roomId,
+                description: `Audio channel ${this.channelId}`,
+                publishers: 50, // Максимальное количество publishers
+                bitrate: 2000000, // 2 Мбит/с для видео (screen share)
+                bitrate_cap: true, // Строго ограничивать битрейт
+                audiocodec: 'opus',
+                videocodec: 'vp8', // VP8 имеет меньшую задержку чем VP9
+                permanent: false // Не сохранять после перезагрузки Janus
+            },
+            success: (result) => {
+                console.log('✅ Комната создана:', result);
+                
+                // Повторяем подключение к комнате
+                this.publisherHandle.send({
+                    message: {
+                        request: 'join',
+                        room: this.roomId,
+                        ptype: 'publisher',
+                        display: this.displayName
+                    },
+                    success: (joinResult) => {
+                        console.log('✅ Присоединились к созданной комнате:', joinResult);
+                        
+                        // Публикуем поток
+                        const hasAudio = this.localStream && this.localStream.getAudioTracks().length > 0;
+                        if (hasAudio) {
+                            this.publisherHandle.createOffer({
+                                media: this.buildJanusAudioPublisherMedia(true),
+                                stream: this.localStream,
+                                success: (jsep) => {
+                                    this.publisherHandle.send({
                                         message: {
                                             request: 'publish',
                                             audio: true,
                                             video: false
                                         },
-                                        jsep: jsepOffer
-                                    });
-                                    console.log('📤 Publish запрос отправлен');
-                                },
-                                error: (error) => {
-                                    console.error('❌ Create offer error:', error);
-                                }
-                            });
-                        })
-                        .catch((error) => {
-                            console.error('❌ Microphone access denied:', error);
-                            console.log('🔇 Публикуем без микрофона...');
-                            this.audioBridge.createOffer({
-                                media: { audio: false, video: false },
-                                success: (jsep) => {
-                                    console.log('✅ WebRTC offer создан (без микрофона), публикуем...');
-                                    this.audioBridge.send({
-                                        message: {
-                                            request: 'publish',
-                                            audio: false,
-                                            video: false
-                                        },
                                         jsep: jsep
                                     });
-                                    console.log('📤 Publish запрос отправлен (без микрофона)');
                                 },
-                                error: (err) => {
-                                    console.error('❌ Create offer (muted) error:', err);
+                                error: (error) => {
+                                    console.error('❌ Create offer error after room creation:', error);
                                 }
                             });
-                        });
-                } else {
-                    console.log('ℹ️ Локальный поток уже существует, пропускаем публикацию');
-                }
-            } else if (event.videoroom === 'event' || event.audiobridge === 'event' || event.videoroom || event.audiobridge) {
-                // Обработка ошибок
-                if (event.error_code) {
-                    console.error('❌ Ошибка от Janus:', event.error_code, event.error);
-                    console.log('🔍 Проверка условия пересоздания:', {
-                        error_code: event.error_code,
-                        error_code_type: typeof event.error_code,
-                        error: event.error,
-                        error_type: typeof event.error,
-                        error_includes: event.error ? String(event.error).includes('No such room') : false,
-                        channelId: this.channelId,
-                        roomId: this.roomId
-                    });
-                    
-                    // Проверяем ошибку "No such room" - может быть как строка, так и число
-                    const errorCode = typeof event.error_code === 'number' ? event.error_code : parseInt(event.error_code);
-                    const errorMessage = event.error ? String(event.error) : '';
-                    const isNoSuchRoom = errorCode === 485 && (errorMessage.includes('No such room') || errorMessage.includes('does not exist'));
-                    
-                    if (isNoSuchRoom) {
-                        // Защита от бесконечного цикла
-                        if (this.recreateRoomAttempts >= this.maxRecreateAttempts) {
-                            console.error(`❌ Превышено максимальное количество попыток пересоздания комнаты (${this.maxRecreateAttempts}). Останавливаем попытки.`);
-                            const errorMsg = `Не удалось подключиться к комнате ${this.roomId} после ${this.maxRecreateAttempts} попыток пересоздания. Возможно, проблема с Janus Gateway. Обратитесь к администратору.`;
-                            if (window.onAudioError) {
-                                window.onAudioError(errorMsg);
-                            }
-                            this.disconnect();
-                            return;
                         }
                         
-                        this.recreateRoomAttempts++;
-                        console.warn(`⚠️ Комната не существует в VideoRoom (попытка ${this.recreateRoomAttempts}/${this.maxRecreateAttempts}). Пытаемся пересоздать...`);
-                        console.log('🔍 channelId доступен:', this.channelId ? 'ДА' : 'НЕТ');
-                        
-                        // Пытаемся автоматически пересоздать комнату, если есть channelId
-                        if (this.channelId) {
-                            try {
-                                console.log('🔄 Вызываем API для пересоздания комнаты для канала:', this.channelId);
-                                const response = await API.post(`${API.baseUrls.audio}/api/audio/AudioChannels/${this.channelId}/recreate-room`);
-                                console.log('✅ Комната успешно пересоздана в VideoRoom! Пересоздаем сессию Janus...');
-                                
-                                // Отключаемся и пересоздаем сессию для использования VideoRoom
-                                if (this.audioBridge) {
-                                    try {
-                                        this.audioBridge.detach();
-                                    } catch (e) {
-                                        console.warn('Ошибка при отключении handle:', e);
-                                    }
-                                    this.audioBridge = null;
-                                }
-                                
-                                if (this.janus) {
-                                    try {
-                                        this.janus.destroy();
-                                    } catch (e) {
-                                        console.warn('Ошибка при уничтожении сессии:', e);
-                                    }
-                                    this.janus = null;
-                                }
-                                
-                                // Увеличиваем задержку перед повторным подключением
-                                setTimeout(async () => {
-                                    console.log('🔄 Повторная попытка подключения с новой сессией...');
-                                    // Переподключаемся полностью через init
-                                    try {
-                                        await this.init(this.roomId, this.channelId, this.displayName);
-                                        console.log('✅ Новая сессия Janus создана, подключаемся к VideoRoom...');
-                                    } catch (initError) {
-                                        console.error('❌ Ошибка при создании новой сессии Janus:', initError);
-                                        const errorMsg = 'Не удалось создать новую сессию Janus после пересоздания комнаты. Попробуйте обновить страницу.';
-                                        if (window.onAudioError) {
-                                            window.onAudioError(errorMsg);
-                                        }
-                                        this.disconnect();
-                                    }
-                                }, 2000);
-                                
-                                return; // Не отключаемся, ждем переподключения
-                            } catch (recreateError) {
-                                console.error('❌ Не удалось пересоздать комнату:', recreateError);
-                                
-                                // Проверяем, является ли ошибка ошибкой авторизации
-                                const isAuthError = recreateError && (
-                                    recreateError.message && recreateError.message.includes('Unauthorized') ||
-                                    recreateError.message && recreateError.message.includes('401') ||
-                                    recreateError.toString && recreateError.toString().includes('401')
-                                );
-                                
-                                let errorMsg;
-                                if (isAuthError) {
-                                    errorMsg = `Не удалось пересоздать комнату: требуется авторизация. Пожалуйста, войдите в систему заново.`;
-                                } else {
-                                    errorMsg = `Комната ${this.roomId} не существует в Janus Gateway. Не удалось автоматически пересоздать комнату. Обратитесь к администратору группы.`;
-                                }
-                                
-                                if (window.onAudioError) {
-                                    window.onAudioError(errorMsg);
-                                }
-                                this.disconnect();
-                                return;
-                            }
-                        }
-                        
-                        // Если channelId нет, показываем ошибку
-                        const errorMsg = `Комната ${this.roomId} не существует в Janus Gateway. Возможно, Janus был перезапущен или комната была создана в старой версии. Попробуйте пересоздать аудио канал или обратитесь к администратору группы.`;
-                        console.error('❌', errorMsg);
+                        // Запрашиваем список publishers
+                        this.requestPublishersList();
+                    },
+                    error: (error) => {
+                        console.error('❌ Join error after room creation:', error);
                         if (window.onAudioError) {
-                            window.onAudioError(errorMsg);
-                        }
-                        // Отключаемся от несуществующей комнаты
-                        this.disconnect();
-                    } else {
-                        // Другие ошибки
-                        const errorMsg = event.error || `Ошибка ${event.error_code} от Janus`;
-                        if (window.onAudioError) {
-                            window.onAudioError(errorMsg);
+                            window.onAudioError(error);
                         }
                     }
+                });
+            },
+            error: (error) => {
+                // Ошибка 427 - комната уже существует (race condition)
+                if (error && error.error_code === 427) {
+                    console.log('⚠️ Комната уже существует, пытаемся присоединиться...');
+                    // Повторяем присоединение
+                    this.publisherHandle.send({
+                        message: {
+                            request: 'join',
+                            room: this.roomId,
+                            ptype: 'publisher',
+                            display: this.displayName
+                        }
+                    });
+                } else {
+                    console.error('❌ Ошибка создания комнаты:', error);
+                    if (window.onAudioError) {
+                        window.onAudioError(error.error || 'Ошибка создания комнаты');
+                    }
+                }
+            }
+        });
+    },
+
+    // Переподписаться на publisher (для получения видео после того, как он начал транслировать)
+    async resubscribeToPublisherByNickname(nickname) {
+        console.log(`🔄 Переподписываемся на publisher по nickname: ${nickname}`);
+        
+        // Увеличиваем задержку до 6 секунд, чтобы Janus точно успел обработать публикацию видео
+        // и обновить информацию о доступных потоках
+        console.log('⏳ Ждем 6 секунд перед переподпиской, чтобы Janus успел обработать видео...');
+        await new Promise(resolve => setTimeout(resolve, 6000));
+        
+        // ВАЖНО: Используем более простой подход - переподписываемся на ВСЕХ существующих publishers
+        // Это гарантирует, что мы получим видео, даже если список publishers парсится неправильно
+        console.log('🔄 Переподписываемся на всех существующих publishers...');
+        
+        const publisherIdsToResubscribe = Array.from(this.subscriberHandles.keys());
+        console.log(`📋 Найдено ${publisherIdsToResubscribe.length} существующих подписок для переподписки`);
+        
+        if (publisherIdsToResubscribe.length === 0) {
+            console.warn('⚠️ Нет существующих подписок для переподписки');
+            return Promise.reject(new Error('Нет существующих подписок'));
+        }
+        
+        // Переподписываемся на каждого publisher с повторными попытками
+        const resubscribePromises = publisherIdsToResubscribe.map(publisherIdStr => {
+            return new Promise((resolve, reject) => {
+                const publisherId = parseInt(publisherIdStr);
+                if (isNaN(publisherId)) {
+                    console.warn(`⚠️ Неверный publisherId: ${publisherIdStr}`);
+                    resolve(null);
                     return;
                 }
                 
-                // Обработка ответа на list (VideoRoom использует publishers)
-                if (event.list !== undefined || event.publishers !== undefined) {
-                    let publishers = event.publishers || event.list;
+                const attemptResubscribe = (attemptNumber = 1, maxAttempts = 3) => {
+                    console.log(`🔄 Попытка ${attemptNumber}/${maxAttempts} переподписки на ${publisherIdStr}...`);
                     
-                    // Если publishers это объект с массивом, извлекаем массив
-                    if (publishers && typeof publishers === 'object' && !Array.isArray(publishers)) {
-                        if (publishers.list && Array.isArray(publishers.list)) {
-                            publishers = publishers.list;
-                        } else if (publishers.publishers && Array.isArray(publishers.publishers)) {
-                            publishers = publishers.publishers;
+                    console.log(`🔴 Отписываемся от старой подписки на ${publisherIdStr}...`);
+                    const oldHandle = this.subscriberHandles.get(publisherIdStr);
+                    if (oldHandle) {
+                        try {
+                            // ВАЖНО: Останавливаем все треки перед отключением handle
+                            if (oldHandle.webrtcStuff && oldHandle.webrtcStuff.pc) {
+                                const pc = oldHandle.webrtcStuff.pc;
+                                const receivers = pc.getReceivers();
+                                console.log(`🛑 Останавливаем ${receivers.length} receivers перед отключением handle...`);
+                                receivers.forEach(receiver => {
+                                    if (receiver.track) {
+                                        console.log(`🛑 Останавливаем трек ${receiver.track.id} (${receiver.track.kind})`);
+                                        receiver.track.stop();
+                                    }
+                                });
+                            }
+                            
+                            oldHandle.detach();
+                        } catch (e) {
+                            console.warn(`Ошибка при отключении старой подписки:`, e);
                         }
+                        this.subscriberHandles.delete(publisherIdStr);
+                        // Очищаем связанные данные
+                        this.streamVolumes.delete(publisherIdStr);
+                        this.remoteStreams.delete(publisherIdStr);
+                        this.removeRemoteVideoStream(publisherId);
                     }
                     
-                    const participants = Array.isArray(publishers) ? publishers : [];
-                    console.log('📋 Список publishers (VideoRoom):', participants.length, 'участников', participants);
-                    console.log('📋 Детали publishers:', JSON.stringify(participants, null, 2));
-                    
-                    if (!this.participantId && participants.length > 0) {
-                        const self = participants.find(p => {
-                            const pDisplay = (p.display || p.displayName || '').trim();
-                            const myDisplay = this.displayName.trim();
-                            return pDisplay === myDisplay;
+                    // Запрашиваем список publishers для получения полной информации
+                    setTimeout(() => {
+                        if (!this.publisherHandle || !this.roomId) {
+                            if (attemptNumber < maxAttempts) {
+                                setTimeout(() => attemptResubscribe(attemptNumber + 1, maxAttempts), 2000);
+                            } else {
+                                reject(new Error('publisherHandle или roomId не доступен'));
+                            }
+                            return;
+                        }
+                        
+                        this.publisherHandle.send({
+                            message: { 
+                                request: 'list',
+                                room: this.roomId
+                            },
+                            success: (result) => {
+                                console.log(`📋 Получен список publishers для publisherId ${publisherId}:`, result);
+                                
+                                // Пытаемся найти publisher в списке
+                                let publisher = null;
+                                if (result && result.list) {
+                                    // Пробуем разные варианты структуры данных
+                                    publisher = result.list.find(p => {
+                                        // Вариант 1: прямой доступ к полям
+                                        if (p && (p.id === publisherId || String(p.id) === publisherIdStr)) {
+                                            return true;
+                                        }
+                                        // Вариант 2: если это массив массивов
+                                        if (Array.isArray(p) && p.length > 0) {
+                                            const pId = p[0] || p.id || p.publisher_id;
+                                            return pId === publisherId || String(pId) === publisherIdStr;
+                                        }
+                                        return false;
+                                    });
+                                    
+                                    // Если не нашли, создаем минимальный объект publisher
+                                    if (!publisher) {
+                                        console.log(`⚠️ Publisher ${publisherId} не найден в списке, создаем минимальный объект`);
+                                        // Используем сохраненный private_id, если он есть
+                                        const savedPrivateId = this.publisherPrivateIds.get(publisherIdStr);
+                                        publisher = {
+                                            id: publisherId,
+                                            display: nickname || `Publisher ${publisherId}`,
+                                            private_id: savedPrivateId || null
+                                        };
+                                    } else {
+                                        // Нормализуем структуру
+                                        if (Array.isArray(publisher)) {
+                                            publisher = {
+                                                id: publisher[0] || publisherId,
+                                                display: publisher[1] || publisher.display || nickname || `Publisher ${publisherId}`,
+                                                private_id: publisher[2] || publisher.private_id || null
+                                            };
+                                        }
+                                        // Убеждаемся, что id правильный
+                                        publisher.id = publisherId;
+                                    }
+                                } else {
+                                    // Если список не получен, создаем минимальный объект
+                                    // Используем сохраненный private_id, если он есть
+                                    const savedPrivateId = this.publisherPrivateIds.get(publisherIdStr);
+                                    publisher = {
+                                        id: publisherId,
+                                        display: nickname || `Publisher ${publisherId}`,
+                                        private_id: savedPrivateId || null
+                                    };
+                                }
+                                
+                                console.log(`✅ Переподписываемся на publisher ${publisher.id} (${publisher.display})...`);
+                                
+                                // Сохраняем callback для проверки, получили ли мы видео
+                                const originalOnMessage = this.subscriberHandles.get(publisherIdStr)?.onmessage;
+                                const checkVideoInOffer = (handle, attemptNum) => {
+                                    const originalOnMsg = handle.onmessage;
+                                    handle.onmessage = (msg, jsep) => {
+                                        // Вызываем оригинальный обработчик
+                                        if (originalOnMsg) {
+                                            originalOnMsg.call(handle, msg, jsep);
+                                        }
+                                        
+                                        // Проверяем, есть ли видео в offer
+                                        if (jsep && jsep.type === 'offer' && jsep.sdp) {
+                                            const hasVideo = jsep.sdp.includes('m=video') || jsep.sdp.includes('video');
+                                            console.log(`🔍 [Попытка ${attemptNum}] SDP offer после переподписки: hasVideo=${hasVideo}`);
+                                            
+                                            if (!hasVideo && attemptNum < maxAttempts) {
+                                                console.log(`⚠️ Видео не найдено в offer, повторяем попытку через 3 секунды...`);
+                                                setTimeout(() => {
+                                                    // Отписываемся и пробуем снова
+                                                    if (this.subscriberHandles.has(publisherIdStr)) {
+                                                        const h = this.subscriberHandles.get(publisherIdStr);
+                                                        if (h) {
+                                                            try {
+                                                                h.detach();
+                                                            } catch (e) {
+                                                                console.warn(`Ошибка при отключении:`, e);
+                                                            }
+                                                        }
+                                                        this.subscriberHandles.delete(publisherIdStr);
+                                                    }
+                                                    attemptResubscribe(attemptNum + 1, maxAttempts);
+                                                }, 3000);
+                                                return; // Не вызываем resolve, ждем следующей попытки
+                                            } else if (hasVideo) {
+                                                console.log(`✅ Видео найдено в offer после переподписки!`);
+                                            }
+                                        }
+                                    };
+                                };
+                                
+                                this.subscribeToPublisher(publisher);
+                                
+                                // Устанавливаем проверку видео в offer после небольшой задержки
+                                setTimeout(() => {
+                                    const handle = this.subscriberHandles.get(publisherIdStr);
+                                    if (handle) {
+                                        checkVideoInOffer(handle, attemptNumber);
+                                    }
+                                }, 100);
+                                
+                                // Разрешаем promise только если это последняя попытка или если мы уверены, что получили видео
+                                if (attemptNumber === maxAttempts) {
+                                    resolve(publisher);
+                                }
+                            },
+                            error: (error) => {
+                                console.error(`❌ Ошибка при запросе списка для ${publisherId}:`, error);
+                                if (attemptNumber < maxAttempts) {
+                                    setTimeout(() => attemptResubscribe(attemptNumber + 1, maxAttempts), 2000);
+                                } else {
+                                    // Все равно пытаемся подписаться с минимальными данными
+                                    // Используем сохраненный private_id, если он есть
+                                    const savedPrivateId = this.publisherPrivateIds.get(publisherIdStr);
+                                    const publisher = {
+                                        id: publisherId,
+                                        display: nickname || `Publisher ${publisherId}`,
+                                        private_id: savedPrivateId || null
+                                    };
+                                    this.subscribeToPublisher(publisher);
+                                    resolve(publisher);
+                                }
+                            }
                         });
-                        if (self && self.id) {
-                            this.participantId = self.id;
-                            console.log('✅ Найден свой participantId из списка:', this.participantId);
-                        }
-                    }
-                    
-                    // Подписываемся на всех publishers (кроме себя)
-                    console.log(`🔍 Подписываемся на publishers. Мой ID: ${this.participantId}, Всего: ${participants.length}`);
-                    this.subscribeToPublishers(participants);
-                    
-                    // Инициализируем Web Audio API микшер если еще не инициализирован
-                    if (!this.remoteAudioContext) {
-                        this.initWebAudioMixer();
-                    }
-                    
-                    console.log('🔍 Вызываем onParticipantsUpdate с', participants.length, 'участниками');
-                    if (window.onParticipantsUpdate) {
-                        window.onParticipantsUpdate(participants, this.participantId);
-                        console.log('✅ onParticipantsUpdate вызван');
-                    } else {
-                        console.warn('⚠️ window.onParticipantsUpdate не определен при обработке list');
-                    }
-                }
+                    }, 500);
+                };
                 
-                // Обработка нового publisher (VideoRoom)
-                if (event.publisher) {
-                    const publisher = event.publisher;
-                    console.log('📢 Новый publisher присоединился:', publisher);
-                    if (publisher.id && publisher.id !== this.participantId) {
-                        this.subscribeToPublisher(publisher);
-                    }
-                }
-                
-                // Обработка отключения publisher (VideoRoom)
-                if (event.unpublished) {
-                    const publisherId = typeof event.unpublished === 'object' ? event.unpublished.id : event.unpublished;
-                    console.log('📢 Publisher отключился:', publisherId);
-                    if (publisherId) {
-                        this.unsubscribeFromPublisher(publisherId);
-                    }
-                }
-                
-                // Логируем другие события для отладки
-                if (event.talking) {
-                    console.log('🗣️ Кто-то говорит:', event.talking);
-                }
-                
-                // Логируем все события для отладки
-                console.log('📨 Получено событие от Janus:', event);
-            }
-        }
-
-        // Обрабатываем JSEP answer вручную, т.к. Janus.js НЕ делает это автоматически для AudioBridge
-        // PeerConnection хранится в audioBridge.webrtcStuff.pc, а не в audioBridge.pc
-        if (jsep) {
-            console.log('📡 Получен JSEP:', {
-                type: jsep.type,
-                has_sdp: !!jsep.sdp,
-                sdp_length: jsep.sdp ? jsep.sdp.length : 0,
-                event_result: event ? event.result : 'N/A'
+                // Начинаем первую попытку
+                attemptResubscribe();
             });
+        });
+        
+        return Promise.all(resubscribePromises).then(results => {
+            const successful = results.filter(r => r !== null);
+            console.log(`✅ Переподписаны на ${successful.length} publishers`);
+            return successful;
+        });
+    },
+
+    // Переподписаться на всех publishers, у которых есть видео-стримы
+    async resubscribeAllPublishersWithVideo() {
+        console.log('🔄 Переподписываемся на всех publishers с видео...');
+        
+        // Ждем немного, чтобы Janus успел обновить список
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        return new Promise((resolve, reject) => {
+            if (!this.publisherHandle || !this.roomId) {
+                reject(new Error('publisherHandle или roomId не доступен'));
+                return;
+            }
             
-            if (jsep.type === 'answer' && event && event.result === 'ok' && !this.jsepProcessed) {
-                this.jsepProcessed = true;
-                console.log('✅ JSEP answer получен, обрабатываем вручную...');
-                console.log('🔍 JSEP детали:', {
-                    type: jsep.type,
-                    sdp_preview: jsep.sdp ? jsep.sdp.substring(0, 100) + '...' : 'нет SDP',
-                    sdp_length: jsep.sdp ? jsep.sdp.length : 0
+            this.publisherHandle.send({
+                message: { 
+                    request: 'list',
+                    room: this.roomId
+                },
+                success: (result) => {
+                    if (result && result.list) {
+                        const publishersWithVideo = result.list.filter(p => {
+                            if (this.participantId != null && String(p.id) === String(this.participantId)) {
+                                return false;
+                            }
+                            return p.streams && p.streams.some(s => s.type === 'video');
+                        });
+                        
+                        console.log(`📹 Найдено ${publishersWithVideo.length} publishers с видео`);
+                        
+                        if (publishersWithVideo.length === 0) {
+                            console.warn('⚠️ Publishers с видео не найдены');
+                            resolve([]);
+                            return;
+                        }
+                        
+                        // Переподписываемся на каждого publisher с видео
+                        const resubscribePromises = publishersWithVideo.map(publisher => {
+                            return new Promise((res, rej) => {
+                                const publisherIdStr = String(publisher.id);
+                                const oldHandle = this.subscriberHandles.get(publisherIdStr);
+                                
+                                if (oldHandle) {
+                                    console.log(`🔴 Отписываемся от старой подписки на ${publisherIdStr} (${publisher.display})`);
+                                    try {
+                                        oldHandle.detach();
+                                    } catch (e) {
+                                        console.warn(`Ошибка при отключении старой подписки:`, e);
+                                    }
+                                    this.subscriberHandles.delete(publisherIdStr);
+                                    this.streamVolumes.delete(publisherIdStr);
+                                    this.remoteStreams.delete(publisherIdStr);
+                                    this.removeRemoteVideoStream(publisher.id);
+                                }
+                                
+                                setTimeout(() => {
+                                    this.subscribeToPublisher(publisher);
+                                    res(publisher);
+                                }, 500);
+                            });
+                        });
+                        
+                        Promise.all(resubscribePromises)
+                            .then(publishers => {
+                                console.log(`✅ Переподписаны на ${publishers.length} publishers с видео`);
+                                resolve(publishers);
+                            })
+                            .catch(reject);
+                    } else {
+                        reject(new Error('Список publishers пуст'));
+                    }
+                },
+                error: reject
+            });
+        });
+    },
+
+    // Подписаться на поток другого publisher
+    subscribeToPublisher(publisher) {
+        const publisherId = publisher.id;
+        const displayName = publisher.display || `Publisher ${publisherId}`;
+        const publisherIdStr = String(publisherId);
+
+        if (this.participantId != null && publisherIdStr === String(this.participantId)) {
+            console.log(`🔇 Пропуск подписки на собственный publisher ${publisherIdStr} (избегаем задвоения голоса у вещающего)`);
+            return;
+        }
+        
+        // Проверяем, не подписаны ли уже (ключи в Map — строки)
+        if (this.subscriberHandles.has(publisherIdStr)) {
+            console.log(`⚠️ Уже подписаны на publisher ${publisherIdStr}`);
+            return;
+        }
+        
+        console.log(`📡 Подписываемся на publisher ${publisherIdStr} (${displayName})`);
+        
+        // Создаем отдельный handle для каждого subscriber
+        this.janus.attach({
+            plugin: 'janus.plugin.videoroom',
+            opaqueId: `subscriber-${publisherIdStr}`,
+            success: (handle) => {
+                this.subscriberHandles.set(publisherIdStr, handle);
+                
+                // Сохраняем private_id для будущей переподписки
+                if (publisher.private_id) {
+                    this.publisherPrivateIds.set(publisherIdStr, publisher.private_id);
+                }
+                
+                // Используем сохраненный private_id, если он есть
+                const privateId = publisher.private_id || this.publisherPrivateIds.get(publisherIdStr);
+                
+                // Присоединяемся как subscriber
+                handle.send({
+                    message: {
+                        request: 'join',
+                        room: this.roomId,
+                        ptype: 'subscriber', // Ключевое отличие: subscriber
+                        feed: publisherId, // ID publisher, на которого подписываемся
+                        private_id: privateId
+                    },
+                    success: (result) => {
+                        console.log(`✅ Подписались на publisher ${publisherId}`);
+                        // Сервер отправит offer в onmessage
+                        },
+                            error: (error) => {
+                        console.error(`❌ Ошибка подписки на publisher ${publisherIdStr}:`, error);
+                        this.subscriberHandles.delete(publisherIdStr);
+                    }
                 });
                 
-                // Проверяем webrtcStuff.pc вместо audioBridge.pc
-                const webrtcStuff = this.audioBridge.webrtcStuff;
-                console.log('🔍 webrtcStuff:', webrtcStuff ? 'найден' : 'не найден');
-                if (webrtcStuff) {
-                    console.log('🔍 webrtcStuff.pc:', webrtcStuff.pc ? 'найден' : 'не найден');
-                    if (webrtcStuff.pc) {
-                        console.log('🔍 PeerConnection состояние:', {
-                            signalingState: webrtcStuff.pc.signalingState,
-                            iceConnectionState: webrtcStuff.pc.iceConnectionState,
-                            connectionState: webrtcStuff.pc.connectionState
+                // Обработка сообщений
+                handle.onmessage = (msg, jsep) => {
+                    console.log(`📨 [subscriber ${publisherIdStr}] onmessage вызван:`, {
+                        hasJsep: !!jsep,
+                        jsepType: jsep?.type,
+                        msgPlugindata: msg.plugindata?.data,
+                        msgVideoroom: msg.videoroom
+                    });
+                    
+                    if (jsep) {
+                        console.log(`📨 [subscriber ${publisherIdStr}] Получен JSEP offer, создаем answer с videoRecv: true`);
+                        
+                        // Проверяем SDP offer на наличие видео
+                        if (jsep.sdp) {
+                            const hasVideoInOffer = jsep.sdp.includes('m=video') || jsep.sdp.includes('video');
+                            const hasAudioInOffer = jsep.sdp.includes('m=audio') || jsep.sdp.includes('audio');
+                            console.log(`🔍 [subscriber ${publisherIdStr}] SDP offer анализ:`, {
+                                hasVideo: hasVideoInOffer,
+                                hasAudio: hasAudioInOffer,
+                                sdpLength: jsep.sdp.length,
+                                sdpPreview: jsep.sdp.substring(0, 200)
+                            });
+                        }
+                        
+                        // Получили offer от сервера
+                        handle.createAnswer({
+                            jsep: jsep,
+                            media: { 
+                                audioRecv: true, 
+                                videoRecv: true, // Включаем прием видео
+                                audioSend: false, 
+                                videoSend: false 
+                            },
+                            success: (answerJsep) => {
+                                console.log(`✅ [subscriber ${publisherIdStr}] Answer создан успешно`);
+                                
+                                // Проверяем SDP answer на наличие видео
+                                if (answerJsep.sdp) {
+                                    const hasVideoInAnswer = answerJsep.sdp.includes('m=video') || answerJsep.sdp.includes('video');
+                                    const hasAudioInAnswer = answerJsep.sdp.includes('m=audio') || answerJsep.sdp.includes('audio');
+                                    console.log(`🔍 [subscriber ${publisherIdStr}] SDP answer анализ:`, {
+                                        hasVideo: hasVideoInAnswer,
+                                        hasAudio: hasAudioInAnswer,
+                                        sdpLength: answerJsep.sdp.length,
+                                        sdpPreview: answerJsep.sdp.substring(0, 200)
+                                    });
+                                }
+                                
+                                // Проверяем transceivers после создания answer
+                                setTimeout(() => {
+                                    if (handle.webrtcStuff && handle.webrtcStuff.pc) {
+                                        const pc = handle.webrtcStuff.pc;
+                                        if (pc.getTransceivers) {
+                                            const transceivers = pc.getTransceivers();
+                                            console.log(`🔍 [subscriber ${publisherIdStr}] Transceivers после создания answer: ${transceivers.length}`);
+                                            transceivers.forEach((transceiver, idx) => {
+                                                console.log(`🔍 [subscriber ${publisherIdStr}] Transceiver ${idx}:`, {
+                                                    kind: transceiver.receiver?.track?.kind,
+                                                    direction: transceiver.direction,
+                                                    currentDirection: transceiver.currentDirection,
+                                                    receiverTrackId: transceiver.receiver?.track?.id,
+                                                    receiverTrackReadyState: transceiver.receiver?.track?.readyState
+                                                });
+                                                
+                                                // ОПТИМИЗАЦИЯ: Уменьшаем jitter buffer для низкой задержки
+                                                // (поддерживается в Chrome 74+, Firefox 74+)
+                                                if (transceiver.receiver && transceiver.receiver.jitterBufferTarget !== undefined) {
+                                                    // Устанавливаем минимальный jitter buffer (в миллисекундах)
+                                                    // 0 = минимальная задержка, но может быть нестабильно
+                                                    // 50-100 = хороший баланс между задержкой и стабильностью
+                                                    transceiver.receiver.jitterBufferTarget = 50; // 50мс
+                                                    console.log(`🚀 [subscriber ${publisherIdStr}] Установлен jitterBufferTarget=50ms для ${transceiver.receiver?.track?.kind}`);
+                                                }
+                                            });
+                                        }
+                                        
+                                        // Также проверяем receivers напрямую
+                                        const receivers = pc.getReceivers();
+                                        receivers.forEach(receiver => {
+                                            if (receiver.jitterBufferTarget !== undefined) {
+                                                receiver.jitterBufferTarget = 50; // 50мс для низкой задержки
+                                                console.log(`🚀 [subscriber ${publisherIdStr}] Установлен jitterBufferTarget=50ms для receiver ${receiver.track?.kind}`);
+                                            }
+                                        });
+                                    }
+                                }, 100);
+                                
+                                handle.send({
+                                    message: { request: 'start' },
+                                    jsep: answerJsep
+                                });
+                            },
+                            error: (error) => {
+                                console.error(`❌ [subscriber ${publisherIdStr}] Ошибка создания answer:`, error);
+                            }
                         });
                     }
-                }
+                    
+                    // Когда поток начался (как в инструкции) - ВАЖНО: используем это как основной способ
+                    if (msg.plugindata && msg.plugindata.data && msg.plugindata.data.started === 'ok') {
+                        console.log(`✅ [subscriber ${publisherIdStr}] Поток начался (started=ok)`, {
+                            msgData: msg.plugindata.data,
+                            streams: msg.plugindata.data.streams
+                        });
+                        
+                        // Получаем поток из RTCPeerConnection (как в инструкции)
+                        setTimeout(() => {
+                            const pc = handle.webrtcStuff.pc;
+                            if (pc) {
+                                console.log(`🔍 [started ${publisherIdStr}] PC найден, проверяем receivers и transceivers...`);
+                                // Проверяем статистику соединения
+                                pc.getStats().then(stats => {
+                                    console.log(`📊 [started ${publisherIdStr}] Получено ${stats.size} статистических отчетов`);
+                                    
+                                    let audioReports = 0;
+                                    let videoReports = 0;
+                                    
+                                    stats.forEach(report => {
+                                        if (report.type === 'inbound-rtp') {
+                                            if (report.kind === 'audio') {
+                                                audioReports++;
+                                                console.log(`📊 [started ${publisherIdStr}] Статистика аудио:`, {
+                                                    bytesReceived: report.bytesReceived,
+                                                    packetsReceived: report.packetsReceived,
+                                                    packetsLost: report.packetsLost,
+                                                    jitter: report.jitter,
+                                                    audioLevel: report.audioLevel
+                                                });
+                                                
+                                                if (report.bytesReceived === 0) {
+                                                    console.warn(`⚠️ [started ${publisherIdStr}] Нет полученных байт для аудио!`);
+                                                } else {
+                                                    console.log(`✅ [started ${publisherIdStr}] Получено ${report.bytesReceived} байт для аудио`);
+                                                }
+                                            } else if (report.kind === 'video') {
+                                                videoReports++;
+                                                console.log(`📹 [started ${publisherIdStr}] ВИДЕО СТАТИСТИКА НАЙДЕНА!`, {
+                                                    bytesReceived: report.bytesReceived,
+                                                    packetsReceived: report.packetsReceived,
+                                                    packetsLost: report.packetsLost,
+                                                    framesDecoded: report.framesDecoded,
+                                                    framesDropped: report.framesDropped,
+                                                    frameWidth: report.frameWidth,
+                                                    frameHeight: report.frameHeight
+                                                });
+                                            }
+                                        }
+                                    });
+                                    
+                                    console.log(`📊 [started ${publisherIdStr}] Итого: audio reports=${audioReports}, video reports=${videoReports}`);
+                                    
+                                    if (videoReports === 0) {
+                                        console.warn(`⚠️ [started ${publisherIdStr}] НЕТ ВИДЕО СТАТИСТИКИ! Это означает, что видео-трек не передается через WebRTC`);
+                                    }
+                                });
+                                
+                                const receivers = pc.getReceivers();
+                                const remoteStream = new MediaStream();
+                                
+                                const audioStream = new MediaStream();
+                                const videoStream = new MediaStream();
+                                
+                                receivers.forEach(receiver => {
+                                    if (receiver.track) {
+                                        if (receiver.track.kind === 'audio') {
+                                            console.log(`🔍 [started] Receiver трек ${receiver.track.id}: enabled=${receiver.track.enabled}, muted=${receiver.track.muted}, readyState=${receiver.track.readyState}`);
+                                            audioStream.addTrack(receiver.track);
+                                        } else if (receiver.track.kind === 'video') {
+                                            console.log(`🔍 [started] Receiver видео-трек ${receiver.track.id}: enabled=${receiver.track.enabled}, muted=${receiver.track.muted}, readyState=${receiver.track.readyState}`);
+                                            videoStream.addTrack(receiver.track);
+                                        }
+                                    }
+                                });
+                                
+                                // Обрабатываем аудио-поток
+                                if (audioStream.getAudioTracks().length > 0) {
+                                    console.log(`✅ [started] Создан аудио-поток из receivers для ${publisherIdStr}, треков: ${audioStream.getAudioTracks().length}`);
+                                    // ВАЖНО: Сохраняем поток в handle для использования в processAudioForMixing
+                                    handle.remoteStream = audioStream;
+                                    console.log(`✅ [started] Сохранен remoteStream в handle для ${publisherIdStr}`);
+                                    // Обрабатываем поток
+                                    this.handleRemoteStream(audioStream, publisherId, displayName);
+                                } else {
+                                    console.warn(`⚠️ Нет аудио треков в receivers для ${publisherIdStr}`);
+                                }
+                                
+                                // Обрабатываем видео-поток
+                                if (videoStream.getVideoTracks().length > 0) {
+                                    console.log(`✅ [started ${publisherIdStr}] Создан видео-поток из receivers, треков: ${videoStream.getVideoTracks().length}`);
+                                    this.handleRemoteVideoStream(videoStream, publisherId, displayName);
+                                } else {
+                                    console.log(`⚠️ [started ${publisherIdStr}] Нет видео-треков в receivers, проверяем transceivers...`);
+                                    
+                                    // Проверяем transceivers
+                                    if (pc.getTransceivers) {
+                                        const transceivers = pc.getTransceivers();
+                                        console.log(`🔍 [started ${publisherIdStr}] Найдено ${transceivers.length} transceivers`);
+                                        transceivers.forEach((transceiver, idx) => {
+                                            console.log(`🔍 [started ${publisherIdStr}] Transceiver ${idx}:`, {
+                                                kind: transceiver.receiver?.track?.kind,
+                                                direction: transceiver.direction,
+                                                currentDirection: transceiver.currentDirection,
+                                                receiverTrackId: transceiver.receiver?.track?.id,
+                                                receiverTrackReadyState: transceiver.receiver?.track?.readyState,
+                                                receiverTrackEnabled: transceiver.receiver?.track?.enabled,
+                                                receiverTrackMuted: transceiver.receiver?.track?.muted
+                                            });
+                                        });
+                                    }
+                                    
+                                    // Проверяем периодически на наличие видео-треков (если publisher добавит видео позже)
+                                    let checkCount = 0;
+                                    const checkVideoInterval = setInterval(() => {
+                                        checkCount++;
+                                        const receivers = pc.getReceivers();
+                                        const videoReceivers = receivers.filter(r => r.track && r.track.kind === 'video');
+                                        
+                                        console.log(`🔍 [started ${publisherIdStr}] Проверка ${checkCount}: receivers=${receivers.length}, videoReceivers=${videoReceivers.length}`);
+                                        
+                                        if (videoReceivers.length > 0) {
+                                            console.log(`✅ [started ${publisherIdStr}] Найден видео-трек в receivers после ${checkCount} проверок!`);
+                                            const videoStream = new MediaStream();
+                                            videoReceivers.forEach(r => {
+                                                console.log(`📹 [started ${publisherIdStr}] Добавляем видео-трек: ${r.track.id}, readyState=${r.track.readyState}`);
+                                                videoStream.addTrack(r.track);
+                                            });
+                                            this.handleRemoteVideoStream(videoStream, publisherId, displayName);
+                                            clearInterval(checkVideoInterval);
+                                        } else if (checkCount >= 20) { // Проверяем 20 раз (10 секунд)
+                                            console.log(`⏳ [started ${publisherIdStr}] Прекращаем проверку видео-треков после ${checkCount} попыток`);
+                                            
+                                            // Финальная проверка transceivers
+                                            if (pc.getTransceivers) {
+                                                const transceivers = pc.getTransceivers();
+                                                console.log(`🔍 [started ${publisherIdStr}] Финальная проверка: ${transceivers.length} transceivers`);
+                                                transceivers.forEach((transceiver, idx) => {
+                                                    console.log(`🔍 [started ${publisherIdStr}] Transceiver ${idx}:`, {
+                                                        kind: transceiver.receiver?.track?.kind,
+                                                        direction: transceiver.direction,
+                                                        currentDirection: transceiver.currentDirection
+                                                    });
+                                                });
+                                            }
+                                            
+                                            clearInterval(checkVideoInterval);
+                                        }
+                                    }, 500);
+                                }
+                            }
+                        }, 500);
+                    }
+                };
                 
-                // Обрабатываем JSEP вручную
-                try {
-                    this.audioBridge.handleRemoteJsep({ jsep: jsep });
-                    console.log('✅ JSEP answer обработан, WebRTC соединение устанавливается...');
-                } catch (error) {
-                    console.error('❌ Ошибка при обработке JSEP:', error);
-                    this.jsepProcessed = false;
-                }
+                // Обработка удаленного трека (новый API Janus.js)
+                handle.onremotetrack = (track, mid, on) => {
+                    console.log(`🔊 [subscriber ${publisherIdStr}] onremotetrack вызван:`, {
+                        publisherId: publisherId,
+                        trackKind: track.kind,
+                        trackId: track.id,
+                        on: on,
+                        mid: mid,
+                        muted: track.muted,
+                        readyState: track.readyState,
+                        enabled: track.enabled,
+                        label: track.label
+                    });
+                    
+                    // ВАЖНО: Сохраняем трек в handle для последующего использования
+                    if (track.kind === 'audio' && on) {
+                        handle.remoteAudioTrack = track;
+                        console.log(`✅ [subscriber ${publisherIdStr}] Сохранен remoteAudioTrack в handle: ${track.id}`);
+                    }
+                    
+                    // Обрабатываем видео-треки
+                    if (track.kind === 'video' && on) {
+                        console.log(`📹 [subscriber ${publisherIdStr}] ВИДЕО-ТРЕК ПОЛУЧЕН! Обрабатываем...`);
+                        handle.remoteVideoTrack = track;
+                        console.log(`✅ Получен видео-трек от publisher ${publisherId}: ${track.id}, readyState=${track.readyState}, enabled=${track.enabled}, muted=${track.muted}`);
+                        
+                        // КРИТИЧНО: Проверяем настройки трека, чтобы понять, что это - экран или камера
+                        if (track.getSettings) {
+                            const settings = track.getSettings();
+                            console.log(`🔍 ========== НАСТРОЙКИ ПОЛУЧЕННОГО ВИДЕО-ТРЕКА (подписчик) ==========`);
+                            console.log(`🔍 Publisher ID: ${publisherId}`);
+                            console.log(`🔍 Track ID: ${track.id}`);
+                            console.log(`🔍 Track Label: ${track.label}`);
+                            console.log(`🔍 displaySurface: ${settings.displaySurface} (должно быть "monitor", "window" или "browser" для screen share)`);
+                            console.log(`🔍 facingMode: ${settings.facingMode} (должно быть undefined для screen share)`);
+                            console.log(`🔍 deviceId: ${settings.deviceId}`);
+                            console.log(`🔍 width: ${settings.width}, height: ${settings.height}`);
+                            console.log(`🔍 frameRate: ${settings.frameRate}`);
+                            
+                            // Определяем тип трека
+                            const trackLabel = track.label.toLowerCase();
+                            const cameraKeywords = ['camera', 'cam', 'webcam', 'video capture', 'camo', 'obs', 'virtual', 'droidcam'];
+                            const isLabelCamera = cameraKeywords.some(keyword => trackLabel.includes(keyword));
+                            const hasDisplaySurface = settings.displaySurface !== undefined;
+                            const hasFacingMode = settings.facingMode !== undefined;
+                            
+                            if (hasDisplaySurface) {
+                                console.log(`✅ ЭТО ЭКРАН (displaySurface=${settings.displaySurface})`);
+                            } else if (hasFacingMode || isLabelCamera) {
+                                console.log(`❌ ЭТО КАМЕРА! (facingMode=${settings.facingMode}, label содержит камеру=${isLabelCamera})`);
+                            } else {
+                                console.log(`⚠️ Не удалось определить тип трека (нет displaySurface и facingMode)`);
+                            }
+                            console.log(`🔍 ============================================================`);
+                        } else {
+                            console.warn(`⚠️ track.getSettings() не доступен для трека ${track.id}`);
+                        }
+                        
+                        // Если трек muted - ждем unmute
+                        if (track.muted) {
+                            console.log(`⏳ Видео-трек ${track.id} muted, ждем unmute для ${publisherId}...`);
+                            const unmuteHandler = () => {
+                                console.log(`🔊 Видео-трек ${track.id} unmuted для ${publisherId}`);
+                                track.removeEventListener('unmute', unmuteHandler);
+                                setTimeout(() => {
+                                    if (!track.muted && track.readyState === 'live') {
+                                        const videoStream = new MediaStream([track]);
+                                        this.handleRemoteVideoStream(videoStream, publisherId, displayName);
+                                    } else {
+                                        console.warn(`⚠️ Видео-трек ${track.id} все еще не активен после unmute`);
+                                    }
+                                }, 100);
+                            };
+                            track.addEventListener('unmute', unmuteHandler);
+                            
+                            // Проверка через таймаут на случай если событие уже произошло
+                            setTimeout(() => {
+                                if (!track.muted && track.readyState === 'live') {
+                                    console.log(`🔊 Видео-трек ${track.id} уже unmuted (таймаут) для ${publisherId}`);
+                                    track.removeEventListener('unmute', unmuteHandler);
+                                    const videoStream = new MediaStream([track]);
+                                    this.handleRemoteVideoStream(videoStream, publisherId, displayName);
+                                }
+                            }, 500);
+                        } else if (track.readyState === 'live') {
+                            // Трек уже активен, создаем поток сразу
+                            const videoStream = new MediaStream([track]);
+                            this.handleRemoteVideoStream(videoStream, publisherId, displayName);
+                        } else if (track.readyState === 'ended') {
+                            // Трек уже ended - не обрабатываем
+                            console.warn(`⚠️ Видео-трек ${track.id} уже ended, пропускаем обработку`);
+                        } else {
+                            // Ждем пока трек станет live
+                            console.log(`⏳ Видео-трек ${track.id} еще не live (readyState=${track.readyState}), ждем...`);
+                            const liveHandler = () => {
+                                console.log(`✅ Видео-трек ${track.id} стал live для ${publisherId}`);
+                                track.removeEventListener('live', liveHandler);
+                                // Проверяем, что трек еще не ended
+                                if (track.readyState === 'live') {
+                                    const videoStream = new MediaStream([track]);
+                                    this.handleRemoteVideoStream(videoStream, publisherId, displayName);
+                                } else {
+                                    console.warn(`⚠️ Видео-трек ${track.id} стал ${track.readyState} вместо live`);
+                                }
+                            };
+                            track.addEventListener('live', liveHandler);
+                        }
+                    } else if (track.kind === 'video' && !on) {
+                        // Видео-трек остановлен
+                        console.log(`🔴 Видео-трек от publisher ${publisherId} остановлен`);
+                        this.removeRemoteVideoStream(publisherId);
+                    }
+                    
+                    // Проверяем статистику WebRTC соединения
+                    if (handle.webrtcStuff && handle.webrtcStuff.pc) {
+                        const pc = handle.webrtcStuff.pc;
+                                setTimeout(() => {
+                            pc.getStats().then(stats => {
+                                console.log(`📊 Статистика WebRTC для ${publisherId}:`);
+                                let hasInboundRtp = false;
+                                stats.forEach(report => {
+                                    if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+                                        hasInboundRtp = true;
+                                        console.log(`📊 inbound-rtp (audio):`, {
+                                            bytesReceived: report.bytesReceived,
+                                            packetsReceived: report.packetsReceived,
+                                            packetsLost: report.packetsLost,
+                                            jitter: report.jitter,
+                                            audioLevel: report.audioLevel,
+                                            totalAudioEnergy: report.totalAudioEnergy,
+                                            framesDecoded: report.framesDecoded
+                                        });
+                                        
+                                        if (report.bytesReceived === 0) {
+                                            console.error(`❌ КРИТИЧНО: Нет полученных байт для ${publisherId}! Отправитель не отправляет данные или соединение не установлено!`);
+                                        } else {
+                                            console.log(`✅ Получено ${report.bytesReceived} байт от ${publisherId}`);
+                                        }
+                                    }
+                                    if (report.type === 'transport') {
+                                        console.log(`📊 transport:`, {
+                                            bytesReceived: report.bytesReceived,
+                                            bytesSent: report.bytesSent,
+                                            dtlsState: report.dtlsState,
+                                            iceConnectionState: report.iceConnectionState
+                                        });
+                                    }
+                                });
+                                
+                                if (!hasInboundRtp) {
+                                    console.error(`❌ КРИТИЧНО: Нет inbound-rtp статистики для ${publisherId}! WebRTC соединение не установлено или не настроено правильно!`);
+                                }
+                            }).catch(e => {
+                                console.error(`❌ Ошибка получения статистики для ${publisherId}:`, e);
+                            });
+                                }, 1000);
+                    }
+                    
+                    if (track.kind === 'audio' && on) {
+                        // Если трек muted - ждем unmute перед обработкой
+                        if (track.muted) {
+                            console.log(`⏳ Трек ${track.id} muted, ждем unmute для ${publisherId}...`);
+                            const unmuteHandler = () => {
+                                console.log(`🔊 Трек ${track.id} unmuted для ${publisherId}, ждем 100мс перед обработкой...`);
+                                track.removeEventListener('unmute', unmuteHandler);
+                                // Небольшая задержка чтобы трек точно был активен
+                                setTimeout(() => {
+                                    if (!track.muted && track.readyState === 'live') {
+                                        console.log(`✅ Трек ${track.id} активен, создаем источник...`);
+                                        // Используем трек напрямую из handle
+                                        const stream = new MediaStream([track]);
+                                        this.handleRemoteStream(stream, publisherId, displayName);
+                                    } else {
+                                        console.warn(`⚠️ Трек ${track.id} все еще не активен после unmute`);
+                                    }
+                                }, 100);
+                            };
+                            track.addEventListener('unmute', unmuteHandler);
+                            
+                            // Проверка через таймаут на случай если событие уже произошло
+                            setTimeout(() => {
+                                if (!track.muted && track.readyState === 'live') {
+                                    console.log(`🔊 Трек ${track.id} уже unmuted (таймаут) для ${publisherId}, обрабатываем...`);
+                                    track.removeEventListener('unmute', unmuteHandler);
+                                    const stream = new MediaStream([track]);
+                                    this.handleRemoteStream(stream, publisherId, displayName);
+                                }
+                            }, 1000);
+                        } else {
+                            // Трек не muted - обрабатываем сразу, но проверяем readyState
+                            if (track.readyState === 'live') {
+                                console.log(`🔊 Трек ${track.id} не muted и live, обрабатываем сразу для ${publisherId}`);
+                                const stream = new MediaStream([track]);
+                                this.handleRemoteStream(stream, publisherId, displayName);
+                            } else {
+                                console.log(`⏳ Трек ${track.id} не muted но readyState=${track.readyState}, ждем...`);
+                                const liveHandler = () => {
+                                    console.log(`✅ Трек ${track.id} стал live, обрабатываем...`);
+                                    track.removeEventListener('live', liveHandler);
+                                    const stream = new MediaStream([track]);
+                                    this.handleRemoteStream(stream, publisherId, displayName);
+                                };
+                                track.addEventListener('live', liveHandler);
+                            }
+                        }
+                    } else if (!on) {
+                        console.log(`🔇 Трек от publisher ${publisherId} остановлен`);
+                        handle.remoteAudioTrack = null;
+                    }
+                };
+                
+                // Альтернативный способ получения потока (старый API) - ПРИОРИТЕТНЫЙ
+                handle.onremotestream = (stream) => {
+                    const audioTracks = stream.getAudioTracks();
+                    const videoTracks = stream.getVideoTracks();
+                    console.log(`🔊 [onremotestream] Получен удаленный поток от publisher ${publisherId}, аудио-треков: ${audioTracks.length}, видео-треков: ${videoTracks.length}`);
+                    
+                    // Проверяем статистику WebRTC
+                    if (handle.webrtcStuff && handle.webrtcStuff.pc) {
+                        const pc = handle.webrtcStuff.pc;
+                        setTimeout(() => {
+                            pc.getStats().then(stats => {
+                                console.log(`📊 [onremotestream] Статистика WebRTC для ${publisherId}:`);
+                                let hasInboundRtpAudio = false;
+                                let hasInboundRtpVideo = false;
+                                stats.forEach(report => {
+                                    if (report.type === 'inbound-rtp') {
+                                        if (report.kind === 'audio') {
+                                            hasInboundRtpAudio = true;
+                                            console.log(`📊 inbound-rtp (audio):`, {
+                                                bytesReceived: report.bytesReceived,
+                                                packetsReceived: report.packetsReceived,
+                                                packetsLost: report.packetsLost,
+                                                jitter: report.jitter,
+                                                audioLevel: report.audioLevel,
+                                                totalAudioEnergy: report.totalAudioEnergy
+                                            });
+                                            
+                                            if (report.bytesReceived === 0) {
+                                                console.error(`❌ КРИТИЧНО: Нет полученных байт для ${publisherId}! Отправитель не отправляет данные!`);
+                                            } else {
+                                                console.log(`✅ Получено ${report.bytesReceived} байт от ${publisherId}`);
+                                            }
+                                        } else if (report.kind === 'video') {
+                                            hasInboundRtpVideo = true;
+                                            console.log(`📹 inbound-rtp (video):`, {
+                                                bytesReceived: report.bytesReceived,
+                                                packetsReceived: report.packetsReceived,
+                                                packetsLost: report.packetsLost,
+                                                framesDecoded: report.framesDecoded,
+                                                framesDropped: report.framesDropped,
+                                                frameWidth: report.frameWidth,
+                                                frameHeight: report.frameHeight
+                                            });
+                                            
+                                            if (report.bytesReceived === 0) {
+                                                console.error(`❌ КРИТИЧНО: Нет полученных видео-байт для ${publisherId}! Отправитель не отправляет видео!`);
+                                            } else {
+                                                console.log(`✅ Получено ${report.bytesReceived} видео-байт от ${publisherId}`);
+                                            }
+                                        }
+                                    }
+                                    if (report.type === 'transport') {
+                                        console.log(`📊 transport:`, {
+                                            bytesReceived: report.bytesReceived,
+                                            bytesSent: report.bytesSent,
+                                            dtlsState: report.dtlsState,
+                                            iceConnectionState: report.iceConnectionState
+                                        });
+                                    }
+                                });
+                                
+                                if (!hasInboundRtpAudio && audioTracks.length > 0) {
+                                    console.error(`❌ КРИТИЧНО: Нет inbound-rtp статистики для аудио ${publisherId}!`);
+                                }
+                                if (!hasInboundRtpVideo && videoTracks.length > 0) {
+                                    console.error(`❌ КРИТИЧНО: Нет inbound-rtp статистики для видео ${publisherId}!`);
+                                }
+                            }).catch(e => {
+                                console.error(`❌ Ошибка получения статистики:`, e);
+                            });
+                        }, 2000);
+                    }
+                    
+                    // Используем onremotestream как основной способ (более надежный)
+                    audioTracks.forEach(track => {
+                        console.log(`🔍 [onremotestream] Аудио-трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
+                    });
+                    videoTracks.forEach(track => {
+                        console.log(`📹 [onremotestream] Видео-трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
+                    });
+                    
+                    this.handleRemoteStream(stream, publisherId, displayName);
+                };
+                
+                handle.ontrack = (event) => {
+                    console.log(`🔊 [ontrack] Вызван для publisher ${publisherIdStr}, streams.length=${event.streams ? event.streams.length : 0}`);
+                    console.log(`🔍 [ontrack] event.track:`, event.track ? {
+                        id: event.track.id,
+                        kind: event.track.kind,
+                        enabled: event.track.enabled,
+                        muted: event.track.muted,
+                        readyState: event.track.readyState
+                    } : 'null');
+                    
+                    if (event.streams && event.streams.length > 0) {
+                        const stream = event.streams[0];
+                        const audioTracks = stream.getAudioTracks();
+                        const videoTracks = stream.getVideoTracks();
+                        console.log(`✅ [ontrack] Получен поток от publisher ${publisherIdStr}, id=${stream.id}`);
+                        console.log(`🔍 [ontrack] Аудио-треков в потоке: ${audioTracks.length}, видео-треков: ${videoTracks.length}`);
+                        
+                        audioTracks.forEach(track => {
+                            console.log(`🔍 [ontrack] Аудио-трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
+                        });
+                        videoTracks.forEach(track => {
+                            console.log(`📹 [ontrack] Видео-трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
+                        });
+                        
+                        // ВАЖНО: Сохраняем поток из ontrack - он уже связан с receiver
+                        handle.ontrackStream = stream;
+                        console.log(`✅ [ontrack] Сохранен ontrackStream в handle для ${publisherIdStr}`);
+                        
+                        // Обрабатываем поток
+                        this.handleRemoteStream(stream, publisherId, displayName);
+                    } else if (event.track) {
+                        // Если нет streams, но есть track - создаем поток из трека
+                        console.log(`⚠️ [ontrack] Нет streams, но есть track (${event.track.kind}), создаем поток из трека`);
+                        const stream = new MediaStream([event.track]);
+                        handle.ontrackStream = stream;
+                        console.log(`✅ [ontrack] Создан поток из track для ${publisherIdStr}`);
+                        this.handleRemoteStream(stream, publisherId, displayName);
+                    }
+                };
+                
+                // Проверяем статистику после установки WebRTC соединения
+                handle.webrtcState = (on) => {
+                    console.log(`🔍 [webrtcState] Вызван для subscriber ${publisherIdStr}, on=${on}`);
+                    if (on) {
+                        console.log(`✅ WebRTC соединение установлено для subscriber ${publisherIdStr}`);
+                        
+                        // ВАЖНО: Получаем поток из receivers после установки соединения
+                        setTimeout(() => {
+                            console.log(`🔍 [webrtcState] Проверяем handle.webrtcStuff для ${publisherIdStr}...`);
+                            if (handle.webrtcStuff && handle.webrtcStuff.pc) {
+                                const pc = handle.webrtcStuff.pc;
+                                console.log(`✅ [webrtcState] PC найден для ${publisherIdStr}, получаем receivers...`);
+                                
+                                // Получаем поток из receivers
+                                const receivers = pc.getReceivers();
+                                console.log(`🔍 [webrtcState] Найдено ${receivers.length} receivers для ${publisherIdStr}`);
+                                
+                                const remoteStream = new MediaStream();
+                                const videoStream = new MediaStream();
+                                
+                                console.log(`🔍 [webrtcState ${publisherIdStr}] Проверяем ${receivers.length} receivers на наличие видео-треков...`);
+                                
+                                receivers.forEach((receiver, index) => {
+                                    const trackInfo = receiver.track ? {
+                                        id: receiver.track.id,
+                                        kind: receiver.track.kind,
+                                        enabled: receiver.track.enabled,
+                                        muted: receiver.track.muted,
+                                        readyState: receiver.track.readyState,
+                                        label: receiver.track.label
+                                    } : null;
+                                    
+                                    console.log(`🔍 [webrtcState ${publisherIdStr}] Receiver ${index}:`, {
+                                        track: trackInfo,
+                                        receiverId: receiver.id
+                                    });
+                                    
+                                    if (receiver.track) {
+                                        if (receiver.track.kind === 'audio') {
+                                            console.log(`✅ [webrtcState ${publisherIdStr}] Добавляем аудио-трек ${receiver.track.id} в поток`);
+                                            remoteStream.addTrack(receiver.track);
+                                        } else if (receiver.track.kind === 'video') {
+                                            console.log(`📹 [webrtcState ${publisherIdStr}] ВИДЕО-ТРЕК НАЙДЕН В RECEIVERS! ${receiver.track.id}`);
+                                            videoStream.addTrack(receiver.track);
+                                        } else {
+                                            console.log(`⚠️ [webrtcState ${publisherIdStr}] Неизвестный тип трека: ${receiver.track.kind}`);
+                                        }
+                                    } else {
+                                        console.log(`⚠️ [webrtcState ${publisherIdStr}] Receiver ${index} не имеет трека`);
+                                    }
+                                });
+                                
+                                console.log(`🔍 [webrtcState ${publisherIdStr}] Итого: аудио-треков=${remoteStream.getAudioTracks().length}, видео-треков=${videoStream.getVideoTracks().length}`);
+                                
+                                // Обрабатываем видео-поток, если есть активные треки
+                                const allVideoTracks = videoStream.getVideoTracks();
+                                const activeVideoTracks = allVideoTracks.filter(track => track.readyState !== 'ended');
+                                
+                                if (activeVideoTracks.length > 0) {
+                                    // ВАЖНО: Если несколько видео-треков, выбираем самый активный (не muted, live)
+                                    let selectedVideoTrack = null;
+                                    
+                                    if (activeVideoTracks.length === 1) {
+                                        selectedVideoTrack = activeVideoTracks[0];
+                                    } else {
+                                        // Выбираем трек, который не muted и live
+                                        const unmutedLiveTracks = activeVideoTracks.filter(track => 
+                                            !track.muted && track.readyState === 'live' && track.enabled
+                                        );
+                                        
+                                        if (unmutedLiveTracks.length > 0) {
+                                            // Если несколько unmuted треков, выбираем первый (обычно это самый новый)
+                                            selectedVideoTrack = unmutedLiveTracks[0];
+                                            console.log(`🔍 [webrtcState ${publisherIdStr}] Найдено ${unmutedLiveTracks.length} unmuted треков, выбираем: ${selectedVideoTrack.id}`);
+                                            
+                                            // Останавливаем остальные треки, чтобы избежать конфликтов
+                                            unmutedLiveTracks.slice(1).forEach(track => {
+                                                console.log(`🛑 [webrtcState ${publisherIdStr}] Останавливаем дублирующий видео-трек: ${track.id}`);
+                                                track.stop();
+                                            });
+                                        } else {
+                                            // Если все muted, выбираем первый live трек
+                                            const liveTracks = activeVideoTracks.filter(track => track.readyState === 'live');
+                                            if (liveTracks.length > 0) {
+                                                selectedVideoTrack = liveTracks[0];
+                                                console.log(`🔍 [webrtcState ${publisherIdStr}] Все треки muted, выбираем первый live: ${selectedVideoTrack.id}`);
+                                                
+                                                // Останавливаем остальные
+                                                liveTracks.slice(1).forEach(track => {
+                                                    console.log(`🛑 [webrtcState ${publisherIdStr}] Останавливаем дублирующий видео-трек: ${track.id}`);
+                                                    track.stop();
+                                                });
+                                            } else {
+                                                selectedVideoTrack = activeVideoTracks[0];
+                                                console.log(`⚠️ [webrtcState ${publisherIdStr}] Выбираем первый активный трек: ${selectedVideoTrack.id}`);
+                                            }
+                                        }
+                                        
+                                        // Останавливаем все остальные треки
+                                        activeVideoTracks.forEach(track => {
+                                            if (track !== selectedVideoTrack) {
+                                                console.log(`🛑 [webrtcState ${publisherIdStr}] Останавливаем старый/дублирующий видео-трек: ${track.id}`);
+                                                track.stop();
+                                            }
+                                        });
+                                    }
+                                    
+                                    if (selectedVideoTrack) {
+                                        // Создаем новый поток только с выбранным треком
+                                        const activeVideoStream = new MediaStream([selectedVideoTrack]);
+                                        console.log(`✅ [webrtcState ${publisherIdStr}] Создан видео-поток из receivers, выбран трек: ${selectedVideoTrack.id} (из ${activeVideoTracks.length} активных)`);
+                                        this.handleRemoteVideoStream(activeVideoStream, publisherId, displayName);
+                                    } else {
+                                        console.log(`⚠️ [webrtcState ${publisherIdStr}] Не удалось выбрать видео-трек из ${activeVideoTracks.length} активных`);
+                                    }
+                                } else {
+                                    console.log(`⚠️ [webrtcState ${publisherIdStr}] Видео-треков в receivers НЕТ или все ended`);
+                                    
+                                    // Проверяем transceivers
+                                    if (pc.getTransceivers) {
+                                        const transceivers = pc.getTransceivers();
+                                        console.log(`🔍 [webrtcState ${publisherIdStr}] Проверяем ${transceivers.length} transceivers...`);
+                                        transceivers.forEach((transceiver, idx) => {
+                                            console.log(`🔍 [webrtcState ${publisherIdStr}] Transceiver ${idx}:`, {
+                                                kind: transceiver.receiver?.track?.kind,
+                                                direction: transceiver.direction,
+                                                currentDirection: transceiver.currentDirection,
+                                                receiverTrackId: transceiver.receiver?.track?.id,
+                                                receiverTrackReadyState: transceiver.receiver?.track?.readyState
+                                            });
+                                        });
+                                    }
+                                }
+                                
+                                console.log(`🔍 [webrtcState] Создан поток с ${remoteStream.getAudioTracks().length} треками для ${publisherIdStr}`);
+                                
+                                if (remoteStream.getAudioTracks().length > 0) {
+                                    console.log(`✅ [webrtcState] Создан поток из receivers для ${publisherIdStr}, треков: ${remoteStream.getAudioTracks().length}`);
+                                    // ВАЖНО: Сохраняем поток в handle для использования в processAudioForMixing
+                                    handle.remoteStream = remoteStream;
+                                    console.log(`✅ [webrtcState] Сохранен remoteStream в handle для ${publisherIdStr}`);
+                                    
+                                    // Проверяем треки в сохраненном потоке
+                                    remoteStream.getAudioTracks().forEach(track => {
+                                        console.log(`🔍 [webrtcState] Трек в remoteStream: id=${track.id}, enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
+                                    });
+                                    
+                                    // Обрабатываем поток
+                                    console.log(`🔍 [webrtcState] Вызываем handleRemoteStream для ${publisherIdStr}...`);
+                                    this.handleRemoteStream(remoteStream, publisherId, displayName);
+                                } else {
+                                    console.error(`❌ [webrtcState] Нет аудио треков в receivers для ${publisherIdStr}!`);
+                                }
+                                
+                                // Проверяем статистику через 2 секунды после установки соединения
+                                setTimeout(() => {
+                                    pc.getStats().then(stats => {
+                                        console.log(`📊 [webrtcState] Статистика WebRTC для subscriber ${publisherIdStr}:`);
+                                        let hasInboundRtp = false;
+                                        stats.forEach(report => {
+                                            if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+                                                hasInboundRtp = true;
+                                                console.log(`📊 inbound-rtp (audio):`, {
+                                                    bytesReceived: report.bytesReceived,
+                                                    packetsReceived: report.packetsReceived,
+                                                    packetsLost: report.packetsLost,
+                                                    jitter: report.jitter,
+                                                    audioLevel: report.audioLevel,
+                                                    totalAudioEnergy: report.totalAudioEnergy
+                                                });
+                                                
+                                                if (report.bytesReceived === 0) {
+                                                    console.error(`❌ КРИТИЧНО: Нет полученных байт для subscriber ${publisherIdStr}! Отправитель не отправляет данные!`);
+                                                } else {
+                                                    console.log(`✅ Получено ${report.bytesReceived} байт для subscriber ${publisherIdStr}`);
+                                                }
+                                            }
+                                            if (report.type === 'transport') {
+                                                console.log(`📊 transport:`, {
+                                                    bytesReceived: report.bytesReceived,
+                                                    bytesSent: report.bytesSent,
+                                                    dtlsState: report.dtlsState,
+                                                    iceConnectionState: report.iceConnectionState
+                                                });
+                                            }
+                                        });
+                                        
+                                        if (!hasInboundRtp) {
+                                            console.error(`❌ КРИТИЧНО: Нет inbound-rtp статистики для subscriber ${publisherIdStr}!`);
+                                        }
+                                    }).catch(e => {
+                                        console.error(`❌ Ошибка получения статистики для subscriber ${publisherIdStr}:`, e);
+                                    });
+                                }, 2000);
+                            } else {
+                                console.error(`❌ [webrtcState] handle.webrtcStuff или PC не найдены для ${publisherIdStr}!`);
+                                console.error(`🔍 [webrtcState] handle.webrtcStuff:`, handle.webrtcStuff);
+                            }
+                        }, 500);
+                    } else {
+                        console.log(`⚠️ [webrtcState] WebRTC соединение закрыто для subscriber ${publisherIdStr}`);
+                    }
+                };
+            },
+            error: (error) => {
+                console.error(`❌ Ошибка создания subscriber handle для ${publisherId}:`, error);
             }
+        });
+    },
+
+    // Обработка удаленного потока - подключение к микшеру
+    handleRemoteStream(stream, publisherId, displayName) {
+        // Преобразуем publisherId в строку для консистентности
+        const publisherIdStr = String(publisherId);
+
+        if (this.participantId != null && publisherIdStr === String(this.participantId)) {
+            console.log(`🔇 handleRemoteStream: игнорируем собственный publisher ${publisherIdStr} (нет воспроизведения своего голоса из Janus)`);
+            return;
+        }
+        
+        console.log(`🔊 handleRemoteStream вызван: publisherId=${publisherId} (строка: ${publisherIdStr}), displayName=${displayName}`);
+        
+        // ВАЖНО: Проверяем видео-треки ПЕРВЫМИ, так как они могут быть без аудио
+        const videoTracks = stream.getVideoTracks();
+        if (videoTracks.length > 0) {
+            console.log(`📹 [handleRemoteStream] Обнаружены видео-треки (${videoTracks.length}) в потоке от ${publisherIdStr}, обрабатываем...`);
+            // Создаем отдельный поток для видео
+            const videoStream = new MediaStream(videoTracks);
+            this.handleRemoteVideoStream(videoStream, publisherId, displayName);
+        }
+        
+        // Проверяем состояние аудио-треков
+        const audioTracks = stream.getAudioTracks();
+        if (audioTracks.length === 0) {
+            console.log(`ℹ️ Нет аудио треков в потоке для ${publisherIdStr}, но видео уже обработано (если было)`);
+            // НЕ возвращаемся, если есть видео - продолжаем обработку
+            // Но если нет ни аудио, ни видео - возвращаемся
+            if (videoTracks.length === 0) {
+                console.warn(`⚠️ Нет ни аудио, ни видео треков в потоке для ${publisherIdStr}`);
+                return;
+            }
+            // Если есть только видео, просто выходим (аудио обрабатывать нечего)
+            return;
+        }
+        
+        // Проверяем, есть ли muted треки
+        const mutedTracks = audioTracks.filter(track => track.muted);
+        if (mutedTracks.length > 0) {
+            console.warn(`⚠️ Поток ${publisherIdStr} содержит muted аудио-треки, пропускаем аудио до unmute (видео уже обработано)`);
+            // НЕ возвращаемся, если есть видео - продолжаем обработку видео
+            // Но если нет видео, возвращаемся
+            if (videoTracks.length === 0) {
+                return;
+            }
+        }
+        
+        // Проверяем, есть ли уже источник для этого потока
+        const existingData = this.streamVolumes.get(publisherIdStr);
+        if (existingData) {
+            // Если audioElement уже существует и воспроизводится - не пересоздаем
+            if (existingData.audioElement && !existingData.audioElement.paused) {
+                console.log(`✅ Поток ${publisherIdStr} уже воспроизводится через audioElement, пропускаем пересоздание`);
+                return;
+            }
+            
+            console.log(`⚠️ Поток ${publisherIdStr} уже обработан, но не воспроизводится. Пересоздаем...`);
+            
+            // Очищаем старые ресурсы
+            try {
+                if (existingData.source) {
+                    existingData.source.disconnect();
+                }
+                if (existingData.gainNode) {
+                    existingData.gainNode.disconnect();
+                }
+                // Удаляем старый audioElement
+                if (existingData.audioElement) {
+                    existingData.audioElement.pause();
+                    existingData.audioElement.srcObject = null;
+                    if (existingData.audioElement.parentNode) {
+                        existingData.audioElement.parentNode.removeChild(existingData.audioElement);
+                    }
+                }
+            } catch (e) {
+                console.warn(`⚠️ Ошибка отключения старого источника:`, e);
+            }
+            this.streamVolumes.delete(publisherIdStr);
+            // Продолжаем создавать новый источник
+        }
+        
+        // Сохраняем поток
+        this.remoteStreams.set(publisherIdStr, stream);
+        
+        // Подключаем аудио к микшеру
+        if (this.audioContext && this.audioMixer) {
+            // Проверяем состояние AudioContext
+            if (this.audioContext.state === 'suspended') {
+                console.warn('⚠️ AudioContext suspended, возобновляем...');
+                this.audioContext.resume().then(() => {
+                    this.processAudioForMixing(stream, publisherId, displayName);
+                });
+                return;
+            }
+            
+            // Проверяем подключение audioMixer
+            if (this.audioMixer.numberOfOutputs === 0) {
+                console.warn('⚠️ audioMixer не подключен к destination, переподключаем...');
+                this.audioMixer.connect(this.audioContext.destination);
+            }
+            
+            this.processAudioForMixing(stream, publisherId, displayName);
+                    } else {
+            console.warn(`⚠️ AudioContext не инициализирован: audioContext=${!!this.audioContext}, audioMixer=${!!this.audioMixer}`);
         }
     },
 
-    // Инициализация RNNoise
-    async initRNNoise(stream) {
-        const noiseSuppressor = typeof webNoiseSuppressor !== 'undefined' ? webNoiseSuppressor :
-                                typeof window !== 'undefined' && window.webNoiseSuppressor ? window.webNoiseSuppressor :
-                                null;
-        
-        if (!noiseSuppressor) {
-            console.warn('⚠️ RNNoise библиотека не загружена. Убедитесь, что скрипт загружен.');
-            return null;
+    // Обработка аудио потока для микширования
+    processAudioForMixing(stream, publisherId, displayName) {
+        // Преобразуем publisherId в строку для консистентности
+        const publisherIdStr = String(publisherId);
+
+        if (this.participantId != null && publisherIdStr === String(this.participantId)) {
+            console.log(`🔇 processAudioForMixing: пропуск собственного publisher ${publisherIdStr}`);
+            return;
         }
         
+        console.log(`🎵 processAudioForMixing ВЫЗВАН: publisherId=${publisherId} (строка: ${publisherIdStr}), displayName=${displayName}`);
+        console.log(`🔍 Поток:`, stream);
+        console.log(`🔍 Треков в потоке:`, stream.getAudioTracks().length);
+        
+        const audioTracks = stream.getAudioTracks();
+        if (audioTracks.length === 0) {
+            console.warn(`⚠️ Нет аудио треков в потоке для ${publisherIdStr}`);
+            return;
+        }
+        
+        // Проверяем состояние треков перед созданием источника
+        audioTracks.forEach(track => {
+            console.log(`🔍 Трек ${track.id}: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
+        });
+        
+        // Если есть muted треки - не создаем источник
+        const mutedTracks = audioTracks.filter(track => track.muted);
+        if (mutedTracks.length > 0) {
+            console.warn(`⚠️ Поток ${publisherIdStr} содержит ${mutedTracks.length} muted треков, не создаем источник`);
+                    return;
+                }
+                
+        console.log(`✅ Все треки unmuted, создаем источник для ${publisherIdStr}...`);
+        
         try {
-            this.teardownRNNoiseGraph();
-            if (!this.audioContext) {
-                this.audioContext = new AudioContext({ sampleRate: 48000 });
-            }
+            // Убеждаемся, что AudioContext активен
             if (this.audioContext.state === 'suspended') {
-                await this.audioContext.resume();
+                console.warn('⚠️ AudioContext suspended в processAudioForMixing');
+                this.audioContext.resume().then(() => {
+                    this.processAudioForMixing(stream, publisherId, displayName);
+                });
+                return;
             }
             
-            const sourceNode = this.audioContext.createMediaStreamSource(stream);
+            // Убеждаемся, что audioMixer подключен
+            if (this.audioMixer.numberOfOutputs === 0) {
+                console.warn('⚠️ audioMixer не подключен в processAudioForMixing, переподключаем...');
+                this.audioMixer.connect(this.audioContext.destination);
+            }
             
+            // ВАЖНО: Используем поток из handle.remoteStream (создан из receivers после started)
+            // Это более надежный способ получения потока
+            let activeStream = null;
+            const subscriberHandle = this.subscriberHandles.get(publisherIdStr);
+            
+            console.log(`🔍 [processAudioForMixing] Проверяем handle для ${publisherIdStr}...`);
+            console.log(`🔍 [processAudioForMixing] subscriberHandle:`, subscriberHandle ? 'найден' : 'НЕ НАЙДЕН');
+            
+            // ПРИОРИТЕТ 1: Используем поток из ontrack - он уже связан с receiver
+            if (subscriberHandle && subscriberHandle.ontrackStream) {
+                activeStream = subscriberHandle.ontrackStream;
+                console.log(`✅ [processAudioForMixing] Используем поток из handle.ontrackStream для ${publisherIdStr}`);
+                console.log(`🔍 [processAudioForMixing] Треков в handle.ontrackStream: ${activeStream.getAudioTracks().length}`);
+                activeStream.getAudioTracks().forEach(track => {
+                    console.log(`🔍 [processAudioForMixing] Трек в handle.ontrackStream: id=${track.id}, enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
+                });
+            } else if (subscriberHandle && subscriberHandle.remoteStream) {
+                activeStream = subscriberHandle.remoteStream;
+                console.log(`✅ [processAudioForMixing] Используем поток из handle.remoteStream (webrtcState) для ${publisherIdStr}`);
+                console.log(`🔍 [processAudioForMixing] Треков в handle.remoteStream: ${activeStream.getAudioTracks().length}`);
+                activeStream.getAudioTracks().forEach(track => {
+                    console.log(`🔍 [processAudioForMixing] Трек в handle.remoteStream: id=${track.id}, enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
+                });
+                    } else {
+                console.log(`⚠️ [processAudioForMixing] handle.remoteStream не найден для ${publisherIdStr}`);
+                if (subscriberHandle) {
+                    console.log(`🔍 [processAudioForMixing] handle.webrtcStuff:`, subscriberHandle.webrtcStuff ? 'есть' : 'НЕТ');
+                    console.log(`🔍 [processAudioForMixing] handle.remoteAudioTrack:`, subscriberHandle.remoteAudioTrack ? subscriberHandle.remoteAudioTrack.id : 'НЕТ');
+                }
+                
+                // Если потока нет в handle, пытаемся получить из receivers напрямую
+                if (subscriberHandle && subscriberHandle.webrtcStuff && subscriberHandle.webrtcStuff.pc) {
+                    const pc = subscriberHandle.webrtcStuff.pc;
+                    console.log(`🔍 [processAudioForMixing] Получаем поток из receivers напрямую для ${publisherIdStr}...`);
+                    const receivers = pc.getReceivers();
+                    console.log(`🔍 [processAudioForMixing] Найдено ${receivers.length} receivers`);
+                    
+                    const receiverStream = new MediaStream();
+                    
+                    receivers.forEach((receiver, index) => {
+                        console.log(`🔍 [processAudioForMixing] Receiver ${index}:`, {
+                            track: receiver.track ? {
+                                id: receiver.track.id,
+                                kind: receiver.track.kind,
+                                enabled: receiver.track.enabled,
+                                muted: receiver.track.muted,
+                                readyState: receiver.track.readyState
+                            } : 'null'
+                        });
+                        
+                        if (receiver.track && receiver.track.kind === 'audio' && !receiver.track.muted && receiver.track.readyState === 'live') {
+                            console.log(`✅ [processAudioForMixing] Используем трек из receiver напрямую: ${receiver.track.id}`);
+                            receiverStream.addTrack(receiver.track);
+                        }
+                    });
+                    
+                    if (receiverStream.getAudioTracks().length > 0) {
+                        activeStream = receiverStream;
+                        console.log(`✅ [processAudioForMixing] Создан поток из receivers напрямую для ${publisherIdStr}, треков: ${receiverStream.getAudioTracks().length}`);
+                    } else {
+                        activeStream = stream;
+                        console.log(`⚠️ [processAudioForMixing] Используем переданный поток для ${publisherIdStr} (receivers пусты)`);
+                    }
+                } else {
+                    activeStream = stream;
+                    console.log(`⚠️ [processAudioForMixing] Используем переданный поток для ${publisherIdStr} (handle не найден или PC нет)`);
+                }
+            }
+            
+            console.log(`🔍 [processAudioForMixing] Финальный activeStream для ${publisherIdStr}:`, {
+                id: activeStream.id,
+                active: activeStream.active,
+                tracksCount: activeStream.getAudioTracks().length
+            });
+            
+            // Получаем треки из активного потока
+            const activeTracks = activeStream.getAudioTracks();
+            if (activeTracks.length === 0) {
+                console.error(`❌ Нет аудио треков в активном потоке для ${publisherIdStr}!`);
+                return;
+            }
+            
+            // Ищем активный трек
+            let activeTrack = activeTracks.find(track => !track.muted && track.readyState === 'live' && track.enabled);
+            
+            // Если не нашли активный трек, пытаемся получить из receiver
+            if (!activeTrack && subscriberHandle && subscriberHandle.webrtcStuff && subscriberHandle.webrtcStuff.pc) {
+                const pc = subscriberHandle.webrtcStuff.pc;
+                const receivers = pc.getReceivers();
+                console.log(`🔍 Проверяем ${receivers.length} receivers для ${publisherIdStr}`);
+                for (const receiver of receivers) {
+                    if (receiver.track && receiver.track.kind === 'audio') {
+                        console.log(`🔍 Receiver трек ${receiver.track.id}: muted=${receiver.track.muted}, readyState=${receiver.track.readyState}, enabled=${receiver.track.enabled}`);
+                        if (!receiver.track.muted && receiver.track.readyState === 'live' && receiver.track.enabled) {
+                            activeTrack = receiver.track;
+                            console.log(`✅ Найден активный трек в receiver: ${activeTrack.id}`);
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            if (!activeTrack) {
+                console.error(`❌ Не найден активный трек для ${publisherIdStr}!`);
+                console.error(`🔍 Доступные треки в потоке:`, activeTracks.map(t => ({
+                    id: t.id,
+                    muted: t.muted,
+                    enabled: t.enabled,
+                    readyState: t.readyState
+                })));
+                return;
+            }
+            
+            // ВАЖНО: Используем HTMLAudioElement для воспроизведения WebRTC аудио
+            // Это стандартный и надежный способ - MediaStreamAudioSourceNode часто не работает с WebRTC
+            console.log(`🎧 Создаем HTMLAudioElement для воспроизведения потока ${publisherIdStr}...`);
+            
+            // Создаем аудио элемент для воспроизведения
+            // ВАЖНО: autoplay=false, чтобы звук не начал воспроизводиться до подключения к Web Audio API
+            const audioElement = document.createElement('audio');
+            audioElement.id = `remote-audio-${publisherIdStr}`;
+            audioElement.autoplay = false; // НЕ autoplay - сначала подключим к Web Audio API
+            audioElement.playsInline = true;
+            audioElement.muted = false; // НЕ muted - нам нужен звук!
+            
+            // Используем activeStream напрямую (он уже содержит нужный трек)
+            audioElement.srcObject = activeStream;
+            console.log(`✅ srcObject установлен для ${publisherIdStr}, поток id: ${activeStream.id}`);
+            
+            // Добавляем элемент на страницу (скрытый)
+            audioElement.style.display = 'none';
+            document.body.appendChild(audioElement);
+            console.log(`✅ Audio элемент добавлен на страницу для ${publisherIdStr}`);
+            
+            // Обработчики событий для отладки
+            audioElement.onplay = () => console.log(`▶️ Audio ${publisherIdStr} playing`);
+            audioElement.onpause = () => console.warn(`⏸️ Audio ${publisherIdStr} paused`);
+            audioElement.onerror = (e) => console.error(`❌ Audio ${publisherIdStr} error:`, e);
+            audioElement.onended = () => console.warn(`⏹️ Audio ${publisherIdStr} ended`);
+            audioElement.onloadeddata = () => console.log(`📦 Audio ${publisherIdStr} data loaded`);
+            audioElement.oncanplay = () => console.log(`✅ Audio ${publisherIdStr} can play`);
+            
+            // ВАЖНО: Создаем MediaElementAudioSourceNode ПЕРЕД вызовом play()!
+            // Это перенаправит звук из audioElement в Web Audio API
+            // После этого звук будет идти ТОЛЬКО через Web Audio API (source -> gainNode -> destination)
+            let source;
+            try {
+                source = this.audioContext.createMediaElementSource(audioElement);
+                console.log(`✅ MediaElementAudioSourceNode создан для ${publisherIdStr}`);
+            } catch (e) {
+                console.error(`❌ Ошибка создания MediaElementAudioSourceNode:`, e);
+                // Если не удалось создать source, используем только audioElement
+                // Громкость будем регулировать через audioElement.volume
+                console.log(`⚠️ Используем только HTMLAudioElement для ${publisherIdStr} (без Web Audio API)`);
+                
+                // Запускаем воспроизведение напрямую
+                audioElement.autoplay = true;
+                audioElement.play().catch(e => console.error(`❌ Ошибка воспроизведения:`, e));
+                
+                this.streamVolumes.set(publisherIdStr, {
+                    audioElement: audioElement,
+                    volume: 1.0,
+                    display: displayName
+                });
+                
+                // Удаляем из pending (поток получен)
+                this.pendingPublishers.delete(publisherIdStr);
+                
+                // ВАЖНО: Обновляем UI после добавления нового участника
+                this.notifyParticipantsUpdate();
+                return;
+            }
+            
+            // Создаем GainNode для управления громкостью
+            const gainNode = this.audioContext.createGain();
+            gainNode.gain.value = 1.0; // Начальная громкость 100%
+            console.log(`✅ GainNode создан для ${publisherIdStr}, gain=${gainNode.gain.value}`);
+            
+            // Подключаем: source -> gainNode -> destination (напрямую!)
+            // ВАЖНО: Подключаем напрямую к destination, а не к audioMixer
+            // Это гарантирует, что GainNode контролирует громкость
+            source.connect(gainNode);
+            console.log(`✅ source подключен к gainNode для ${publisherIdStr}`);
+            
+            gainNode.connect(this.audioContext.destination);
+            console.log(`✅ gainNode подключен к destination для ${publisherIdStr}`);
+            
+            // Теперь запускаем воспроизведение - звук пойдет через Web Audio API
+            const playPromise = audioElement.play();
+            if (playPromise !== undefined) {
+                playPromise
+                    .then(() => {
+                        console.log(`✅ Воспроизведение запущено для ${publisherIdStr}`);
+                        console.log(`🔍 audioElement.paused=${audioElement.paused}, volume=${audioElement.volume}, muted=${audioElement.muted}`);
+                    })
+                    .catch(err => {
+                        console.error(`❌ Ошибка запуска воспроизведения для ${publisherIdStr}:`, err);
+                        // Autoplay был заблокирован браузером
+                        console.log(`⚠️ Autoplay заблокирован. Ожидаем взаимодействия пользователя...`);
+                        
+                        // Добавляем обработчик клика для запуска воспроизведения
+                        const resumePlayback = () => {
+                            audioElement.play()
+                                .then(() => {
+                                    console.log(`✅ Воспроизведение запущено после взаимодействия для ${publisherIdStr}`);
+                                    document.removeEventListener('click', resumePlayback);
+                                    document.removeEventListener('touchstart', resumePlayback);
+                                })
+                                .catch(e => console.error(`❌ Повторная попытка воспроизведения не удалась:`, e));
+                        };
+                        document.addEventListener('click', resumePlayback, { once: true });
+                        document.addEventListener('touchstart', resumePlayback, { once: true });
+                    });
+            }
+            
+            console.log(`🔗 Подключено: source (${source.numberOfOutputs} outputs) -> gainNode (${gainNode.numberOfInputs} inputs, ${gainNode.numberOfOutputs} outputs) -> destination`);
+            
+            // Добавляем обработчик для проверки активности трека
+            audioTracks.forEach(track => {
+                track.addEventListener('ended', () => {
+                    console.warn(`⚠️ Трек ${track.id} от ${publisherIdStr} завершен`);
+                });
+                
+                track.addEventListener('mute', () => {
+                    console.warn(`⚠️ Трек ${track.id} от ${publisherIdStr} стал muted!`);
+                });
+                
+                track.addEventListener('unmute', () => {
+                    console.log(`✅ Трек ${track.id} от ${publisherIdStr} стал unmuted`);
+                });
+                
+                // Проверяем активность трека через некоторое время
+                setTimeout(() => {
+                    console.log(`🔍 Проверка трека ${track.id} через 2 сек: enabled=${track.enabled}, muted=${track.muted}, readyState=${track.readyState}`);
+                    if (track.muted) {
+                        console.warn(`⚠️ Трек ${track.id} все еще muted после 2 секунд!`);
+                    }
+                    
+                    // Проверяем, есть ли данные в потоке через AudioContext
+                    try {
+                        const testSource = this.audioContext.createMediaStreamSource(new MediaStream([track]));
+                        const analyser = this.audioContext.createAnalyser();
+                        analyser.fftSize = 256;
+                        testSource.connect(analyser);
+                        
+                        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                        analyser.getByteFrequencyData(dataArray);
+                        
+                        const max = Math.max(...dataArray);
+                        console.log(`🔍 Анализ трека ${track.id}: максимальная частота=${max}, есть данные=${max > 0}`);
+                        
+                        if (max === 0) {
+                            console.warn(`⚠️ Трек ${track.id} не передает данные!`);
+                        }
+                        
+                        testSource.disconnect();
+                        analyser.disconnect();
+                    } catch (e) {
+                        console.error(`❌ Ошибка анализа трека ${track.id}:`, e);
+                    }
+                }, 2000);
+            });
+            
+            // Сохраняем для управления (включая audioElement)
+            this.streamVolumes.set(publisherIdStr, {
+                gainNode: gainNode,
+                source: source,
+                audioElement: audioElement,
+                volume: 1.0,
+                display: displayName
+            });
+            
+            // Удаляем из pending (поток получен)
+            this.pendingPublishers.delete(publisherIdStr);
+            
+            console.log(`✅ Аудио поток ${publisherIdStr} (${displayName}) подключен к Web Audio API`);
+            
+            // ВАЖНО: Обновляем UI после добавления нового участника
+            this.notifyParticipantsUpdate();
+            console.log(`🔍 AudioContext состояние: ${this.audioContext.state}`);
+            console.log(`🔍 AudioContext destination: ${this.audioContext.destination ? 'есть' : 'нет'}, numberOfInputs: ${this.audioContext.destination ? this.audioContext.destination.numberOfInputs : 'N/A'}`);
+            
+            // Проверяем источник через AnalyserNode сразу после создания
+            console.log(`🔍 Создан источник для ${publisherIdStr}, проверяем данные...`);
+            
+            // Первая проверка через 500мс
+            setTimeout(() => {
+                try {
+                    const analyser = this.audioContext.createAnalyser();
+                    analyser.fftSize = 256;
+                    source.connect(analyser);
+                    
+                    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                    analyser.getByteFrequencyData(dataArray);
+                    
+                    const max = Math.max(...dataArray);
+                    const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+                    console.log(`🔍 [500мс] Источник ${publisherIdStr}: max=${max}, avg=${avg.toFixed(2)}, есть данные=${max > 0}`);
+                    
+                    source.disconnect(analyser);
+                    analyser.disconnect();
+                    // Переподключаем source к gainNode
+                    source.connect(gainNode);
+                } catch (e) {
+                    console.error(`❌ Ошибка проверки источника ${publisherIdStr}:`, e);
+                }
+            }, 500);
+            
+            // Вторая проверка через 2 секунды
+            setTimeout(() => {
+                try {
+                    const analyser = this.audioContext.createAnalyser();
+                    analyser.fftSize = 256;
+                    source.connect(analyser);
+                    
+                    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                    analyser.getByteFrequencyData(dataArray);
+                    
+                    const max = Math.max(...dataArray);
+                    const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+                    console.log(`🔍 [2сек] Источник ${publisherIdStr}: max=${max}, avg=${avg.toFixed(2)}, есть данные=${max > 0}`);
+                    
+                    if (max === 0) {
+                        console.warn(`⚠️ Источник ${publisherIdStr} НЕ получает данные через 2 секунды!`);
+                        console.warn(`⚠️ Проверка треков:`, audioTracks.map(t => ({
+                            id: t.id,
+                            enabled: t.enabled,
+                            muted: t.muted,
+                            readyState: t.readyState
+                        })));
+                    }
+                    
+                    source.disconnect(analyser);
+                    analyser.disconnect();
+                    // Переподключаем source к gainNode
+                    source.connect(gainNode);
+                } catch (e) {
+                    console.error(`❌ Ошибка проверки источника ${publisherIdStr}:`, e);
+                }
+            }, 2000);
+            
+            // Третья проверка через 5 секунд
+            setTimeout(() => {
+                try {
+                    const analyser = this.audioContext.createAnalyser();
+                    analyser.fftSize = 256;
+                    source.connect(analyser);
+                    
+                    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                    analyser.getByteFrequencyData(dataArray);
+                    
+                    const max = Math.max(...dataArray);
+                    const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+                    console.log(`🔍 [5сек] Источник ${publisherIdStr}: max=${max}, avg=${avg.toFixed(2)}, есть данные=${max > 0}`);
+                    
+                    source.disconnect(analyser);
+                    analyser.disconnect();
+                    // Переподключаем source к gainNode
+                    source.connect(gainNode);
+                } catch (e) {
+                    console.error(`❌ Ошибка проверки источника ${publisherIdStr}:`, e);
+                }
+            }, 5000);
+            
+            // Тестовый тон для проверки что микшер работает
+            setTimeout(() => {
+                const testOscillator = this.audioContext.createOscillator();
+                const testGain = this.audioContext.createGain();
+                testOscillator.frequency.value = 440; // A4
+                testGain.gain.value = 0.1;
+                testOscillator.connect(testGain);
+                testGain.connect(this.audioMixer);
+                testOscillator.start();
+                testOscillator.stop(this.audioContext.currentTime + 0.1);
+                console.log('🔊 Тестовый тон отправлен через микшер для проверки');
+            }, 3500);
+                } catch (error) {
+            console.error('❌ Ошибка обработки аудио:', error);
+            console.error('Детали:', error.stack);
+        }
+    },
+
+    // Удалить publisher
+    removePublisher(publisherId) {
+        console.log(`🔴 Удаляем publisher ${publisherId}`);
+        const publisherIdStr = String(publisherId);
+        
+        // Отключаем поток от микшера
+        const streamData = this.streamVolumes.get(publisherIdStr);
+        if (streamData) {
+            try {
+                if (streamData.source) streamData.source.disconnect();
+                if (streamData.gainNode) streamData.gainNode.disconnect();
+            } catch (e) {
+                console.warn(`Ошибка при отключении потока ${publisherId}:`, e);
+            }
+            this.streamVolumes.delete(publisherIdStr);
+        }
+        
+        // Удаляем из pending (если ещё был там)
+        this.pendingPublishers.delete(publisherIdStr);
+        
+        // Удаляем stream
+        this.remoteStreams.delete(publisherIdStr);
+        
+        // Удаляем видео-поток
+        this.removeRemoteVideoStream(publisherId);
+        
+        // Закрываем subscriber handle
+        const handle = this.subscriberHandles.get(publisherIdStr);
+        if (handle) {
+            try {
+                handle.detach();
+            } catch (e) {
+                console.warn(`Ошибка при закрытии subscriber handle для ${publisherId}:`, e);
+            }
+            this.subscriberHandles.delete(publisherIdStr);
+        }
+        
+        // Обновляем UI после удаления участника
+        this.notifyParticipantsUpdate();
+    },
+    
+    // Получить полный список участников, ВКЛЮЧАЯ себя
+    getFullParticipantsList() {
+        const participants = [];
+        const addedIds = new Set(); // Для избежания дубликатов
+        
+        // Добавляем себя первым, если мы подключены
+        if (this.participantId && this.displayName) {
+            participants.push({
+                id: this.participantId,
+                display: this.displayName,
+                isMe: true
+            });
+            addedIds.add(String(this.participantId));
+        }
+        
+        // Добавляем участников из streamVolumes (уже подключенные потоки)
+        this.streamVolumes.forEach((streamData, publisherId) => {
+            const idStr = String(publisherId);
+            if (!addedIds.has(idStr)) {
+                participants.push({
+                    id: publisherId,
+                    display: streamData.display || 'Пользователь'
+                });
+                addedIds.add(idStr);
+            }
+        });
+        
+        // Добавляем pending publishers (подписались, но поток ещё не получен)
+        this.pendingPublishers.forEach((publisherData, publisherId) => {
+            const idStr = String(publisherId);
+            if (!addedIds.has(idStr)) {
+                participants.push({
+                    id: publisherData.id,
+                    display: publisherData.display || 'Пользователь'
+                });
+                addedIds.add(idStr);
+            }
+        });
+        
+        console.log('📋 Полный список участников:', participants.length, '(streamVolumes:', this.streamVolumes.size, ', pending:', this.pendingPublishers.size, ')');
+        return participants;
+    },
+    
+    // Уведомить UI об изменении списка участников
+    notifyParticipantsUpdate() {
+        if (window.onParticipantsUpdate) {
+            const fullList = this.getFullParticipantsList();
+            console.log('🔄 Уведомляем UI об изменении участников:', fullList.length, 'участников');
+            window.onParticipantsUpdate(fullList, this.participantId);
+        }
+    },
+
+    // Запросить список publishers
+    requestPublishersList() {
+        if (this.publisherHandle && this.roomId) {
+            console.log('📋 Запрашиваем список publishers для комнаты', this.roomId, '...');
+            this.publisherHandle.send({
+                message: { 
+                    request: 'list',
+                    room: this.roomId
+                }
+            });
+        } else {
+            console.warn('⚠️ publisherHandle или roomId не доступен');
+        }
+    },
+
+    // Старые методы удалены - используются новые методы для Videoroom
+    // requestParticipantsList -> requestPublishersList
+    // joinRoom -> joinAsPublisher (вызывается автоматически при init)
+    // handleMessage -> handlePublisherMessage
+
+    /** Создаёт только RNNoise worklet node (вставка в граф micSource -> micGain). */
+    async createRnnoiseProcessorNode() {
+        const noiseSuppressor =
+            typeof webNoiseSuppressor !== 'undefined'
+                ? webNoiseSuppressor
+                : typeof window !== 'undefined' && window.webNoiseSuppressor
+                  ? window.webNoiseSuppressor
+                  : null;
+
+        if (!noiseSuppressor) {
+            console.warn('⚠️ RNNoise библиотека не загружена.');
+            return null;
+        }
+
+        if (!this.audioContext) {
+            this.initializeAudioContext();
+        }
+
+        try {
             let processor;
             if (typeof noiseSuppressor.createRnnoiseWorkletNode === 'function') {
                 processor = await noiseSuppressor.createRnnoiseWorkletNode(this.audioContext);
@@ -1035,488 +4367,97 @@ var AudioModule = {
                 console.error('❌ Не найден метод создания RNNoise процессора');
                 return null;
             }
-            
-            const destinationNode = this.audioContext.createMediaStreamDestination();
-            sourceNode.connect(processor);
-            processor.connect(destinationNode);
-            
-            this.rnnoiseProcessor = processor;
-            this.rnnoiseSourceNode = sourceNode;
-            this.rnnoiseDestinationNode = destinationNode;
-            
-            console.log('✅ RNNoise инициализирован');
-            return destinationNode.stream;
+            return processor;
         } catch (error) {
-            console.error('❌ Ошибка инициализации RNNoise:', error);
-            console.error('Детали ошибки:', error.stack);
+            console.error('❌ Ошибка создания RNNoise:', error);
             return null;
         }
     },
-    
-    // Включить/выключить RNNoise
+
+    // Включить/выключить RNNoise (в цепи публикации, без смены RTP-трека)
     async toggleRNNoise() {
-        return this.setUseRNNoise(!this.rnnoiseEnabled);
-    },
-    
-    // Загрузить настройку RNNoise из audioSettings / localStorage
-    loadRNNoiseSetting() {
-        try {
-            const savedSettings = localStorage.getItem('audioSettings');
-            const parsed = savedSettings ? JSON.parse(savedSettings) : null;
-            if (parsed && Object.prototype.hasOwnProperty.call(parsed, 'useRNNoise')) {
-                this.rnnoiseEnabled = parsed.useRNNoise === true;
-                this.audioSettings.useRNNoise = this.rnnoiseEnabled;
-                return;
+        if (!this.rnnoiseEnabled) {
+            if (!this.micSourceNode || !this.micGainNode) {
+                console.warn('⚠️ Нет графа публикации для RNNoise');
+                return false;
             }
-            const legacy = localStorage.getItem('rnnoiseEnabled');
-            if (legacy !== null) {
-                this.rnnoiseEnabled = legacy === 'true';
-                this.audioSettings.useRNNoise = this.rnnoiseEnabled;
-                return;
+            const processor = await this.createRnnoiseProcessorNode();
+            if (!processor) {
+                return false;
             }
-            this.rnnoiseEnabled = this.audioSettings.useRNNoise === true;
-        } catch (e) {
-            this.rnnoiseEnabled = false;
-            this.audioSettings.useRNNoise = false;
-        }
-    },
-    
-    initWebAudioMixer() {
-        if (this.remoteAudioContext && this.remoteAudioContext.state !== 'closed') {
-            return;
-        }
-        
-        try {
-            this.remoteAudioContext = new (window.AudioContext || window.webkitAudioContext)();
-            this.masterGainNode = this.remoteAudioContext.createGain();
-            this.masterGainNode.gain.value = 1.0;
-            this.mixerDestination = this.remoteAudioContext.createMediaStreamDestination();
-            this.masterGainNode.connect(this.mixerDestination);
-            
-            if (!this.remoteAudio) {
-                this.remoteAudio = document.createElement('audio');
-                this.remoteAudio.id = 'remoteAudio';
-                this.remoteAudio.autoplay = true;
-                this.remoteAudio.playsInline = true;
-                document.body.appendChild(this.remoteAudio);
-            }
-            
-            this.remoteAudio.srcObject = this.mixerDestination.stream;
-            
-            // Пытаемся воспроизвести с обработкой ошибок
-            const playPromise = this.remoteAudio.play();
-            if (playPromise !== undefined) {
-                playPromise.then(() => {
-                    console.log('✅ Микшированный аудио поток воспроизводится');
-                }).catch(error => {
-                    console.error('❌ Ошибка воспроизведения микшированного потока:', error);
-                    console.log('⚠️ Аудио заблокировано браузером. Нужен клик пользователя.');
-                });
-            }
-            
-            console.log('✅ Web Audio API микшер инициализирован');
-        } catch (error) {
-            console.error('❌ Ошибка инициализации Web Audio API микшера:', error);
-        }
-    },
-    
-    addParticipantStream(participantId, stream) {
-        console.log(`🔊 addParticipantStream вызван для участника ${participantId}`, { 
-            hasStream: !!stream, 
-            audioTracks: stream ? stream.getAudioTracks().length : 0,
-            videoTracks: stream ? stream.getVideoTracks().length : 0
-        });
-        
-        if (!this.remoteAudioContext || this.remoteAudioContext.state === 'closed') {
-            console.log('🔊 Инициализируем Web Audio API микшер...');
-            this.initWebAudioMixer();
-        }
-        
-        if (!this.remoteAudioContext || this.remoteAudioContext.state === 'closed') {
-            console.error('❌ AudioContext не инициализирован или закрыт');
-            return;
-        }
-        
-        const audioTracks = stream.getAudioTracks();
-        if (audioTracks.length === 0) {
-            console.warn(`⚠️ Поток участника ${participantId} не содержит аудио треков`);
-            return;
-        }
-        
-        console.log(`🔊 Добавляем поток участника ${participantId}, треков: ${audioTracks.length}`);
-        audioTracks.forEach(track => {
-            console.log(`🔊 Трек:`, { id: track.id, kind: track.kind, enabled: track.enabled, muted: track.muted, readyState: track.readyState });
-        });
-        
-        try {
-            if (this.participantSources.has(participantId)) {
-                const oldSource = this.participantSources.get(participantId);
+            try {
+                this.micSourceNode.disconnect();
+                this.micSourceNode.connect(processor);
+                processor.connect(this.micGainNode);
+                this.rnnoiseProcessor = processor;
+                this.rnnoiseSourceNode = this.micSourceNode;
+                this.rnnoiseDestinationNode = null;
+                this.rnnoiseEnabled = true;
+                console.log('✅ RNNoise включен (в графе публикации)');
                 try {
-                    oldSource.disconnect();
-                    console.log(`🔊 Удален старый источник для участника ${participantId}`);
+                    localStorage.setItem('rnnoiseEnabled', 'true');
                 } catch (e) {
-                    console.warn(`⚠️ Ошибка при отключении старого источника для ${participantId}:`, e);
+                    /* ignore */
                 }
-            }
-            
-            const source = this.remoteAudioContext.createMediaStreamSource(stream);
-            const gainNode = this.remoteAudioContext.createGain();
-            
-            const volume = this.participantVolumes.get(participantId) || 1.0;
-            gainNode.gain.value = volume;
-            
-            source.connect(gainNode);
-            gainNode.connect(this.masterGainNode);
-            
-            this.participantStreams.set(participantId, stream);
-            this.participantSources.set(participantId, source);
-            this.gainNodes.set(participantId, gainNode);
-            
-            console.log(`✅ Добавлен поток участника ${participantId} в микшер, громкость: ${(volume * 100).toFixed(0)}%`);
-            console.log(`🔊 Состояние микшера:`, {
-                audioContextState: this.remoteAudioContext.state,
-                hasMasterGain: !!this.masterGainNode,
-                hasMixerDestination: !!this.mixerDestination,
-                connectedSources: this.participantSources.size
-            });
-            
-            if (this.remoteAudio) {
-                if (this.remoteAudio.paused) {
-                    console.log('🔊 Аудио элемент приостановлен, пытаемся воспроизвести...');
-                    this.remoteAudio.play().then(() => {
-                        console.log('✅ Аудио элемент воспроизводится после добавления потока');
-                    }).catch(error => {
-                        console.error('❌ Ошибка воспроизведения после добавления потока:', error);
-                    });
-                } else {
-                    console.log('✅ Аудио элемент уже воспроизводится');
+                return true;
+            } catch (error) {
+                console.error('❌ Ошибка включения RNNoise:', error);
+                try {
+                    processor.disconnect();
+                } catch (e2) {
+                    /* ignore */
                 }
-            } else {
-                console.warn('⚠️ remoteAudio элемент не найден!');
+                if (this.micSourceNode && this.micGainNode) {
+                    try {
+                        this.micSourceNode.disconnect();
+                        this.micSourceNode.connect(this.micGainNode);
+                    } catch (e3) {
+                        /* ignore */
+                    }
+                }
+                return false;
             }
+        }
+
+        try {
+            if (this.rnnoiseProcessor) {
+                try {
+                    this.rnnoiseProcessor.disconnect();
+                } catch (e) {
+                    /* ignore */
+                }
+                this.rnnoiseProcessor = null;
+            }
+            if (this.micSourceNode && this.micGainNode) {
+                try {
+                    this.micSourceNode.disconnect();
+                } catch (e) {
+                    /* ignore */
+                }
+                this.micSourceNode.connect(this.micGainNode);
+            }
+            this.rnnoiseSourceNode = null;
+            this.rnnoiseDestinationNode = null;
+            this.rnnoiseEnabled = false;
+            console.log('✅ RNNoise выключен');
+            try {
+                localStorage.setItem('rnnoiseEnabled', 'false');
+            } catch (e) {
+                /* ignore */
+            }
+            return true;
         } catch (error) {
-            console.error(`❌ Ошибка добавления потока участника ${participantId}:`, error);
-            console.error('❌ Детали ошибки:', error.stack);
+            console.error('❌ Ошибка выключения RNNoise:', error);
+            return false;
         }
     },
     
-    removeParticipantStream(participantId) {
-        const source = this.participantSources.get(participantId);
-        const gainNode = this.gainNodes.get(participantId);
-        
-        if (source) {
-            source.disconnect();
-            this.participantSources.delete(participantId);
-        }
-        
-        if (gainNode) {
-            gainNode.disconnect();
-            this.gainNodes.delete(participantId);
-        }
-        
-        this.participantStreams.delete(participantId);
-        console.log(`✅ Удален поток участника ${participantId} из микшера`);
+    // Загрузить настройку RNNoise из localStorage (временно отключено)
+    loadRNNoiseSetting() {
+        // RNNoise временно отключен
+        this.rnnoiseEnabled = false;
     },
-    
-    subscribeToPublishers(publishers) {
-        if (!publishers || !Array.isArray(publishers)) {
-            return;
-        }
-        
-        publishers.forEach(publisher => {
-            if (publisher.id && publisher.id !== this.participantId) {
-                this.subscribeToPublisher(publisher);
-            }
-        });
-    },
-    
-    subscribeToPublisher(publisher) {
-        const publisherId = publisher.id || publisher;
-        if (!publisherId || publisherId === this.participantId) {
-            console.log(`⏭️ Пропускаем подписку на publisher ${publisherId} (это я или пустой ID)`);
-            return;
-        }
-        
-        if (this.subscriberHandles.has(publisherId)) {
-            console.log(`ℹ️ Уже подписан на publisher ${publisherId}`);
-            return;
-        }
-        
-        const displayName = publisher.display || publisher.displayName || `User ${publisherId}`;
-        console.log(`📡 Подписываемся на publisher ${publisherId} (${displayName})...`);
-        
-        this.janus.attach({
-            plugin: 'janus.plugin.videoroom',
-            success: (subscriberHandle) => {
-                console.log(`✅ Subscriber handle создан для publisher ${publisherId}`);
-                this.subscriberHandles.set(publisherId, subscriberHandle);
-                
-                subscriberHandle.on('message', (msg, jsep) => {
-                    console.log(`📨 Сообщение от subscriber handle для ${publisherId}:`, JSON.stringify(msg, null, 2), jsep ? 'JSEP есть' : 'JSEP нет');
-                    
-                    // Обработка события через plugindata
-                    let event = null;
-                    if (msg.plugindata && msg.plugindata.data) {
-                        event = msg.plugindata.data;
-                    } else if (msg.videoroom) {
-                        event = msg;
-                    }
-                    
-                    if (event) {
-                        if (event.videoroom === 'joined' || event.joined) {
-                            console.log(`✅ Успешно присоединились как subscriber к publisher ${publisherId}`);
-                            
-                            // Если есть JSEP в ответе - это offer от сервера
-                            if (jsep && jsep.type === 'offer') {
-                                console.log(`📡 Получен JSEP offer для subscriber ${publisherId}, создаем answer...`);
-                                subscriberHandle.createAnswer({
-                                    jsep: jsep,
-                                    media: { audio: true, video: false },
-                                    success: (answerJsep) => {
-                                        console.log(`✅ Answer создан для subscriber ${publisherId}`);
-                                        subscriberHandle.send({
-                                            message: { request: 'start' },
-                                            jsep: answerJsep
-                                        });
-                                    },
-                                    error: (error) => {
-                                        console.error(`❌ Ошибка создания answer для subscriber ${publisherId}:`, error);
-                                    }
-                                });
-                            } else {
-                                // Если нет JSEP в ответе, создаем offer
-                                console.log(`📡 JSEP нет в ответе, создаем offer для subscriber ${publisherId}...`);
-                                subscriberHandle.createOffer({
-                                    media: { audio: true, video: false },
-                                    success: (offerJsep) => {
-                                        console.log(`✅ Offer создан для подписки на ${publisherId}`);
-                                        subscriberHandle.send({
-                                            message: { request: 'start' },
-                                            jsep: offerJsep
-                                        });
-                                    },
-                                    error: (error) => {
-                                        console.error(`❌ Ошибка создания offer для subscriber ${publisherId}:`, error);
-                                    }
-                                });
-                            }
-                        } else if (event.videoroom === 'event') {
-                            if (event.error_code) {
-                                console.error(`❌ Ошибка subscriber для ${publisherId}:`, event.error_code, event.error);
-                            } else if (event.starting) {
-                                console.log(`✅ Аудио поток от publisher ${publisherId} начался`);
-                            } else if (event.stopped) {
-                                console.log(`⏹️ Аудио поток от publisher ${publisherId} остановлен`);
-                            }
-                        }
-                    }
-                    
-                    // Обработка JSEP answer отдельно
-                    if (jsep && jsep.type === 'answer') {
-                        console.log(`📡 Получен JSEP answer для subscriber ${publisherId}, устанавливаем remote description...`);
-                        subscriberHandle.handleRemoteJsep({
-                            jsep: jsep,
-                            success: () => {
-                                console.log(`✅ Remote JSEP установлен для subscriber ${publisherId}`);
-                            },
-                            error: (error) => {
-                                console.error(`❌ Ошибка установки remote JSEP для subscriber ${publisherId}:`, error);
-                            }
-                        });
-                    }
-                });
-                
-                subscriberHandle.on('remotetrack', (track, mid, on) => {
-                    console.log(`🔊 Удаленный трек от publisher ${publisherId}:`, { 
-                        kind: track.kind, 
-                        mid: mid, 
-                        on: on, 
-                        id: track.id, 
-                        enabled: track.enabled, 
-                        muted: track.muted,
-                        readyState: track.readyState
-                    });
-                    if (track.kind === 'audio' && on) {
-                        console.log(`🔊 Получен аудио трек от publisher ${publisherId}, создаем MediaStream...`);
-                        const stream = new MediaStream([track]);
-                        console.log(`🔊 MediaStream создан для publisher ${publisherId}, треков: ${stream.getAudioTracks().length}`);
-                        this.addParticipantStream(publisherId, stream);
-                    } else if (!on) {
-                        console.log(`🔇 Аудио трек от publisher ${publisherId} остановлен`);
-                        this.removeParticipantStream(publisherId);
-                    }
-                });
-                
-                subscriberHandle.on('remotestream', (stream) => {
-                    console.log(`🔊 [Legacy] Удаленный поток от publisher ${publisherId}:`, stream);
-                    if (stream && stream.getAudioTracks().length > 0) {
-                        console.log(`🔊 Получен аудио поток от publisher ${publisherId}, добавляем в микшер...`);
-                        this.addParticipantStream(publisherId, stream);
-                    }
-                });
-                
-                // Отправляем join запрос
-                subscriberHandle.send({
-                    message: {
-                        request: 'join',
-                        room: this.roomId,
-                        ptype: 'subscriber',
-                        feed: publisherId
-                    },
-                    success: (result) => {
-                        console.log(`✅ Join запрос отправлен для subscriber ${publisherId}:`, result);
-                    },
-                    error: (error) => {
-                        console.error(`❌ Ошибка отправки join запроса для subscriber ${publisherId}:`, error);
-                    }
-                });
-            },
-            error: (error) => {
-                console.error(`❌ Ошибка создания subscriber handle для ${publisherId}:`, error);
-            }
-        });
-    },
-    
-    unsubscribeFromPublisher(publisherId) {
-        const handle = this.subscriberHandles.get(publisherId);
-        if (handle) {
-            try {
-                handle.send({ message: { request: 'leave' } });
-                handle.detach();
-            } catch (error) {
-                console.error(`❌ Ошибка отписки от publisher ${publisherId}:`, error);
-            }
-            this.subscriberHandles.delete(publisherId);
-        }
-        this.removeParticipantStream(publisherId);
-        console.log(`✅ Отписались от publisher ${publisherId}`);
-    },
-    
-    async setParticipantVolume(participantId, volume) {
-        if (!this.channelId) {
-            console.warn('⚠️ channelId не установлен, не могу установить громкость');
-            return;
-        }
-        
-        const participantIdNum = typeof participantId === 'string' ? parseInt(participantId, 10) : participantId;
-        if (isNaN(participantIdNum)) {
-            console.error('❌ Неверный participantId:', participantId);
-            return;
-        }
-        
-        this.participantVolumes.set(participantId, volume);
-        
-        const gainNode = this.gainNodes.get(participantId);
-        if (gainNode) {
-            gainNode.gain.value = volume;
-            console.log(`✅ Громкость участника ${participantId} установлена на ${(volume * 100).toFixed(0)}% через Web Audio API`);
-        } else {
-            console.warn(`⚠️ GainNode для участника ${participantId} не найден`);
-        }
-    },
-
-    // Переключить микрофон (mute/unmute)
-    toggleMute() {
-        this.isMuted = !this.isMuted;
-        if (this.audioBridge) {
-            this.audioBridge.send({
-                message: { request: 'configure', muted: this.isMuted }
-            });
-        }
-        return this.isMuted;
-    },
-
-    // Отключиться
-    async disconnect() {
-        // Регистрируем отключение на сервере перед очисткой
-        if (this.channelId && this.participantId && window.registerAudioDisconnection) {
-            await window.registerAudioDisconnection(this.channelId, this.participantId);
-        }
-        
-        // Останавливаем периодический запрос участников
-        if (this.participantsUpdateInterval) {
-            clearInterval(this.participantsUpdateInterval);
-            this.participantsUpdateInterval = null;
-        }
-        
-        this.participantId = null;
-        this.recreateRoomAttempts = 0; // Сбрасываем счетчик попыток пересоздания
-        
-        // Очищаем RNNoise ресурсы
-        this.teardownRNNoiseGraph();
-        if (this.micRawStream) {
-            this.micRawStream.getTracks().forEach((track) => track.stop());
-            this.micRawStream = null;
-        }
-        if (this.audioContext && this.audioContext.state !== 'closed') {
-            try {
-                await this.audioContext.close();
-            } catch (e) {
-                console.warn('Ошибка при закрытии AudioContext:', e);
-            }
-        }
-        this.audioContext = null;
-        
-        // Очищаем управление громкостью
-        this.subscriberHandles.forEach((handle, participantId) => {
-            this.unsubscribeFromPublisher(participantId);
-        });
-        this.subscriberHandles.clear();
-        
-        this.participantStreams.forEach((stream, participantId) => {
-            this.removeParticipantStream(participantId);
-        });
-        this.participantStreams.clear();
-        this.participantSources.clear();
-        this.gainNodes.clear();
-        this.participantVolumes.clear();
-        this.masterGainNode = null;
-        this.mixerDestination = null;
-        
-        if (this.remoteAudioContext && this.remoteAudioContext.state !== 'closed') {
-            try {
-                this.remoteAudioContext.close();
-            } catch (e) {
-                console.warn('Ошибка при закрытии remoteAudioContext:', e);
-            }
-        }
-        this.remoteAudioContext = null;
-        
-        if (this.audioBridge) {
-            try {
-                this.audioBridge.send({ message: { request: 'leave' } });
-                this.audioBridge.detach();
-            } catch (error) {
-                console.error('Leave room error:', error);
-            }
-        }
-        
-        if (this.localStream) {
-            this.localStream.getTracks().forEach(track => track.stop());
-            this.localStream = null;
-        }
-        
-        // Удаляем аудио элемент для воспроизведения
-        if (this.remoteAudio) {
-            this.remoteAudio.pause();
-            this.remoteAudio.srcObject = null;
-            if (this.remoteAudio.parentNode) {
-                this.remoteAudio.parentNode.removeChild(this.remoteAudio);
-            }
-            this.remoteAudio = null;
-        }
-        
-        if (this.janus) {
-            this.janus.destroy();
-            this.janus = null;
-        }
-        
-        this.audioBridge = null;
-        this.roomId = null;
-        this.isMuted = false;
-        this.offerCreated = false; // Сбрасываем флаг при отключении
-        this.jsepProcessed = false; // Сбрасываем флаг при отключении
-    }
+    // Дублирующиеся методы удалены - используются методы выше (строки 436 и 453)
 };
 
 // Экспортируем в window для глобального доступа

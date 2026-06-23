@@ -19,8 +19,9 @@ const Auth = {
                 nickName,
                 password
             });
+            API.saveTokenFromResponse(response);
             Utils.showSuccess('Вход выполнен успешно!');
-            // Запускаем автоматическое обновление токена каждые 29 минут
+            API._lastRefreshTime = Date.now();
             API.startAutoRefresh();
             return response;
         } catch (error) {
