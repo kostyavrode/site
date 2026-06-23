@@ -24,6 +24,7 @@ var AudioModule = {
         noiseSuppression: true,
         echoCancellation: true,
         autoGainControl: true,
+        useRNNoise: false,
         monitorLocalAudio: false // Воспроизведение локального аудио для мониторинга (side-tone) - по умолчанию выключено
     },
     
@@ -477,12 +478,7 @@ var AudioModule = {
                 this.micMonitorSideToneSource = null;
             }
             if (this.rnnoiseProcessor) {
-                try {
-                    this.rnnoiseProcessor.disconnect();
-                } catch (e) {
-                    /* ignore */
-                }
-                this.rnnoiseProcessor = null;
+                this.teardownRnnoiseProcessor();
             }
             if (this.micSourceNode) {
                 try {
@@ -553,7 +549,6 @@ var AudioModule = {
         }
         this.rnnoiseSourceNode = null;
         this.rnnoiseDestinationNode = null;
-        this.rnnoiseEnabled = false;
         this.localStream = null;
         this.soundEffectBuffers = null;
     },
@@ -579,8 +574,8 @@ var AudioModule = {
         this.micGainNode = ctx.createGain();
         this.micGainNode.gain.value = 1.0;
         this.micSourceNode = ctx.createMediaStreamSource(this.micRawStream);
-        this.micSourceNode.connect(this.micGainNode);
         this.micGainNode.connect(this.publishSumGain);
+        await this.connectMicToPublishChain();
 
         this.sfxLocalMonitorGain = ctx.createGain();
         this.sfxLocalMonitorGain.gain.value = 0.55;
@@ -989,9 +984,10 @@ var AudioModule = {
 
     // Получить настройки аудио constraints
     getAudioConstraints() {
+        const useRNNoise = this.isRNNoiseEnabled();
         return {
             audio: {
-                noiseSuppression: this.audioSettings.noiseSuppression,
+                noiseSuppression: useRNNoise ? false : this.audioSettings.noiseSuppression,
                 echoCancellation: this.audioSettings.echoCancellation,
                 autoGainControl: this.audioSettings.autoGainControl
             },
@@ -999,10 +995,97 @@ var AudioModule = {
         };
     },
 
+    isRNNoiseLibraryAvailable() {
+        const noiseSuppressor =
+            typeof webNoiseSuppressor !== 'undefined'
+                ? webNoiseSuppressor
+                : typeof window !== 'undefined' && window.webNoiseSuppressor
+                  ? window.webNoiseSuppressor
+                  : null;
+        return !!(
+            noiseSuppressor &&
+            (typeof noiseSuppressor.createRnnoiseWorkletNode === 'function' ||
+                typeof noiseSuppressor.RnnoiseWorkletNode !== 'undefined')
+        );
+    },
+
+    isRNNoiseEnabled() {
+        return this.rnnoiseEnabled === true || this.audioSettings.useRNNoise === true;
+    },
+
+    teardownRnnoiseProcessor() {
+        if (this.rnnoiseProcessor) {
+            try {
+                this.rnnoiseProcessor.disconnect();
+                if (typeof this.rnnoiseProcessor.destroy === 'function') {
+                    this.rnnoiseProcessor.destroy();
+                }
+            } catch (e) {
+                /* ignore */
+            }
+            this.rnnoiseProcessor = null;
+        }
+        if (this.rnnoiseSourceNode) {
+            try {
+                this.rnnoiseSourceNode.disconnect();
+            } catch (e) {
+                /* ignore */
+            }
+            this.rnnoiseSourceNode = null;
+        }
+        this.rnnoiseDestinationNode = null;
+    },
+
+    async connectMicToPublishChain() {
+        if (!this.micSourceNode || !this.micGainNode) {
+            return false;
+        }
+
+        try {
+            this.micSourceNode.disconnect();
+        } catch (e) {
+            /* ignore */
+        }
+
+        if (this.rnnoiseProcessor) {
+            this.teardownRnnoiseProcessor();
+        }
+
+        const wantRNNoise = this.isRNNoiseEnabled();
+        if (wantRNNoise) {
+            const processor = await this.createRnnoiseProcessorNode();
+            if (processor) {
+                this.rnnoiseProcessor = processor;
+                this.micSourceNode.connect(this.rnnoiseProcessor);
+                this.rnnoiseProcessor.connect(this.micGainNode);
+                console.log('✅ RNNoise подключён в граф публикации');
+                return true;
+            }
+
+            console.warn('⚠️ RNNoise недоступен, используем прямой микрофон');
+            this.updateAudioSettings({ useRNNoise: false });
+        }
+
+        this.micSourceNode.connect(this.micGainNode);
+        return true;
+    },
+
     // Обновить настройки аудио
     updateAudioSettings(settings) {
         const oldSettings = { ...this.audioSettings };
         this.audioSettings = { ...this.audioSettings, ...settings };
+
+        if (settings.useRNNoise !== undefined) {
+            this.rnnoiseEnabled = settings.useRNNoise === true;
+            if (this.rnnoiseEnabled) {
+                this.audioSettings.noiseSuppression = false;
+            }
+            try {
+                localStorage.setItem('rnnoiseEnabled', String(this.rnnoiseEnabled));
+            } catch (e) {
+                /* ignore */
+            }
+        }
         
         // Сохраняем в localStorage
         try {
@@ -1026,6 +1109,9 @@ var AudioModule = {
             if (saved) {
                 const parsed = JSON.parse(saved);
                 this.audioSettings = { ...this.audioSettings, ...parsed };
+                if (Object.prototype.hasOwnProperty.call(parsed, 'useRNNoise')) {
+                    this.rnnoiseEnabled = parsed.useRNNoise === true;
+                }
                 console.log('📥 Настройки аудио загружены из localStorage:', this.audioSettings);
             }
         } catch (e) {
@@ -1079,11 +1165,7 @@ var AudioModule = {
                 }
             }
             this.micSourceNode = this.audioContext.createMediaStreamSource(this.micRawStream);
-            if (this.rnnoiseEnabled && this.rnnoiseProcessor) {
-                this.micSourceNode.connect(this.rnnoiseProcessor);
-            } else {
-                this.micSourceNode.connect(this.micGainNode);
-            }
+            await this.connectMicToPublishChain();
             console.log('✅ Микрофон в графе публикации обновлён');
             return true;
         } catch (error) {
@@ -1319,24 +1401,8 @@ var AudioModule = {
         this.audioMixer = null;
         
         // Очищаем RNNoise ресурсы
-        if (this.rnnoiseProcessor) {
-            try {
-                this.rnnoiseProcessor.disconnect();
-            } catch (e) {
-                console.warn('Ошибка при отключении RNNoise процессора:', e);
-            }
-            this.rnnoiseProcessor = null;
-        }
-        if (this.rnnoiseSourceNode) {
-            try {
-                this.rnnoiseSourceNode.disconnect();
-            } catch (e) {
-                console.warn('Ошибка при отключении RNNoise источника:', e);
-            }
-            this.rnnoiseSourceNode = null;
-        }
-        this.rnnoiseDestinationNode = null;
-        this.rnnoiseEnabled = false;
+        this.teardownRnnoiseProcessor();
+        this.rnnoiseEnabled = this.audioSettings.useRNNoise === true;
         
         // Закрываем Janus соединение
         if (this.janus) {
@@ -4375,87 +4441,52 @@ var AudioModule = {
     },
 
     // Включить/выключить RNNoise (в цепи публикации, без смены RTP-трека)
-    async toggleRNNoise() {
-        if (!this.rnnoiseEnabled) {
-            if (!this.micSourceNode || !this.micGainNode) {
-                console.warn('⚠️ Нет графа публикации для RNNoise');
-                return false;
-            }
-            const processor = await this.createRnnoiseProcessorNode();
-            if (!processor) {
-                return false;
-            }
-            try {
-                this.micSourceNode.disconnect();
-                this.micSourceNode.connect(processor);
-                processor.connect(this.micGainNode);
-                this.rnnoiseProcessor = processor;
-                this.rnnoiseSourceNode = this.micSourceNode;
-                this.rnnoiseDestinationNode = null;
-                this.rnnoiseEnabled = true;
-                console.log('✅ RNNoise включен (в графе публикации)');
-                try {
-                    localStorage.setItem('rnnoiseEnabled', 'true');
-                } catch (e) {
-                    /* ignore */
-                }
-                return true;
-            } catch (error) {
-                console.error('❌ Ошибка включения RNNoise:', error);
-                try {
-                    processor.disconnect();
-                } catch (e2) {
-                    /* ignore */
-                }
-                if (this.micSourceNode && this.micGainNode) {
-                    try {
-                        this.micSourceNode.disconnect();
-                        this.micSourceNode.connect(this.micGainNode);
-                    } catch (e3) {
-                        /* ignore */
-                    }
-                }
-                return false;
-            }
-        }
+    async setUseRNNoise(enabled) {
+        const wantEnabled = enabled === true;
 
-        try {
-            if (this.rnnoiseProcessor) {
-                try {
-                    this.rnnoiseProcessor.disconnect();
-                } catch (e) {
-                    /* ignore */
-                }
-                this.rnnoiseProcessor = null;
-            }
-            if (this.micSourceNode && this.micGainNode) {
-                try {
-                    this.micSourceNode.disconnect();
-                } catch (e) {
-                    /* ignore */
-                }
-                this.micSourceNode.connect(this.micGainNode);
-            }
-            this.rnnoiseSourceNode = null;
-            this.rnnoiseDestinationNode = null;
-            this.rnnoiseEnabled = false;
-            console.log('✅ RNNoise выключен');
-            try {
-                localStorage.setItem('rnnoiseEnabled', 'false');
-            } catch (e) {
-                /* ignore */
-            }
-            return true;
-        } catch (error) {
-            console.error('❌ Ошибка выключения RNNoise:', error);
+        if (wantEnabled && !this.isRNNoiseLibraryAvailable()) {
+            console.warn('⚠️ RNNoise библиотека не загружена');
             return false;
         }
+
+        this.updateAudioSettings({
+            useRNNoise: wantEnabled,
+            ...(wantEnabled ? { noiseSuppression: false } : {})
+        });
+
+        if (this.micSourceNode && this.micGainNode) {
+            return this.connectMicToPublishChain();
+        }
+
+        return true;
     },
-    
-    // Загрузить настройку RNNoise из localStorage (временно отключено)
+
+    async toggleRNNoise() {
+        return this.setUseRNNoise(!this.isRNNoiseEnabled());
+    },
+
     loadRNNoiseSetting() {
-        // RNNoise временно отключен
-        this.rnnoiseEnabled = false;
+        try {
+            if (this.audioSettings.useRNNoise === true) {
+                this.rnnoiseEnabled = true;
+                this.audioSettings.noiseSuppression = false;
+                return;
+            }
+
+            const legacy = localStorage.getItem('rnnoiseEnabled');
+            if (legacy === 'true') {
+                this.updateAudioSettings({
+                    useRNNoise: true,
+                    noiseSuppression: false
+                });
+                return;
+            }
+
+            this.rnnoiseEnabled = this.audioSettings.useRNNoise === true;
+        } catch (e) {
+            this.rnnoiseEnabled = false;
+            this.audioSettings.useRNNoise = false;
+        }
     },
     // Дублирующиеся методы удалены - используются методы выше (строки 436 и 453)
 };

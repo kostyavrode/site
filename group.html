@@ -604,12 +604,24 @@
                 <div class="form-group">
                     <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: var(--spacing-sm);">
                         <span>
-                            <strong>Шумоподавление</strong>
+                            <strong>Шумоподавление (браузер)</strong>
                             <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">
-                                Убирает фоновые шумы (вентилятор, клавиатура и т.д.)
+                                Стандартное шумоподавление WebRTC. Отключается при включении RNNoise.
                             </div>
                         </span>
                         <input type="checkbox" id="noiseSuppression" class="form-checkbox" checked style="width: 20px; height: 20px;">
+                    </label>
+                </div>
+
+                <div class="form-group" style="margin-top: var(--spacing-md);">
+                    <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: var(--spacing-sm);">
+                        <span>
+                            <strong>RNNoise (AI шумоподавление)</strong>
+                            <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">
+                                Более качественное подавление фонового шума через нейросеть.
+                            </div>
+                        </span>
+                        <input type="checkbox" id="useRNNoise" class="form-checkbox" style="width: 20px; height: 20px;">
                     </label>
                 </div>
                 
@@ -693,7 +705,7 @@
     <script src="js/auth.js"></script>
     <script src="js/groups.js"></script>
     <script src="js/chat.js"></script>
-    <script src="js/audio.js?v=2" onerror="console.error('❌ Ошибка загрузки audio.js'); alert('Ошибка загрузки audio.js. Обновите страницу.');"></script>
+    <script src="js/audio.js?v=4" onerror="console.error('❌ Ошибка загрузки audio.js'); alert('Ошибка загрузки audio.js. Обновите страницу.');"></script>
     <script>
         // Проверка загрузки AudioModule после загрузки скрипта
         (function() {
@@ -1907,6 +1919,9 @@
                 }
                 
                 await audioModule.init(janusRoomId, channelId, currentNickName);
+                if (audioModule.isRNNoiseEnabled?.() && audioModule.micSourceNode && audioModule.micGainNode) {
+                    await audioModule.connectMicToPublishChain();
+                }
                 currentAudioChannel = channelId;
                 button.textContent = 'Отключиться';
                 button.disabled = false; // Активируем кнопку после успешного подключения
@@ -2268,12 +2283,40 @@
             const settings = audioModule.audioSettings || {
                 noiseSuppression: true,
                 echoCancellation: true,
-                autoGainControl: true
+                autoGainControl: true,
+                useRNNoise: false
             };
-            
-            document.getElementById('noiseSuppression').checked = settings.noiseSuppression !== false;
+
+            const useRNNoiseEl = document.getElementById('useRNNoise');
+            const noiseSuppressionEl = document.getElementById('noiseSuppression');
+            const rnnoiseAvailable = audioModule.isRNNoiseLibraryAvailable
+                ? audioModule.isRNNoiseLibraryAvailable()
+                : false;
+
+            if (useRNNoiseEl) {
+                useRNNoiseEl.checked = settings.useRNNoise === true || audioModule.isRNNoiseEnabled?.() === true;
+                useRNNoiseEl.disabled = !rnnoiseAvailable;
+            }
+
+            if (noiseSuppressionEl) {
+                noiseSuppressionEl.checked = settings.noiseSuppression !== false && !useRNNoiseEl?.checked;
+            }
+
             document.getElementById('echoCancellation').checked = settings.echoCancellation !== false;
             document.getElementById('autoGainControl').checked = settings.autoGainControl !== false;
+        }
+
+        function syncAudioSettingsFormState() {
+            const useRNNoiseEl = document.getElementById('useRNNoise');
+            const noiseSuppressionEl = document.getElementById('noiseSuppression');
+            if (!useRNNoiseEl || !noiseSuppressionEl) return;
+
+            if (useRNNoiseEl.checked) {
+                noiseSuppressionEl.checked = false;
+                noiseSuppressionEl.disabled = true;
+            } else {
+                noiseSuppressionEl.disabled = false;
+            }
         }
 
         // Применение настроек аудио
@@ -2288,19 +2331,24 @@
             statusDiv.style.display = 'block';
             statusDiv.innerHTML = '<p style="color: var(--accent-blue);">⏳ Применение настроек...</p>';
             
+            const useRNNoise = document.getElementById('useRNNoise').checked;
             const newSettings = {
-                noiseSuppression: document.getElementById('noiseSuppression').checked,
+                noiseSuppression: useRNNoise ? false : document.getElementById('noiseSuppression').checked,
                 echoCancellation: document.getElementById('echoCancellation').checked,
-                autoGainControl: document.getElementById('autoGainControl').checked
+                autoGainControl: document.getElementById('autoGainControl').checked,
+                useRNNoise
             };
             
-            // Обновляем настройки
             audioModule.updateAudioSettings(newSettings);
+
+            if (useRNNoise && !audioModule.isRNNoiseLibraryAvailable()) {
+                statusDiv.innerHTML = '<p style="color: var(--error);">❌ RNNoise недоступен. Проверьте загрузку библиотеки и обновите страницу.</p>';
+                return;
+            }
             
             // Если пользователь подключен к каналу, применяем изменения
             if (currentAudioChannel && audioModule.localStream) {
                 try {
-                    // Применяем настройки
                     const success = await audioModule.replaceAudioTrack();
                     if (success) {
                         statusDiv.innerHTML = '<p style="color: var(--success);">✅ Настройки применены! Аудио трек обновлен.</p>';
@@ -2328,8 +2376,17 @@
         // Открытие настроек аудио
         function openAudioSettings() {
             loadAudioSettingsToForm();
+            syncAudioSettingsFormState();
             document.getElementById('audioSettingsModal').classList.remove('hidden');
         }
+
+        document.getElementById('useRNNoise')?.addEventListener('change', syncAudioSettingsFormState);
+        document.getElementById('noiseSuppression')?.addEventListener('change', () => {
+            const useRNNoiseEl = document.getElementById('useRNNoise');
+            if (useRNNoiseEl?.checked && document.getElementById('noiseSuppression').checked) {
+                useRNNoiseEl.checked = false;
+            }
+        });
 
         // Обработчик кнопки настроек аудио
         document.addEventListener('click', (e) => {
