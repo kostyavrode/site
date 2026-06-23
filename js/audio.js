@@ -36,8 +36,8 @@ var AudioModule = {
     rnnoiseProcessor: null,
     rnnoiseSourceNode: null,
     rnnoiseDestinationNode: null,
-    
-    // Управление громкостью участников (клиентское микширование)
+    rnnoiseWasmBinary: null,
+    rnnoiseWorkletContext: null,
     streamVolumes: new Map(), // Map<PublisherId, {gainNode, source, volume, display}>
     remoteStreams: new Map(), // Map<PublisherId, MediaStream>
     pendingPublishers: new Map(), // Map<PublisherId, {id, display}> - publishers, на которых подписались, но поток ещё не получен
@@ -996,17 +996,38 @@ var AudioModule = {
     },
 
     isRNNoiseLibraryAvailable() {
-        const noiseSuppressor =
-            typeof webNoiseSuppressor !== 'undefined'
-                ? webNoiseSuppressor
-                : typeof window !== 'undefined' && window.webNoiseSuppressor
-                  ? window.webNoiseSuppressor
-                  : null;
-        return !!(
-            noiseSuppressor &&
-            (typeof noiseSuppressor.createRnnoiseWorkletNode === 'function' ||
-                typeof noiseSuppressor.RnnoiseWorkletNode !== 'undefined')
-        );
+        const lib = typeof window !== 'undefined' ? window.RNNoiseLib : null;
+        return !!(lib && typeof lib.loadRnnoise === 'function' && lib.RnnoiseWorkletNode);
+    },
+
+    getRNNoiseLibBaseUrl() {
+        if (typeof window !== 'undefined' && window.RNNoiseLib && window.RNNoiseLib.baseUrl) {
+            return window.RNNoiseLib.baseUrl;
+        }
+        return 'https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.3.5/dist';
+    },
+
+    async ensureRnnoiseWorkletReady() {
+        const lib = typeof window !== 'undefined' ? window.RNNoiseLib : null;
+        if (!lib || !this.audioContext) {
+            return null;
+        }
+
+        if (!this.rnnoiseWasmBinary) {
+            const baseUrl = this.getRNNoiseLibBaseUrl();
+            this.rnnoiseWasmBinary = await lib.loadRnnoise({
+                url: `${baseUrl}/rnnoise.wasm`,
+                simdUrl: `${baseUrl}/rnnoise_simd.wasm`
+            });
+        }
+
+        if (this.rnnoiseWorkletContext !== this.audioContext) {
+            const baseUrl = this.getRNNoiseLibBaseUrl();
+            await this.audioContext.audioWorklet.addModule(`${baseUrl}/rnnoise/workletProcessor.js`);
+            this.rnnoiseWorkletContext = this.audioContext;
+        }
+
+        return this.rnnoiseWasmBinary;
     },
 
     isRNNoiseEnabled() {
@@ -1403,6 +1424,7 @@ var AudioModule = {
         // Очищаем RNNoise ресурсы
         this.teardownRnnoiseProcessor();
         this.rnnoiseEnabled = this.audioSettings.useRNNoise === true;
+        this.rnnoiseWorkletContext = null;
         
         // Закрываем Janus соединение
         if (this.janus) {
@@ -4405,16 +4427,10 @@ var AudioModule = {
     // joinRoom -> joinAsPublisher (вызывается автоматически при init)
     // handleMessage -> handlePublisherMessage
 
-    /** Создаёт только RNNoise worklet node (вставка в граф micSource -> micGain). */
+    /** Создаёт RNNoise worklet node (вставка в граф micSource -> micGain). */
     async createRnnoiseProcessorNode() {
-        const noiseSuppressor =
-            typeof webNoiseSuppressor !== 'undefined'
-                ? webNoiseSuppressor
-                : typeof window !== 'undefined' && window.webNoiseSuppressor
-                  ? window.webNoiseSuppressor
-                  : null;
-
-        if (!noiseSuppressor) {
+        const lib = typeof window !== 'undefined' ? window.RNNoiseLib : null;
+        if (!lib || !lib.RnnoiseWorkletNode) {
             console.warn('⚠️ RNNoise библиотека не загружена.');
             return null;
         }
@@ -4424,16 +4440,15 @@ var AudioModule = {
         }
 
         try {
-            let processor;
-            if (typeof noiseSuppressor.createRnnoiseWorkletNode === 'function') {
-                processor = await noiseSuppressor.createRnnoiseWorkletNode(this.audioContext);
-            } else if (typeof noiseSuppressor.RnnoiseWorkletNode !== 'undefined') {
-                processor = new noiseSuppressor.RnnoiseWorkletNode(this.audioContext);
-            } else {
-                console.error('❌ Не найден метод создания RNNoise процессора');
+            const wasmBinary = await this.ensureRnnoiseWorkletReady();
+            if (!wasmBinary) {
                 return null;
             }
-            return processor;
+
+            return new lib.RnnoiseWorkletNode(this.audioContext, {
+                maxChannels: 1,
+                wasmBinary
+            });
         } catch (error) {
             console.error('❌ Ошибка создания RNNoise:', error);
             return null;

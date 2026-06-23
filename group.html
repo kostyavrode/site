@@ -623,6 +623,7 @@
                         </span>
                         <input type="checkbox" id="useRNNoise" class="form-checkbox" style="width: 20px; height: 20px;">
                     </label>
+                    <p id="rnnoiseAvailabilityHint" style="font-size: 12px; color: var(--text-secondary); margin-top: 4px; display: none;"></p>
                 </div>
                 
                 <div class="form-group" style="margin-top: var(--spacing-md);">
@@ -697,15 +698,32 @@
         </div>
     </div>
 
-    <!-- RNNoise библиотека через CDN -->
-    <script src="https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@1.5.0/dist/web-noise-suppressor.min.js"></script>
+    <!-- RNNoise (@sapphi-red/web-noise-suppressor) -->
+    <script type="module">
+        import { loadRnnoise, RnnoiseWorkletNode } from 'https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.3.5/+esm';
+
+        window.RNNoiseLib = {
+            loadRnnoise,
+            RnnoiseWorkletNode,
+            baseUrl: 'https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.3.5/dist'
+        };
+        window.dispatchEvent(new Event('rnnoise-lib-ready'));
+        console.log('✅ RNNoiseLib загружена');
+    </script>
+    <script>
+        window.addEventListener('rnnoise-lib-ready', () => {
+            if (typeof updateRnnoiseCheckboxAvailability === 'function') {
+                updateRnnoiseCheckboxAvailability();
+            }
+        });
+    </script>
     
     <script src="js/api.js"></script>
     <script src="js/utils.js"></script>
     <script src="js/auth.js"></script>
     <script src="js/groups.js"></script>
     <script src="js/chat.js"></script>
-    <script src="js/audio.js?v=4" onerror="console.error('❌ Ошибка загрузки audio.js'); alert('Ошибка загрузки audio.js. Обновите страницу.');"></script>
+    <script src="js/audio.js?v=5" onerror="console.error('❌ Ошибка загрузки audio.js'); alert('Ошибка загрузки audio.js. Обновите страницу.');"></script>
     <script>
         // Проверка загрузки AudioModule после загрузки скрипта
         (function() {
@@ -2275,6 +2293,26 @@
             }
         }
 
+        function updateRnnoiseCheckboxAvailability() {
+            const useRNNoiseEl = document.getElementById('useRNNoise');
+            const hintEl = document.getElementById('rnnoiseAvailabilityHint');
+            const audioModule = getAudioModule();
+            const available = !!(window.RNNoiseLib || (audioModule && audioModule.isRNNoiseLibraryAvailable && audioModule.isRNNoiseLibraryAvailable()));
+
+            if (useRNNoiseEl) {
+                useRNNoiseEl.disabled = !available;
+            }
+            if (hintEl) {
+                if (available) {
+                    hintEl.style.display = 'none';
+                    hintEl.textContent = '';
+                } else {
+                    hintEl.style.display = 'block';
+                    hintEl.textContent = 'Библиотека RNNoise загружается… Обновите страницу, если галочка не активируется.';
+                }
+            }
+        }
+
         // Загрузка текущих настроек аудио в форму
         function loadAudioSettingsToForm() {
             const audioModule = getAudioModule();
@@ -2289,13 +2327,11 @@
 
             const useRNNoiseEl = document.getElementById('useRNNoise');
             const noiseSuppressionEl = document.getElementById('noiseSuppression');
-            const rnnoiseAvailable = audioModule.isRNNoiseLibraryAvailable
-                ? audioModule.isRNNoiseLibraryAvailable()
-                : false;
+
+            updateRnnoiseCheckboxAvailability();
 
             if (useRNNoiseEl) {
                 useRNNoiseEl.checked = settings.useRNNoise === true || audioModule.isRNNoiseEnabled?.() === true;
-                useRNNoiseEl.disabled = !rnnoiseAvailable;
             }
 
             if (noiseSuppressionEl) {
