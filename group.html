@@ -383,11 +383,24 @@
             </div>
             <div class="card-body">
                 <div class="form-group">
+                    <div style="padding: var(--spacing-sm);">
+                        <strong>RNNoise (AI-шумоподавление)</strong>
+                        <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px; margin-bottom: var(--spacing-sm);">
+                            Улучшенное подавление клавиатуры и фона. При включении браузерное шумоподавление отключается автоматически.
+                        </div>
+                        <button type="button" id="rnnoiseToggleBtn" class="btn btn-primary" style="width: 100%;">
+                            Включить RNNoise
+                        </button>
+                        <div id="rnnoiseStatusHint" style="font-size: 12px; color: var(--text-secondary); margin-top: var(--spacing-sm);"></div>
+                    </div>
+                </div>
+
+                <div class="form-group" style="margin-top: var(--spacing-md);">
                     <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: var(--spacing-sm);">
                         <span>
-                            <strong>Шумоподавление</strong>
+                            <strong>Шумоподавление браузера</strong>
                             <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">
-                                Убирает фоновые шумы (вентилятор, клавиатура и т.д.)
+                                Стандартная обработка WebRTC. Не используется вместе с RNNoise.
                             </div>
                         </span>
                         <input type="checkbox" id="noiseSuppression" class="form-checkbox" checked style="width: 20px; height: 20px;">
@@ -1468,13 +1481,109 @@
             const settings = audioModule.audioSettings || {
                 noiseSuppression: true,
                 echoCancellation: true,
-                autoGainControl: true
+                autoGainControl: true,
+                useRNNoise: false
             };
             
             document.getElementById('noiseSuppression').checked = settings.noiseSuppression !== false;
             document.getElementById('echoCancellation').checked = settings.echoCancellation !== false;
             document.getElementById('autoGainControl').checked = settings.autoGainControl !== false;
+            updateRnnoiseToggleButton();
+            syncRnnoiseUiState();
         }
+
+        function updateRnnoiseToggleButton() {
+            const audioModule = getAudioModule();
+            const btn = document.getElementById('rnnoiseToggleBtn');
+            const hint = document.getElementById('rnnoiseStatusHint');
+            if (!btn || !hint) return;
+
+            const enabled = audioModule?.rnnoiseEnabled === true || audioModule?.audioSettings?.useRNNoise === true;
+            const libOk = audioModule?.isRNNoiseLibraryAvailable?.() === true;
+            const inChannel = !!currentAudioChannel && !!audioModule?.localStream;
+            const activeInChain = enabled && !!audioModule?.rnnoiseProcessor;
+
+            btn.textContent = enabled ? '🔊 RNNoise: включён' : '🔇 RNNoise: выключен';
+            if (enabled) {
+                btn.style.backgroundColor = 'var(--accent-green, #2ecc71)';
+                btn.style.color = '#fff';
+            } else {
+                btn.style.backgroundColor = '';
+                btn.style.color = '';
+            }
+            btn.disabled = !libOk;
+
+            if (!libOk) {
+                hint.textContent = 'Библиотека RNNoise не загружена. Проверьте подключение к CDN.';
+                hint.style.color = 'var(--error, #e74c3c)';
+            } else if (enabled && inChannel && activeInChain) {
+                hint.textContent = 'RNNoise активен в цепи микрофона.';
+                hint.style.color = 'var(--success, #2ecc71)';
+            } else if (enabled && inChannel && !activeInChain) {
+                hint.textContent = 'RNNoise включён в настройках, но ещё не активен. Нажмите кнопку ещё раз или переподключитесь.';
+                hint.style.color = 'var(--warning, #f39c12)';
+            } else if (enabled) {
+                hint.textContent = 'RNNoise будет включён при подключении к голосовому каналу.';
+                hint.style.color = 'var(--text-secondary)';
+            } else {
+                hint.textContent = 'Нажмите, чтобы включить AI-шумоподавление RNNoise.';
+                hint.style.color = 'var(--text-secondary)';
+            }
+        }
+
+        function syncRnnoiseUiState() {
+            const audioModule = getAudioModule();
+            const noiseSuppression = document.getElementById('noiseSuppression');
+            if (!noiseSuppression) return;
+            const rnnoiseOn = audioModule?.rnnoiseEnabled === true || audioModule?.audioSettings?.useRNNoise === true;
+            noiseSuppression.disabled = rnnoiseOn;
+            if (rnnoiseOn) {
+                noiseSuppression.checked = false;
+            }
+        }
+
+        async function toggleRnnoiseFromSettings() {
+            const audioModule = getAudioModule();
+            if (!audioModule) {
+                Utils.showError('Аудио модуль не загружен');
+                return;
+            }
+            if (!audioModule.isRNNoiseLibraryAvailable()) {
+                Utils.showError('RNNoise недоступен в этом браузере');
+                return;
+            }
+
+            const btn = document.getElementById('rnnoiseToggleBtn');
+            const statusDiv = document.getElementById('audioSettingsStatus');
+            const next = !(audioModule.rnnoiseEnabled === true);
+            if (btn) btn.disabled = true;
+            statusDiv.style.display = 'block';
+            statusDiv.innerHTML = `<p style="color: var(--accent-blue);">⏳ ${next ? 'Включение' : 'Выключение'} RNNoise...</p>`;
+
+            try {
+                const ok = await audioModule.setUseRNNoise(next);
+                updateRnnoiseToggleButton();
+                syncRnnoiseUiState();
+                if (ok) {
+                    statusDiv.innerHTML = `<p style="color: var(--success);">✅ RNNoise ${next ? 'включён' : 'выключен'}.</p>`;
+                    Utils.showSuccess(next ? 'RNNoise включён' : 'RNNoise выключен');
+                } else {
+                    statusDiv.innerHTML = '<p style="color: var(--error);">❌ Не удалось включить RNNoise. Попробуйте переподключиться к каналу.</p>';
+                    Utils.showError('Не удалось включить RNNoise');
+                }
+            } catch (error) {
+                console.error('RNNoise toggle error:', error);
+                statusDiv.innerHTML = '<p style="color: var(--error);">❌ Ошибка переключения RNNoise.</p>';
+                Utils.showError('Ошибка переключения RNNoise');
+            } finally {
+                updateRnnoiseToggleButton();
+                if (btn && audioModule.isRNNoiseLibraryAvailable()) {
+                    btn.disabled = false;
+                }
+            }
+        }
+
+        document.getElementById('rnnoiseToggleBtn')?.addEventListener('click', toggleRnnoiseFromSettings);
 
         // Применение настроек аудио
         async function applyAudioSettings() {
@@ -1488,14 +1597,17 @@
             statusDiv.style.display = 'block';
             statusDiv.innerHTML = '<p style="color: var(--accent-blue);">⏳ Применение настроек...</p>';
             
+            const useRNNoise = audioModule.rnnoiseEnabled === true;
             const newSettings = {
-                noiseSuppression: document.getElementById('noiseSuppression').checked,
+                useRNNoise,
+                noiseSuppression: useRNNoise ? false : document.getElementById('noiseSuppression').checked,
                 echoCancellation: document.getElementById('echoCancellation').checked,
                 autoGainControl: document.getElementById('autoGainControl').checked
             };
             
-            // Обновляем настройки
             audioModule.updateAudioSettings(newSettings);
+            updateRnnoiseToggleButton();
+            syncRnnoiseUiState();
             
             // Если пользователь подключен к каналу, применяем изменения
             if (currentAudioChannel && audioModule.localStream) {
