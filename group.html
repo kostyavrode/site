@@ -1694,6 +1694,17 @@
                 channelParticipantsMap.set(data.channelId, new Map());
             }
             const channelParticipants = channelParticipantsMap.get(data.channelId);
+
+            // Один и тот же человек при реконнекте получает новый participantId -
+            // удаляем его старые записи (по userId), чтобы не задваивался в списке
+            if (data.userId) {
+                for (const [key, existing] of channelParticipants) {
+                    if (existing.userId === data.userId && key !== data.participantId.toString()) {
+                        channelParticipants.delete(key);
+                    }
+                }
+            }
+
             channelParticipants.set(data.participantId.toString(), participant);
             
             // Обновляем отображение для этого канала (счетчик и краткий список)

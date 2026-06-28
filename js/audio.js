@@ -1295,8 +1295,10 @@ var AudioModule = {
             await Chat.stopVideoStream(this.channelId);
         }
         
-        // Регистрируем отключение на сервере только при явном выходе
-        if (userInitiated && this.channelId && this.participantId && window.registerAudioDisconnection) {
+        // Регистрируем отключение на сервере всегда (в т.ч. при авто-реконнекте), иначе backend
+        // продолжает хранить старую "joined"-запись с прежним participantId, а после реконнекта
+        // добавляется ещё одна с новым - участник задваивается в списке.
+        if (this.channelId && this.participantId && window.registerAudioDisconnection) {
             await window.registerAudioDisconnection(this.channelId, this.participantId);
         }
         
@@ -3818,6 +3820,22 @@ var AudioModule = {
         const mutedTracks = audioTracks.filter(track => track.muted);
         if (mutedTracks.length > 0) {
             console.warn(`⚠️ Поток ${publisherIdStr} содержит muted аудио-треки, пропускаем аудио до unmute (видео уже обработано)`);
+
+            // Сам себя не лечит: только onremotetrack умел ждать unmute и повторить вызов.
+            // Остальные обработчики (onremotestream/ontrack/webrtcState) звали handleRemoteStream
+            // напрямую и тут просто молча выходили - звук терялся навсегда, если onremotetrack
+            // не успевал/не срабатывал для этого трека. Регистрируем retry централизованно.
+            mutedTracks.forEach(track => {
+                const unmuteHandler = () => {
+                    track.removeEventListener('unmute', unmuteHandler);
+                    if (track.readyState === 'live') {
+                        console.log(`🔊 [handleRemoteStream retry] Трек ${track.id} unmuted для ${publisherIdStr}, повторяем обработку...`);
+                        this.handleRemoteStream(new MediaStream([track]), publisherId, displayName);
+                    }
+                };
+                track.addEventListener('unmute', unmuteHandler);
+            });
+
             // НЕ возвращаемся, если есть видео - продолжаем обработку видео
             // Но если нет видео, возвращаемся
             if (videoTracks.length === 0) {
@@ -4361,8 +4379,10 @@ var AudioModule = {
     // Получить полный список участников, ВКЛЮЧАЯ себя
     getFullParticipantsList() {
         const participants = [];
-        const addedIds = new Set(); // Для избежания дубликатов
-        
+        const addedIds = new Set(); // Для избежания дубликатов по publisherId
+        const addedNames = new Set(); // Дедуп по имени - один человек может ненадолго
+                                       // числиться под двумя publisherId во время реконнекта
+
         // Добавляем себя первым, если мы подключены
         if (this.participantId && this.displayName) {
             participants.push({
@@ -4371,29 +4391,34 @@ var AudioModule = {
                 isMe: true
             });
             addedIds.add(String(this.participantId));
+            addedNames.add(this.displayName);
         }
-        
+
         // Добавляем участников из streamVolumes (уже подключенные потоки)
         this.streamVolumes.forEach((streamData, publisherId) => {
             const idStr = String(publisherId);
-            if (!addedIds.has(idStr)) {
+            const display = streamData.display || 'Пользователь';
+            if (!addedIds.has(idStr) && !addedNames.has(display)) {
                 participants.push({
                     id: publisherId,
-                    display: streamData.display || 'Пользователь'
+                    display
                 });
                 addedIds.add(idStr);
+                addedNames.add(display);
             }
         });
-        
+
         // Добавляем pending publishers (подписались, но поток ещё не получен)
         this.pendingPublishers.forEach((publisherData, publisherId) => {
             const idStr = String(publisherId);
-            if (!addedIds.has(idStr)) {
+            const display = publisherData.display || 'Пользователь';
+            if (!addedIds.has(idStr) && !addedNames.has(display)) {
                 participants.push({
                     id: publisherData.id,
-                    display: publisherData.display || 'Пользователь'
+                    display
                 });
                 addedIds.add(idStr);
+                addedNames.add(display);
             }
         });
         
