@@ -5,6 +5,7 @@
 const Chat = {
     connection: null,
     groupId: null,
+    _restartTimer: null,
 
     // Инициализация SignalR подключения
     async init(groupId) {
@@ -17,8 +18,20 @@ const Chat = {
                 accessTokenFactory: () => API.getToken() || '',
                 transport: signalR.HttpTransportType.WebSockets
             })
-            .withAutomaticReconnect()
+            // Переподключаемся бесконечно (по умолчанию SignalR сдаётся после 4 попыток,
+            // и страница навсегда перестаёт получать события)
+            .withAutomaticReconnect({
+                nextRetryDelayInMilliseconds: (ctx) => Math.min(1000 * Math.pow(2, ctx.previousRetryCount), 15000)
+            })
             .build();
+
+        // После переподключения у соединения новый ConnectionId, и сервер забывает,
+        // в какой SignalR-группе оно было. Без повторного JoinGroup события
+        // AudioParticipantJoined/Left и сообщения чата сюда больше не приходят.
+        this.connection.onreconnected(async () => {
+            console.log('SignalR reconnected, rejoining group', this.groupId);
+            await this._rejoinGroup();
+        });
 
         // Обработка получения сообщения
         this.connection.on('ReceiveMessage', (message) => {
@@ -80,6 +93,7 @@ const Chat = {
             if (window.onChatDisconnected) {
                 window.onChatDisconnected(error);
             }
+            this._scheduleRestart();
         });
 
         // Начало подключения
@@ -94,7 +108,39 @@ const Chat = {
             if (window.onChatError) {
                 window.onChatError(error);
             }
+            this._scheduleRestart();
         }
+    },
+
+    // Повторно войти в SignalR-группу и догнать пропущенные изменения
+    async _rejoinGroup() {
+        if (!this.connection || !this.groupId) return;
+        try {
+            await this.connection.invoke('JoinGroup', this.groupId);
+        } catch (error) {
+            console.error('Rejoin group error:', error);
+        }
+        // Пока соединения не было, события могли потеряться - берём актуальное состояние
+        if (window.resyncAudioParticipants) {
+            window.resyncAudioParticipants();
+        }
+    },
+
+    // Соединение закрылось окончательно (не leaveGroup) - поднимаем его заново
+    _scheduleRestart() {
+        const connection = this.connection;
+        if (!connection || !this.groupId || this._restartTimer) return;
+        this._restartTimer = setTimeout(async () => {
+            this._restartTimer = null;
+            if (this.connection !== connection || !this.groupId) return;
+            try {
+                await connection.start();
+                await this._rejoinGroup();
+            } catch (error) {
+                console.error('SignalR restart error:', error);
+                this._scheduleRestart();
+            }
+        }, 5000);
     },
 
     // Отправить сообщение
@@ -124,9 +170,15 @@ const Chat = {
             }
         }
         
+        if (this._restartTimer) {
+            clearTimeout(this._restartTimer);
+            this._restartTimer = null;
+        }
         if (this.connection) {
-            await this.connection.stop();
+            const connection = this.connection;
             this.connection = null;
+            this.groupId = null;
+            await connection.stop();
         }
         this.groupId = null;
     },

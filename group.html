@@ -1681,6 +1681,7 @@
 
         window.onAudioParticipantJoined = (data) => {
             console.log('🔊 Участник подключился к аудио каналу:', data);
+            bumpChannelEventVersion(data.channelId);
             
             const participant = {
                 id: data.participantId,
@@ -1713,6 +1714,7 @@
 
         window.onAudioParticipantLeft = (data) => {
             console.log('🔇 Участник отключился от аудио канала:', data);
+            bumpChannelEventVersion(data.channelId);
             
             const channelParticipants = channelParticipantsMap.get(data.channelId);
             if (channelParticipants) {
@@ -1759,30 +1761,78 @@
         // Загрузка участников канала
         let participantsUpdateInterval = null;
         
+        // Счётчик SignalR-событий по каналу: если событие пришло, пока шёл HTTP-запрос,
+        // ответ опроса уже устарел и применять его нельзя (иначе он "откатит" событие)
+        const channelEventVersions = new Map();
+
+        function bumpChannelEventVersion(channelId) {
+            channelEventVersions.set(channelId, (channelEventVersions.get(channelId) || 0) + 1);
+        }
+
+        // Синхронизирует channelParticipantsMap с реальным состоянием комнаты Janus.
+        // Опрос и SignalR-события пишут в ОДНО хранилище, иначе они затирают друг друга.
         async function loadChannelParticipants(channelId) {
+            const versionBefore = channelEventVersions.get(channelId) || 0;
+            let participants;
             try {
-                const participants = await API.get(`${API.baseUrls.audio}/api/audio/AudioChannels/${channelId}/participants`);
-                const container = document.getElementById(`channelParticipants-${channelId}`);
-                if (container) {
-                    container.innerHTML = formatChannelParticipantsList(participants);
-                }
+                participants = await API.get(`${API.baseUrls.audio}/api/audio/AudioChannels/${channelId}/participants`);
             } catch (error) {
-                // Игнорируем ошибки
+                return;
+            }
+            if (!Array.isArray(participants)) return;
+            if ((channelEventVersions.get(channelId) || 0) !== versionBefore) return;
+
+            const existing = channelParticipantsMap.get(channelId) || new Map();
+            const fresh = new Map();
+            participants.forEach(p => {
+                if (!p || p.id === undefined || p.id === null) return;
+                const key = p.id.toString();
+                const known = existing.get(key);
+                fresh.set(key, {
+                    ...known,
+                    id: p.id,
+                    display: p.displayName || known?.display || '',
+                    displayName: p.displayName || known?.displayName || '',
+                    isMuted: p.isMuted
+                });
+            });
+
+            const changed = fresh.size !== existing.size ||
+                [...fresh.keys()].some(k => !existing.has(k) ||
+                    existing.get(k).displayName !== fresh.get(k).displayName);
+
+            if (fresh.size === 0) {
+                channelParticipantsMap.delete(channelId);
+            } else {
+                channelParticipantsMap.set(channelId, fresh);
+            }
+
+            if (changed) {
+                updateChannelParticipantsDisplay(channelId);
             }
         }
 
         async function loadAllChannelParticipants() {
-            const channels = document.querySelectorAll('.audio-channel');
-            channels.forEach(ch => {
+            const channels = document.querySelectorAll('#audioChannelsList .audio-channel');
+            await Promise.all([...channels].map(ch => {
                 const channelId = ch.dataset.channelId;
-                if (channelId) loadChannelParticipants(channelId);
-            });
+                return channelId ? loadChannelParticipants(channelId) : null;
+            }));
         }
+        window.resyncAudioParticipants = loadAllChannelParticipants;
 
         function startParticipantsPolling() {
             if (participantsUpdateInterval) clearInterval(participantsUpdateInterval);
+            loadAllChannelParticipants();
             participantsUpdateInterval = setInterval(loadAllChannelParticipants, 5000);
         }
+
+        // Вернулись на вкладку (браузер мог "заморозить" таймеры) - сразу пересинхронизируемся
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible' && currentGroupId) {
+                loadAllChannelParticipants();
+            }
+        });
 
         // Загрузка аудио каналов
         async function loadAudioChannels() {
