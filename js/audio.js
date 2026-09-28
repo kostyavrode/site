@@ -48,6 +48,10 @@ var AudioModule = {
     isScreenSharing: false, // Флаг демонстрации экрана
     isCameraEnabled: false, // Флаг веб-камеры
     remoteVideoStreams: new Map(), // Map<PublisherId, {stream, videoElement, display}> - удаленные видео-потоки
+    latestPublisherInfo: new Map(), // Map<PublisherId, publisher> - последние известные потоки издателя (из событий Janus)
+    resubscribingPublishers: new Set(), // PublisherId, подписка на которых сейчас пересоздаётся
+    ensuringVideoFor: new Set(), // nickname, для которых идёт проверка прихода видео
+    attachingSubscribers: new Set(), // PublisherId, для которых идёт attach подписки
 
     /** Сырой поток микрофона (getUserMedia), не смешанный с Janus */
     micRawStream: null,
@@ -280,6 +284,9 @@ var AudioModule = {
             this.streamVolumes.clear();
             this.remoteStreams.clear();
             this.pendingPublishers.clear();
+            this.latestPublisherInfo.clear();
+            this.resubscribingPublishers.clear();
+            this.attachingSubscribers.clear();
             this.publisherPrivateIds.clear();
 
             this.remoteVideoStreams.forEach((videoData) => {
@@ -1336,6 +1343,9 @@ var AudioModule = {
         this.streamVolumes.clear();
         this.remoteStreams.clear();
         this.pendingPublishers.clear();
+        this.latestPublisherInfo.clear();
+        this.resubscribingPublishers.clear();
+        this.attachingSubscribers.clear();
         
         let publisherPc = null;
         if (this.publisherHandle && this.publisherHandle.webrtcStuff && this.publisherHandle.webrtcStuff.pc) {
@@ -1838,32 +1848,12 @@ var AudioModule = {
                 this.localVideoStream = null;
             }
             
-            // Создаем новый offer только с аудио
-            if (this.localStream) {
-                this.publisherHandle.createOffer({
-                    media: this.buildJanusAudioPublisherMedia(true, {
-                        replaceAudio: true,
-                        removeVideo: true
-                    }),
-                    stream: this.localStream,
-                    success: (jsep) => {
-                        console.log('✅ Offer создан без видео');
-                        
-                        // Отправляем configure без видео
-                        this.publisherHandle.send({
-                            message: {
-                                request: 'configure',
-                                video: false,
-                                audio: true
-                            },
-                            jsep: jsep
-                        });
-                    },
-                    error: (error) => {
-                        console.error('❌ Ошибка создания offer без видео:', error);
-                    }
-                });
-            }
+            // Повторный offer НЕ делаем: видео-трансивер остаётся в PeerConnection пустым
+            // (replaceTrack(null) выше), и следующий старт видео переиспользует тот же m-line.
+            // Так у подписчиков не появляется новый поток, на который надо переподписываться, -
+            // их видео-трек просто "размьючивается", когда кадры снова пойдут.
+            // Раньше здесь был createOffer с replaceAudio: Janus.js при замене останавливал
+            // (track.stop()) текущий трек публикации - и голос вещающего пропадал.
             
             // Уведомляем через SignalR об остановке видео-трансляции
             if (typeof Chat !== 'undefined' && Chat && this.channelId) {
@@ -2080,19 +2070,15 @@ var AudioModule = {
                         await new Promise(resolve => setTimeout(resolve, 100));
                     }
                     
-                    // Проверяем transceivers
-                    const transceivers = pc.getTransceivers();
-                    const videoTransceivers = transceivers.filter(t => t.sender && t.sender.track && t.sender.track.kind === 'video');
-                    if (videoTransceivers.length > 0) {
-                        console.log('🔍 Найдено видео transceivers после удаления:', videoTransceivers.length);
-                        // Если transceiver существует, но без трека - используем replaceVideo
-                        hasVideoTransceiver = videoTransceivers.some(t => t.sender.track !== null);
-                        console.log('🔍 Есть активный трек в transceiver:', hasVideoTransceiver);
-                    } else {
-                        hasVideoTransceiver = false;
-                        console.log('🔍 Видео transceivers не найдены после удаления');
-                    }
                 }
+
+                // Видео-трансивер мог остаться от прошлой трансляции (уже без трека).
+                // Переиспользуем его через replace: если добавлять новый (add), каждый старт
+                // создаёт новый m-line, и подписчики его не получают до перезахода.
+                // Janus.js ищет трансивер для replace по receiver.track.kind - проверяем так же.
+                hasVideoTransceiver = pc.getTransceivers().some(t =>
+                    t.receiver && t.receiver.track && t.receiver.track.kind === 'video' && t.sender);
+                console.log('🔍 Видео transceiver для переиспользования:', hasVideoTransceiver);
             }
             
             // ВАЖНО: Проверяем наличие видео transceiver для выбора действия
@@ -2234,10 +2220,12 @@ var AudioModule = {
             return;
         }
         
-        // Проверяем состояние треков - игнорируем ended треки
-        const activeTracks = videoTracks.filter(track => track.readyState !== 'ended');
+        // Берём только треки, по которым реально идут кадры. muted = видео-m-line есть, но
+        // издатель сейчас ничего не шлёт (трансляция остановлена) - такой трек покажем,
+        // когда он размьютится (onremotetrack с reason 'unmute').
+        const activeTracks = videoTracks.filter(track => track.readyState === 'live' && !track.muted);
         if (activeTracks.length === 0) {
-            console.warn(`⚠️ Все видео-треки от ${publisherIdStr} уже ended, пропускаем обработку`);
+            console.log(`ℹ️ Нет активных (live и не muted) видео-треков от ${publisherIdStr}, ждём кадров`);
             return;
         }
         
@@ -2369,7 +2357,10 @@ var AudioModule = {
         videoTracks.forEach(track => {
             track.addEventListener('ended', () => {
                 console.log(`🔴 Видео-трек ${track.id} от ${publisherIdStr} завершен`);
-                this.removeRemoteVideoStream(publisherId);
+                const current = this.remoteVideoStreams.get(publisherIdStr);
+                if (current && current.stream && current.stream.getVideoTracks().includes(track)) {
+                    this.removeRemoteVideoStream(publisherId);
+                }
             });
             
             track.addEventListener('mute', () => {
@@ -2410,11 +2401,10 @@ var AudioModule = {
                     videoData.videoElement.srcObject = null;
                 }
                 
-                // Останавливаем треки
-                if (videoData.stream) {
-                    videoData.stream.getTracks().forEach(track => track.stop());
-                }
-                
+                // Треки НЕ останавливаем: это receiver-треки PeerConnection подписки.
+                // После stop() трек уже не оживёт, и возобновлённую трансляцию того же
+                // участника было бы видно только после перезахода в комнату.
+
                 // Уведомляем UI об удалении видео
                 if (window.onVideoStreamRemoved) {
                     window.onVideoStreamRemoved(publisherId);
@@ -2480,6 +2470,14 @@ var AudioModule = {
                         // Сохраняем private_id для будущей переподписки
                         if (publisher.private_id) {
                             this.publisherPrivateIds.set(String(publisher.id), publisher.private_id);
+                        }
+                        if (this.subscriberHandles.has(String(publisher.id))) {
+                            // Уже подписаны (как минимум на звук) - возможно, издатель добавил видео
+                            this.syncPublisherVideo(publisher);
+                            return;
+                        }
+                        if (Array.isArray(publisher.streams)) {
+                            this.latestPublisherInfo.set(String(publisher.id), publisher);
                         }
                         // Добавляем в pending list для UI
                         this.pendingPublishers.set(String(publisher.id), {
@@ -2633,301 +2631,165 @@ var AudioModule = {
         });
     },
 
-    // Переподписаться на publisher (для получения видео после того, как он начал транслировать)
-    async resubscribeToPublisherByNickname(nickname) {
-        console.log(`🔄 Переподписываемся на publisher по nickname: ${nickname}`);
-        
-        // Увеличиваем задержку до 6 секунд, чтобы Janus точно успел обработать публикацию видео
-        // и обновить информацию о доступных потоках
-        console.log('⏳ Ждем 6 секунд перед переподпиской, чтобы Janus успел обработать видео...');
-        await new Promise(resolve => setTimeout(resolve, 6000));
-        
-        // ВАЖНО: Используем более простой подход - переподписываемся на ВСЕХ существующих publishers
-        // Это гарантирует, что мы получим видео, даже если список publishers парсится неправильно
-        console.log('🔄 Переподписываемся на всех существующих publishers...');
-        
-        const publisherIdsToResubscribe = Array.from(this.subscriberHandles.keys());
-        console.log(`📋 Найдено ${publisherIdsToResubscribe.length} существующих подписок для переподписки`);
-        
-        if (publisherIdsToResubscribe.length === 0) {
-            console.warn('⚠️ Нет существующих подписок для переподписки');
-            return Promise.reject(new Error('Нет существующих подписок'));
+    // Освободить воспроизведение аудио участника (элемент, узлы Web Audio).
+    // Без этого при переподписке оставался старый <audio> и мог звучать параллельно новому.
+    releaseRemoteAudio(publisherId) {
+        const publisherIdStr = String(publisherId);
+        const data = this.streamVolumes.get(publisherIdStr);
+        if (!data) return;
+        try { if (data.source) data.source.disconnect(); } catch (e) { /* ignore */ }
+        try { if (data.gainNode) data.gainNode.disconnect(); } catch (e) { /* ignore */ }
+        if (data.audioElement) {
+            try {
+                data.audioElement.pause();
+                data.audioElement.srcObject = null;
+                data.audioElement.remove();
+            } catch (e) { /* ignore */ }
         }
-        
-        // Переподписываемся на каждого publisher с повторными попытками
-        const resubscribePromises = publisherIdsToResubscribe.map(publisherIdStr => {
-            return new Promise((resolve, reject) => {
-                const publisherId = parseInt(publisherIdStr);
-                if (isNaN(publisherId)) {
-                    console.warn(`⚠️ Неверный publisherId: ${publisherIdStr}`);
-                    resolve(null);
-                    return;
-                }
-                
-                const attemptResubscribe = (attemptNumber = 1, maxAttempts = 3) => {
-                    console.log(`🔄 Попытка ${attemptNumber}/${maxAttempts} переподписки на ${publisherIdStr}...`);
-                    
-                    console.log(`🔴 Отписываемся от старой подписки на ${publisherIdStr}...`);
-                    const oldHandle = this.subscriberHandles.get(publisherIdStr);
-                    if (oldHandle) {
-                        try {
-                            // ВАЖНО: Останавливаем все треки перед отключением handle
-                            if (oldHandle.webrtcStuff && oldHandle.webrtcStuff.pc) {
-                                const pc = oldHandle.webrtcStuff.pc;
-                                const receivers = pc.getReceivers();
-                                console.log(`🛑 Останавливаем ${receivers.length} receivers перед отключением handle...`);
-                                receivers.forEach(receiver => {
-                                    if (receiver.track) {
-                                        console.log(`🛑 Останавливаем трек ${receiver.track.id} (${receiver.track.kind})`);
-                                        receiver.track.stop();
-                                    }
-                                });
-                            }
-                            
-                            oldHandle.detach();
-                        } catch (e) {
-                            console.warn(`Ошибка при отключении старой подписки:`, e);
-                        }
-                        this.subscriberHandles.delete(publisherIdStr);
-                        // Очищаем связанные данные
-                        this.streamVolumes.delete(publisherIdStr);
-                        this.remoteStreams.delete(publisherIdStr);
-                        this.removeRemoteVideoStream(publisherId);
-                    }
-                    
-                    // Запрашиваем список publishers для получения полной информации
-                    setTimeout(() => {
-                        if (!this.publisherHandle || !this.roomId) {
-                            if (attemptNumber < maxAttempts) {
-                                setTimeout(() => attemptResubscribe(attemptNumber + 1, maxAttempts), 2000);
-                            } else {
-                                reject(new Error('publisherHandle или roomId не доступен'));
-                            }
-                            return;
-                        }
-                        
-                        this.publisherHandle.send({
-                            message: { 
-                                request: 'list',
-                                room: this.roomId
-                            },
-                            success: (result) => {
-                                console.log(`📋 Получен список publishers для publisherId ${publisherId}:`, result);
-                                
-                                // Пытаемся найти publisher в списке
-                                let publisher = null;
-                                if (result && result.list) {
-                                    // Пробуем разные варианты структуры данных
-                                    publisher = result.list.find(p => {
-                                        // Вариант 1: прямой доступ к полям
-                                        if (p && (p.id === publisherId || String(p.id) === publisherIdStr)) {
-                                            return true;
-                                        }
-                                        // Вариант 2: если это массив массивов
-                                        if (Array.isArray(p) && p.length > 0) {
-                                            const pId = p[0] || p.id || p.publisher_id;
-                                            return pId === publisherId || String(pId) === publisherIdStr;
-                                        }
-                                        return false;
-                                    });
-                                    
-                                    // Если не нашли, создаем минимальный объект publisher
-                                    if (!publisher) {
-                                        console.log(`⚠️ Publisher ${publisherId} не найден в списке, создаем минимальный объект`);
-                                        // Используем сохраненный private_id, если он есть
-                                        const savedPrivateId = this.publisherPrivateIds.get(publisherIdStr);
-                                        publisher = {
-                                            id: publisherId,
-                                            display: nickname || `Publisher ${publisherId}`,
-                                            private_id: savedPrivateId || null
-                                        };
-                                    } else {
-                                        // Нормализуем структуру
-                                        if (Array.isArray(publisher)) {
-                                            publisher = {
-                                                id: publisher[0] || publisherId,
-                                                display: publisher[1] || publisher.display || nickname || `Publisher ${publisherId}`,
-                                                private_id: publisher[2] || publisher.private_id || null
-                                            };
-                                        }
-                                        // Убеждаемся, что id правильный
-                                        publisher.id = publisherId;
-                                    }
-                                } else {
-                                    // Если список не получен, создаем минимальный объект
-                                    // Используем сохраненный private_id, если он есть
-                                    const savedPrivateId = this.publisherPrivateIds.get(publisherIdStr);
-                                    publisher = {
-                                        id: publisherId,
-                                        display: nickname || `Publisher ${publisherId}`,
-                                        private_id: savedPrivateId || null
-                                    };
-                                }
-                                
-                                console.log(`✅ Переподписываемся на publisher ${publisher.id} (${publisher.display})...`);
-                                
-                                // Сохраняем callback для проверки, получили ли мы видео
-                                const originalOnMessage = this.subscriberHandles.get(publisherIdStr)?.onmessage;
-                                const checkVideoInOffer = (handle, attemptNum) => {
-                                    const originalOnMsg = handle.onmessage;
-                                    handle.onmessage = (msg, jsep) => {
-                                        // Вызываем оригинальный обработчик
-                                        if (originalOnMsg) {
-                                            originalOnMsg.call(handle, msg, jsep);
-                                        }
-                                        
-                                        // Проверяем, есть ли видео в offer
-                                        if (jsep && jsep.type === 'offer' && jsep.sdp) {
-                                            const hasVideo = jsep.sdp.includes('m=video') || jsep.sdp.includes('video');
-                                            console.log(`🔍 [Попытка ${attemptNum}] SDP offer после переподписки: hasVideo=${hasVideo}`);
-                                            
-                                            if (!hasVideo && attemptNum < maxAttempts) {
-                                                console.log(`⚠️ Видео не найдено в offer, повторяем попытку через 3 секунды...`);
-                                                setTimeout(() => {
-                                                    // Отписываемся и пробуем снова
-                                                    if (this.subscriberHandles.has(publisherIdStr)) {
-                                                        const h = this.subscriberHandles.get(publisherIdStr);
-                                                        if (h) {
-                                                            try {
-                                                                h.detach();
-                                                            } catch (e) {
-                                                                console.warn(`Ошибка при отключении:`, e);
-                                                            }
-                                                        }
-                                                        this.subscriberHandles.delete(publisherIdStr);
-                                                    }
-                                                    attemptResubscribe(attemptNum + 1, maxAttempts);
-                                                }, 3000);
-                                                return; // Не вызываем resolve, ждем следующей попытки
-                                            } else if (hasVideo) {
-                                                console.log(`✅ Видео найдено в offer после переподписки!`);
-                                            }
-                                        }
-                                    };
-                                };
-                                
-                                this.subscribeToPublisher(publisher);
-                                
-                                // Устанавливаем проверку видео в offer после небольшой задержки
-                                setTimeout(() => {
-                                    const handle = this.subscriberHandles.get(publisherIdStr);
-                                    if (handle) {
-                                        checkVideoInOffer(handle, attemptNumber);
-                                    }
-                                }, 100);
-                                
-                                // Разрешаем promise только если это последняя попытка или если мы уверены, что получили видео
-                                if (attemptNumber === maxAttempts) {
-                                    resolve(publisher);
-                                }
-                            },
-                            error: (error) => {
-                                console.error(`❌ Ошибка при запросе списка для ${publisherId}:`, error);
-                                if (attemptNumber < maxAttempts) {
-                                    setTimeout(() => attemptResubscribe(attemptNumber + 1, maxAttempts), 2000);
-                                } else {
-                                    // Все равно пытаемся подписаться с минимальными данными
-                                    // Используем сохраненный private_id, если он есть
-                                    const savedPrivateId = this.publisherPrivateIds.get(publisherIdStr);
-                                    const publisher = {
-                                        id: publisherId,
-                                        display: nickname || `Publisher ${publisherId}`,
-                                        private_id: savedPrivateId || null
-                                    };
-                                    this.subscribeToPublisher(publisher);
-                                    resolve(publisher);
-                                }
-                            }
-                        });
-                    }, 500);
-                };
-                
-                // Начинаем первую попытку
-                attemptResubscribe();
-            });
+        this.streamVolumes.delete(publisherIdStr);
+    },
+
+    // Полностью пересоздать подписку на ОДНОГО участника (крайняя мера, если видео так и не пришло)
+    resubscribePublisher(publisherId) {
+        const publisherIdStr = String(publisherId);
+        if (this.resubscribingPublishers.has(publisherIdStr)) return;
+
+        const handle = this.subscriberHandles.get(publisherIdStr);
+        const known = this.latestPublisherInfo.get(publisherIdStr);
+        const publisher = known || {
+            id: handle && handle.feedId != null ? handle.feedId : Number(publisherIdStr),
+            display: (handle && handle.display) || this.streamVolumes.get(publisherIdStr)?.display
+        };
+        console.log(`🔄 Пересоздаём подписку на ${publisherIdStr} (${publisher.display})`);
+
+        this.resubscribingPublishers.add(publisherIdStr);
+        // Держим участника в списке UI, пока подписка пересоздаётся
+        this.pendingPublishers.set(publisherIdStr, {
+            id: publisher.id,
+            display: publisher.display || `Publisher ${publisherIdStr}`
         });
-        
-        return Promise.all(resubscribePromises).then(results => {
-            const successful = results.filter(r => r !== null);
-            console.log(`✅ Переподписаны на ${successful.length} publishers`);
-            return successful;
+        this.releaseRemoteAudio(publisherIdStr);
+        this.remoteStreams.delete(publisherIdStr);
+        this.removeRemoteVideoStream(publisherIdStr);
+        if (handle) {
+            try { handle.detach(); } catch (e) { console.warn('Ошибка при отключении подписки:', e); }
+            this.subscriberHandles.delete(publisherIdStr);
+        }
+
+        setTimeout(() => {
+            this.resubscribingPublishers.delete(publisherIdStr);
+            if (this.janus && this.roomId && !this.subscriberHandles.has(publisherIdStr)) {
+                this.subscribeToPublisher(publisher);
+            }
+        }, 300);
+    },
+
+    // Обновить, какие видео-потоки издателя уже приходят в подписку (из событий attached/updated)
+    updateSubscribedStreams(handle, publisherId, streams) {
+        const mids = new Set();
+        streams.forEach(stream => {
+            if (stream && stream.type === 'video' && stream.active !== false && stream.feed_mid != null) {
+                mids.add(String(stream.feed_mid));
+            }
+        });
+        handle.videoFeedMids = mids;
+        handle.streamsKnown = true;
+        handle.subscribeInFlight = false;
+        if (handle.subscribeInFlightTimer) {
+            clearTimeout(handle.subscribeInFlightTimer);
+            handle.subscribeInFlightTimer = null;
+        }
+        // Издатель мог поменять потоки, пока шло предыдущее обновление
+        const info = this.latestPublisherInfo.get(String(publisherId));
+        if (info) {
+            this.syncPublisherVideo(info);
+        }
+    },
+
+    // Издатель включил экран/камеру посреди сессии: Janus присылает событие publishers с новым
+    // видео-потоком, но в УЖЕ существующую подписку сам его не добавляет. Раньше подписка
+    // на такого издателя просто пропускалась ("уже подписаны") - и видео было видно только
+    // после перезахода в комнату. Докидываем недостающий поток запросом subscribe - без
+    // пересоздания подписки и без перерыва в звуке.
+    syncPublisherVideo(publisher) {
+        const publisherIdStr = String(publisher.id);
+        if (Array.isArray(publisher.streams)) {
+            this.latestPublisherInfo.set(publisherIdStr, publisher);
+        }
+        const info = this.latestPublisherInfo.get(publisherIdStr);
+        const handle = this.subscriberHandles.get(publisherIdStr);
+        // Пока подписка не согласована, ждём: join на feed и так включит текущие потоки
+        if (!info || !handle || !handle.streamsKnown || handle.subscribeInFlight) return;
+
+        const missing = info.streams
+            .filter(s => s.type === 'video' && !s.disabled && s.mid != null && !handle.videoFeedMids.has(String(s.mid)))
+            .map(s => String(s.mid));
+        if (missing.length === 0) return;
+
+        if (!handle.requestedVideoMids) handle.requestedVideoMids = new Set();
+        if (missing.some(mid => handle.requestedVideoMids.has(mid))) {
+            // Уже просили этот поток, а Janus его так и не добавил - пересоздаём подписку
+            console.warn(`⚠️ Janus не добавил видео ${missing.join(',')} от ${publisherIdStr}, пересоздаём подписку`);
+            this.resubscribePublisher(publisherIdStr);
+            return;
+        }
+        missing.forEach(mid => handle.requestedVideoMids.add(mid));
+
+        console.log(`📹 Добавляем в подписку ${publisherIdStr} видео-потоки: ${missing.join(', ')}`);
+        handle.subscribeInFlight = true;
+        handle.subscribeInFlightTimer = setTimeout(() => {
+            if (handle.subscribeInFlight && this.subscriberHandles.get(publisherIdStr) === handle) {
+                console.warn(`⚠️ Нет ответа на subscribe для ${publisherIdStr}, пересоздаём подписку`);
+                this.resubscribePublisher(publisherIdStr);
+            }
+        }, 8000);
+        handle.send({
+            message: {
+                request: 'subscribe',
+                streams: missing.map(mid => ({ feed: info.id, mid }))
+            },
+            error: (error) => {
+                console.error(`❌ Ошибка subscribe для ${publisherIdStr}:`, error);
+                this.resubscribePublisher(publisherIdStr);
+            }
         });
     },
 
-    // Переподписаться на всех publishers, у которых есть видео-стримы
-    async resubscribeAllPublishersWithVideo() {
-        console.log('🔄 Переподписываемся на всех publishers с видео...');
-        
-        // Ждем немного, чтобы Janus успел обновить список
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        
-        return new Promise((resolve, reject) => {
-            if (!this.publisherHandle || !this.roomId) {
-                reject(new Error('publisherHandle или roomId не доступен'));
-                return;
+    // Страховка по SignalR-уведомлению "начал трансляцию": если через delayMs видео от этого
+    // участника так и не появилось - пересоздаём подписку ТОЛЬКО на него.
+    async ensureRemoteVideo(nickname, delayMs = 5000) {
+        const key = (nickname || '').trim().toLowerCase();
+        if (!key || this.ensuringVideoFor.has(key)) return false;
+        this.ensuringVideoFor.add(key);
+        try {
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+
+            let publisherIdStr = null;
+            for (const [id, handle] of this.subscriberHandles) {
+                if ((handle.display || '').trim().toLowerCase() === key) {
+                    publisherIdStr = id;
+                    break;
+                }
             }
-            
-            this.publisherHandle.send({
-                message: { 
-                    request: 'list',
-                    room: this.roomId
-                },
-                success: (result) => {
-                    if (result && result.list) {
-                        const publishersWithVideo = result.list.filter(p => {
-                            if (this.participantId != null && String(p.id) === String(this.participantId)) {
-                                return false;
-                            }
-                            return p.streams && p.streams.some(s => s.type === 'video');
-                        });
-                        
-                        console.log(`📹 Найдено ${publishersWithVideo.length} publishers с видео`);
-                        
-                        if (publishersWithVideo.length === 0) {
-                            console.warn('⚠️ Publishers с видео не найдены');
-                            resolve([]);
-                            return;
-                        }
-                        
-                        // Переподписываемся на каждого publisher с видео
-                        const resubscribePromises = publishersWithVideo.map(publisher => {
-                            return new Promise((res, rej) => {
-                                const publisherIdStr = String(publisher.id);
-                                const oldHandle = this.subscriberHandles.get(publisherIdStr);
-                                
-                                if (oldHandle) {
-                                    console.log(`🔴 Отписываемся от старой подписки на ${publisherIdStr} (${publisher.display})`);
-                                    try {
-                                        oldHandle.detach();
-                                    } catch (e) {
-                                        console.warn(`Ошибка при отключении старой подписки:`, e);
-                                    }
-                                    this.subscriberHandles.delete(publisherIdStr);
-                                    this.streamVolumes.delete(publisherIdStr);
-                                    this.remoteStreams.delete(publisherIdStr);
-                                    this.removeRemoteVideoStream(publisher.id);
-                                }
-                                
-                                setTimeout(() => {
-                                    this.subscribeToPublisher(publisher);
-                                    res(publisher);
-                                }, 500);
-                            });
-                        });
-                        
-                        Promise.all(resubscribePromises)
-                            .then(publishers => {
-                                console.log(`✅ Переподписаны на ${publishers.length} publishers с видео`);
-                                resolve(publishers);
-                            })
-                            .catch(reject);
-                    } else {
-                        reject(new Error('Список publishers пуст'));
-                    }
-                },
-                error: reject
-            });
-        });
+            if (!publisherIdStr) return false;
+            if (this.remoteVideoStreams.has(publisherIdStr)) return true;
+
+            // Трек мог прийти раньше, чем мы его показали
+            const handle = this.subscriberHandles.get(publisherIdStr);
+            const pc = handle && handle.webrtcStuff ? handle.webrtcStuff.pc : null;
+            const receiver = pc ? pc.getReceivers().find(r =>
+                r.track && r.track.kind === 'video' && r.track.readyState === 'live' && !r.track.muted) : null;
+            if (receiver) {
+                this.handleRemoteVideoStream(new MediaStream([receiver.track]), handle.feedId, handle.display);
+                return true;
+            }
+
+            console.warn(`⚠️ Видео от ${nickname} не пришло за ${delayMs} мс, пересоздаём подписку`);
+            this.resubscribePublisher(publisherIdStr);
+            return false;
+        } finally {
+            this.ensuringVideoFor.delete(key);
+        }
     },
 
     // Подписаться на поток другого publisher
@@ -2941,11 +2803,14 @@ var AudioModule = {
             return;
         }
         
-        // Проверяем, не подписаны ли уже (ключи в Map — строки)
-        if (this.subscriberHandles.has(publisherIdStr)) {
-            console.log(`⚠️ Уже подписаны на publisher ${publisherIdStr}`);
+        // Проверяем, не подписаны ли уже (ключи в Map — строки).
+        // attach асинхронный: пока он идёт, handle ещё нет в subscriberHandles, и второй вызов
+        // создал бы вторую подписку на того же участника - его голос звучал бы дважды.
+        if (this.subscriberHandles.has(publisherIdStr) || this.attachingSubscribers.has(publisherIdStr)) {
+            console.log(`⚠️ Уже подписаны (или подписываемся) на publisher ${publisherIdStr}`);
             return;
         }
+        this.attachingSubscribers.add(publisherIdStr);
         
         console.log(`📡 Подписываемся на publisher ${publisherIdStr} (${displayName})`);
         
@@ -2954,7 +2819,17 @@ var AudioModule = {
             plugin: 'janus.plugin.videoroom',
             opaqueId: `subscriber-${publisherIdStr}`,
             success: (handle) => {
+                this.attachingSubscribers.delete(publisherIdStr);
+                if (!this.janus || this.subscriberHandles.has(publisherIdStr)) {
+                    // Пока шёл attach, мы вышли из комнаты или подписка уже появилась
+                    try { handle.detach(); } catch (e) { /* ignore */ }
+                    return;
+                }
                 this.subscriberHandles.set(publisherIdStr, handle);
+                handle.feedId = publisherId;
+                handle.display = displayName;
+                handle.videoFeedMids = new Set();
+                handle.streamsKnown = false;
                 
                 // Сохраняем private_id для будущей переподписки
                 if (publisher.private_id) {
@@ -2985,6 +2860,17 @@ var AudioModule = {
                 
                 // Обработка сообщений
                 handle.onmessage = (msg, jsep) => {
+                    // janus.js отдаёт сюда plugindata.data, но поддерживаем и полный формат
+                    const eventData = (msg && msg.plugindata && msg.plugindata.data) || msg || {};
+                    if (Array.isArray(eventData.streams)) {
+                        this.updateSubscribedStreams(handle, publisherId, eventData.streams);
+                    }
+                    if (eventData.error_code && handle.subscribeInFlight) {
+                        console.error(`❌ Janus отклонил subscribe для ${publisherIdStr}:`, eventData.error_code, eventData.error);
+                        handle.subscribeInFlight = false;
+                        this.resubscribePublisher(publisherIdStr);
+                        return;
+                    }
                     console.log(`📨 [subscriber ${publisherIdStr}] onmessage вызван:`, {
                         hasJsep: !!jsep,
                         jsepType: jsep?.type,
@@ -3082,10 +2968,10 @@ var AudioModule = {
                     }
                     
                     // Когда поток начался (как в инструкции) - ВАЖНО: используем это как основной способ
-                    if (msg.plugindata && msg.plugindata.data && msg.plugindata.data.started === 'ok') {
+                    if (eventData.started === 'ok') {
                         console.log(`✅ [subscriber ${publisherIdStr}] Поток начался (started=ok)`, {
-                            msgData: msg.plugindata.data,
-                            streams: msg.plugindata.data.streams
+                            msgData: eventData,
+                            streams: eventData.streams
                         });
                         
                         // Получаем поток из RTCPeerConnection (как в инструкции)
@@ -3237,7 +3123,9 @@ var AudioModule = {
                 };
                 
                 // Обработка удаленного трека (новый API Janus.js)
-                handle.onremotetrack = (track, mid, on) => {
+                handle.onremotetrack = (track, mid, on, metadata) => {
+                    // События от старой (уже пересозданной) подписки не должны трогать новую
+                    if (this.subscriberHandles.get(publisherIdStr) !== handle) return;
                     console.log(`🔊 [subscriber ${publisherIdStr}] onremotetrack вызван:`, {
                         publisherId: publisherId,
                         trackKind: track.kind,
@@ -3344,9 +3232,14 @@ var AudioModule = {
                             track.addEventListener('live', liveHandler);
                         }
                     } else if (track.kind === 'video' && !on) {
-                        // Видео-трек остановлен
-                        console.log(`🔴 Видео-трек от publisher ${publisherId} остановлен`);
-                        this.removeRemoteVideoStream(publisherId);
+                        // Кадры перестали идти (издатель выключил экран/камеру) или трек завершён.
+                        // Убираем только из UI - трек не останавливаем: при повторном включении
+                        // он размьютится (on=true, reason 'unmute') и видео покажется снова.
+                        const shown = this.remoteVideoStreams.get(publisherIdStr);
+                        if (shown && shown.stream && shown.stream.getVideoTracks().includes(track)) {
+                            console.log(`🔴 Видео-трек от publisher ${publisherId} остановлен (${metadata && metadata.reason})`);
+                            this.removeRemoteVideoStream(publisherId);
+                        }
                     }
                     
                     // Проверяем статистику WebRTC соединения
@@ -3441,7 +3334,7 @@ var AudioModule = {
                                 track.addEventListener('live', liveHandler);
                             }
                         }
-                    } else if (!on) {
+                    } else if (track.kind === 'audio' && !on) {
                         console.log(`🔇 Трек от publisher ${publisherId} остановлен`);
                         handle.remoteAudioTrack = null;
                     }
@@ -3627,64 +3520,20 @@ var AudioModule = {
                                 
                                 // Обрабатываем видео-поток, если есть активные треки
                                 const allVideoTracks = videoStream.getVideoTracks();
-                                const activeVideoTracks = allVideoTracks.filter(track => track.readyState !== 'ended');
+                                // Берём трек, по которому уже идут кадры. Остальные receiver-треки
+                                // НЕ останавливаем: stop() убивает их навсегда, и возобновлённое видео
+                                // этого участника не показалось бы до перезахода в комнату.
+                                const activeVideoTracks = allVideoTracks.filter(track => track.readyState === 'live');
                                 
                                 if (activeVideoTracks.length > 0) {
-                                    // ВАЖНО: Если несколько видео-треков, выбираем самый активный (не muted, live)
-                                    let selectedVideoTrack = null;
-                                    
-                                    if (activeVideoTracks.length === 1) {
-                                        selectedVideoTrack = activeVideoTracks[0];
-                                    } else {
-                                        // Выбираем трек, который не muted и live
-                                        const unmutedLiveTracks = activeVideoTracks.filter(track => 
-                                            !track.muted && track.readyState === 'live' && track.enabled
-                                        );
-                                        
-                                        if (unmutedLiveTracks.length > 0) {
-                                            // Если несколько unmuted треков, выбираем первый (обычно это самый новый)
-                                            selectedVideoTrack = unmutedLiveTracks[0];
-                                            console.log(`🔍 [webrtcState ${publisherIdStr}] Найдено ${unmutedLiveTracks.length} unmuted треков, выбираем: ${selectedVideoTrack.id}`);
-                                            
-                                            // Останавливаем остальные треки, чтобы избежать конфликтов
-                                            unmutedLiveTracks.slice(1).forEach(track => {
-                                                console.log(`🛑 [webrtcState ${publisherIdStr}] Останавливаем дублирующий видео-трек: ${track.id}`);
-                                                track.stop();
-                                            });
-                                        } else {
-                                            // Если все muted, выбираем первый live трек
-                                            const liveTracks = activeVideoTracks.filter(track => track.readyState === 'live');
-                                            if (liveTracks.length > 0) {
-                                                selectedVideoTrack = liveTracks[0];
-                                                console.log(`🔍 [webrtcState ${publisherIdStr}] Все треки muted, выбираем первый live: ${selectedVideoTrack.id}`);
-                                                
-                                                // Останавливаем остальные
-                                                liveTracks.slice(1).forEach(track => {
-                                                    console.log(`🛑 [webrtcState ${publisherIdStr}] Останавливаем дублирующий видео-трек: ${track.id}`);
-                                                    track.stop();
-                                                });
-                                            } else {
-                                                selectedVideoTrack = activeVideoTracks[0];
-                                                console.log(`⚠️ [webrtcState ${publisherIdStr}] Выбираем первый активный трек: ${selectedVideoTrack.id}`);
-                                            }
-                                        }
-                                        
-                                        // Останавливаем все остальные треки
-                                        activeVideoTracks.forEach(track => {
-                                            if (track !== selectedVideoTrack) {
-                                                console.log(`🛑 [webrtcState ${publisherIdStr}] Останавливаем старый/дублирующий видео-трек: ${track.id}`);
-                                                track.stop();
-                                            }
-                                        });
-                                    }
+                                    const selectedVideoTrack = activeVideoTracks.find(track => !track.muted && track.enabled) || null;
                                     
                                     if (selectedVideoTrack) {
-                                        // Создаем новый поток только с выбранным треком
                                         const activeVideoStream = new MediaStream([selectedVideoTrack]);
-                                        console.log(`✅ [webrtcState ${publisherIdStr}] Создан видео-поток из receivers, выбран трек: ${selectedVideoTrack.id} (из ${activeVideoTracks.length} активных)`);
+                                        console.log(`✅ [webrtcState ${publisherIdStr}] Создан видео-поток из receivers, выбран трек: ${selectedVideoTrack.id} (из ${activeVideoTracks.length} live)`);
                                         this.handleRemoteVideoStream(activeVideoStream, publisherId, displayName);
                                     } else {
-                                        console.log(`⚠️ [webrtcState ${publisherIdStr}] Не удалось выбрать видео-трек из ${activeVideoTracks.length} активных`);
+                                        console.log(`ℹ️ [webrtcState ${publisherIdStr}] Видео-треки muted (кадров нет) - покажем по unmute`);
                                     }
                                 } else {
                                     console.log(`⚠️ [webrtcState ${publisherIdStr}] Видео-треков в receivers НЕТ или все ended`);
@@ -3776,6 +3625,7 @@ var AudioModule = {
                 };
             },
             error: (error) => {
+                this.attachingSubscribers.delete(publisherIdStr);
                 console.error(`❌ Ошибка создания subscriber handle для ${publisherId}:`, error);
             }
         });
@@ -3913,6 +3763,17 @@ var AudioModule = {
             return;
         }
         
+        // Защита от задвоения звука: сюда приходят вызовы из нескольких колбэков
+        // (onremotetrack, webrtcState, started, отложенный resume AudioContext)
+        const existingPlayback = this.streamVolumes.get(publisherIdStr);
+        if (existingPlayback && existingPlayback.audioElement && !existingPlayback.audioElement.paused) {
+            console.log(`✅ processAudioForMixing: звук ${publisherIdStr} уже воспроизводится, второй источник не создаём`);
+            return;
+        }
+        if (existingPlayback) {
+            this.releaseRemoteAudio(publisherIdStr);
+        }
+
         console.log(`🎵 processAudioForMixing ВЫЗВАН: publisherId=${publisherId} (строка: ${publisherIdStr}), displayName=${displayName}`);
         console.log(`🔍 Поток:`, stream);
         console.log(`🔍 Треков в потоке:`, stream.getAudioTracks().length);
@@ -4340,17 +4201,9 @@ var AudioModule = {
         console.log(`🔴 Удаляем publisher ${publisherId}`);
         const publisherIdStr = String(publisherId);
         
-        // Отключаем поток от микшера
-        const streamData = this.streamVolumes.get(publisherIdStr);
-        if (streamData) {
-            try {
-                if (streamData.source) streamData.source.disconnect();
-                if (streamData.gainNode) streamData.gainNode.disconnect();
-            } catch (e) {
-                console.warn(`Ошибка при отключении потока ${publisherId}:`, e);
-            }
-            this.streamVolumes.delete(publisherIdStr);
-        }
+        // Отключаем поток от микшера и убираем <audio>
+        this.releaseRemoteAudio(publisherIdStr);
+        this.latestPublisherInfo.delete(publisherIdStr);
         
         // Удаляем из pending (если ещё был там)
         this.pendingPublishers.delete(publisherIdStr);

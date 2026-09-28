@@ -2791,30 +2791,15 @@
                 // ВАЖНО: Обновляем видимость кнопки "Смотреть" СРАЗУ, не дожидаясь переподписки
                 updateWatchButtonVisibility();
                 
-                // ВАЖНО: Переподписываемся на publisher, чтобы получить видео-трек
-                // Это необходимо, потому что если мы уже подписаны на publisher (для аудио),
-                // то Janus не обновляет SDP автоматически при добавлении видео
-                // Делаем это асинхронно, чтобы не блокировать UI
-                if (AudioModule && typeof AudioModule.resubscribeToPublisherByNickname === 'function') {
-                    // Запускаем переподписку асинхронно, не блокируя UI
-                    AudioModule.resubscribeToPublisherByNickname(data.nickname).then(() => {
-                        console.log(`✅ Переподписка на ${data.nickname} завершена`);
-                        // Обновляем кнопку еще раз после переподписки
+                // Видео приходит само: audio.js докидывает новый видео-поток в существующую
+                // подписку по событию Janus. Здесь только страховка - если за несколько секунд
+                // видео от этого участника не появилось, пересоздаётся подписка только на него.
+                if (AudioModule && typeof AudioModule.ensureRemoteVideo === 'function') {
+                    AudioModule.ensureRemoteVideo(data.nickname, 5000).then(() => {
                         updateWatchButtonVisibility();
-                    }).catch((error) => {
-                        console.error(`❌ Ошибка при переподписке на ${data.nickname}:`, error);
-                        // Если не удалось найти по nickname, пробуем переподписаться на всех publishers с видео
-                        console.log('🔄 Пробуем альтернативный подход: переподписка на всех publishers с видео...');
-                        AudioModule.resubscribeAllPublishersWithVideo().then(() => {
-                            updateWatchButtonVisibility();
-                        }).catch((altError) => {
-                            console.error('❌ Альтернативный подход тоже не сработал:', altError);
-                        });
                     });
-                } else {
-                    console.warn('⚠️ Метод resubscribeToPublisherByNickname не доступен');
                 }
-                
+
                 // Показываем уведомление пользователю
                 const message = data.videoType === 'screen' 
                     ? `${data.nickname} начал демонстрацию экрана`
@@ -2871,20 +2856,17 @@
                     
                     console.log('📹 Активные видео-стримы по SignalR:', activeVideoStreamsBySignalR.size);
                     
-                    // ВАЖНО: Переподписываемся на всех publishers, которые транслируют видео
-                    // Это нужно, если мы подключились к каналу, где уже идет трансляция
-                    if (AudioModule && typeof AudioModule.resubscribeToPublisherByNickname === 'function') {
-                        for (const stream of data.streams) {
-                            try {
-                                console.log(`🔄 Переподписываемся на ${stream.nickname} для получения видео (при подключении к каналу)...`);
-                                await AudioModule.resubscribeToPublisherByNickname(stream.nickname);
-                                console.log(`✅ Переподписка на ${stream.nickname} завершена`);
-                            } catch (error) {
-                                console.error(`❌ Ошибка при переподписке на ${stream.nickname}:`, error);
-                            }
-                        }
+                    // При входе в канал подписка на feed уже включает текущее видео издателя.
+                    // Страховка: проверяем, что оно действительно пришло (подписки ещё создаются,
+                    // поэтому ждём дольше, чем для события "начал трансляцию").
+                    if (AudioModule && typeof AudioModule.ensureRemoteVideo === 'function') {
+                        data.streams.forEach(stream => {
+                            AudioModule.ensureRemoteVideo(stream.nickname, 8000).then(() => {
+                                updateWatchButtonVisibility();
+                            });
+                        });
                     }
-                    
+
                     // Обновляем видимость кнопки "Смотреть"
                     updateWatchButtonVisibility();
                 } else {
