@@ -173,6 +173,23 @@ code {
     color: var(--accent-blue);
 }
 
+/* Ссылка на десктоп-приложение (Windows) */
+.navbar-download a {
+    border: 1px solid var(--border-color);
+    white-space: nowrap;
+}
+
+.navbar-download a:hover {
+    border-color: var(--accent-blue);
+}
+
+/* На телефоне приложение для Windows не нужно, а место в шапке - нужно */
+@media (max-width: 768px) {
+    .navbar-download {
+        display: none;
+    }
+}
+
 /* ============================================
    Кнопки
    ============================================ */
