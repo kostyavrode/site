@@ -21,6 +21,7 @@ const Auth = {
             });
             API.saveTokenFromResponse(response);
             Utils.showSuccess('Вход выполнен успешно!');
+            API._sessionSeen = true;
             API._lastRefreshTime = Date.now();
             API.startAutoRefresh();
             return response;
@@ -36,6 +37,7 @@ const Auth = {
             await API.post(`${API.baseUrls.auth}/api/Auth/logout`, {});
             // Останавливаем автоматическое обновление токена
             API.stopAutoRefresh();
+            API._sessionSeen = false;
             Utils.showSuccess('Выход выполнен');
         } catch (error) {
             console.error('Logout error:', error);

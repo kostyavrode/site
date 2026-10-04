@@ -15,7 +15,13 @@ const Chat = {
         
         this.connection = new signalR.HubConnectionBuilder()
             .withUrl(signalRUrl, {
-                accessTokenFactory: () => API.getToken() || '',
+                // Вызывается при каждом (пере)подключении. За время жизни вкладки access-токен
+                // успевает истечь, поэтому сначала обновляем его - иначе переподключение
+                // после обрыва сети упиралось бы в 401.
+                accessTokenFactory: async () => {
+                    await API.ensureFreshToken();
+                    return API.getToken() || '';
+                },
                 transport: signalR.HttpTransportType.WebSockets
             })
             // Переподключаемся бесконечно (по умолчанию SignalR сдаётся после 4 попыток,
@@ -150,9 +156,13 @@ const Chat = {
         }
 
         try {
+            // Хаб пересылает сообщение в ChatService от имени пользователя. Токен, с которым
+            // соединение было открыто, через 30 минут истекает - поэтому передаём актуальный.
+            await API.ensureFreshToken();
             await this.connection.invoke('SendMessage', {
                 groupId: this.groupId,
-                content: content
+                content: content,
+                accessToken: API.getToken() || undefined
             });
         } catch (error) {
             console.error('Send message error:', error);

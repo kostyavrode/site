@@ -606,10 +606,22 @@
                         <span>
                             <strong>Шумоподавление (браузер)</strong>
                             <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">
-                                Стандартное шумоподавление WebRTC. Отключается при включении RNNoise.
+                                Стандартное шумоподавление WebRTC. Отключается при включении RNNoise или DeepFilterNet.
                             </div>
                         </span>
                         <input type="checkbox" id="noiseSuppression" class="form-checkbox" checked style="width: 20px; height: 20px;">
+                    </label>
+                </div>
+
+                <div class="form-group" style="margin-top: var(--spacing-md);">
+                    <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: var(--spacing-sm);">
+                        <span>
+                            <strong>DeepFilterNet 3 (максимальное шумоподавление)</strong>
+                            <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">
+                                Самая сильная нейросеть: убирает клавиатуру, клики, вентиляторы, улицу. Нагружает процессор; на слабых устройствах автоматически заменяется на RNNoise.
+                            </div>
+                        </span>
+                        <input type="checkbox" id="useDeepFilter" class="form-checkbox" style="width: 20px; height: 20px;">
                     </label>
                 </div>
 
@@ -698,32 +710,12 @@
         </div>
     </div>
 
-    <!-- RNNoise (@sapphi-red/web-noise-suppressor) -->
-    <script type="module">
-        import { loadRnnoise, RnnoiseWorkletNode } from 'https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.3.5/+esm';
-
-        window.RNNoiseLib = {
-            loadRnnoise,
-            RnnoiseWorkletNode,
-            baseUrl: 'https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.3.5/dist'
-        };
-        window.dispatchEvent(new Event('rnnoise-lib-ready'));
-        console.log('✅ RNNoiseLib загружена');
-    </script>
-    <script>
-        window.addEventListener('rnnoise-lib-ready', () => {
-            if (typeof updateRnnoiseCheckboxAvailability === 'function') {
-                updateRnnoiseCheckboxAvailability();
-            }
-        });
-    </script>
-    
     <script src="js/api.js"></script>
     <script src="js/utils.js"></script>
     <script src="js/auth.js"></script>
     <script src="js/groups.js"></script>
     <script src="js/chat.js"></script>
-    <script src="js/audio.js?v=6" onerror="console.error('❌ Ошибка загрузки audio.js'); alert('Ошибка загрузки audio.js. Обновите страницу.');"></script>
+    <script src="js/audio.js?v=7" onerror="console.error('❌ Ошибка загрузки audio.js'); alert('Ошибка загрузки audio.js. Обновите страницу.');"></script>
     <script>
         // Проверка загрузки AudioModule после загрузки скрипта
         (function() {
@@ -801,7 +793,7 @@
                 const authNav = document.getElementById('auth-nav');
                 authNav.innerHTML = `
                     <span style="color: var(--text-secondary); margin-right: var(--spacing-md);">
-                        ${user.nickName || user.email}
+                        ${Utils.escapeHtml(user.nickName || user.email || '')}
                     </span>
                     <a href="#" id="logout-link">Выход</a>
                 `;
@@ -1402,7 +1394,7 @@
             
             container.innerHTML = sortedParticipants.map(participant => {
                 const name = participant.display || participant.displayName || participant.name || 'Пользователь';
-                const participantId = participant.id || participant.userId || name;
+                const participantId = String(participant.id || participant.userId || name).replace(/[^\wЀ-ӿ-]/g, '_');
                 
                 // Проверяем, является ли это нами - несколько способов определения:
                 // 1. По флагу isMe (установленному в getFullParticipantsList)
@@ -2358,7 +2350,7 @@
             const useRNNoiseEl = document.getElementById('useRNNoise');
             const hintEl = document.getElementById('rnnoiseAvailabilityHint');
             const audioModule = getAudioModule();
-            const available = !!(window.RNNoiseLib || (audioModule && audioModule.isRNNoiseLibraryAvailable && audioModule.isRNNoiseLibraryAvailable()));
+            const available = !!(audioModule && audioModule.isRNNoiseLibraryAvailable && audioModule.isRNNoiseLibraryAvailable());
 
             if (useRNNoiseEl) {
                 useRNNoiseEl.disabled = !available;
@@ -2369,7 +2361,7 @@
                     hintEl.textContent = '';
                 } else {
                     hintEl.style.display = 'block';
-                    hintEl.textContent = 'Библиотека RNNoise загружается… Обновите страницу, если галочка не активируется.';
+                    hintEl.textContent = 'RNNoise недоступен: браузер не поддерживает AudioWorklet.';
                 }
             }
         }
@@ -2400,8 +2392,13 @@
                     : true;
             }
 
+            const useDeepFilterEl = document.getElementById('useDeepFilter');
+            if (useDeepFilterEl) {
+                useDeepFilterEl.checked = audioModule.isDeepFilterEnabled?.() === true;
+            }
+
             if (noiseSuppressionEl) {
-                noiseSuppressionEl.checked = settings.noiseSuppression !== false && !useRNNoiseEl?.checked;
+                noiseSuppressionEl.checked = settings.noiseSuppression !== false && !useRNNoiseEl?.checked && !useDeepFilterEl?.checked;
             }
 
             document.getElementById('echoCancellation').checked = settings.echoCancellation !== false;
@@ -2413,7 +2410,7 @@
             const noiseSuppressionEl = document.getElementById('noiseSuppression');
             if (!useRNNoiseEl || !noiseSuppressionEl) return;
 
-            if (useRNNoiseEl.checked) {
+            if (useRNNoiseEl.checked || document.getElementById('useDeepFilter')?.checked) {
                 noiseSuppressionEl.checked = false;
                 noiseSuppressionEl.disabled = true;
             } else {
@@ -2434,11 +2431,13 @@
             statusDiv.innerHTML = '<p style="color: var(--accent-blue);">⏳ Применение настроек...</p>';
             
             const useRNNoise = document.getElementById('useRNNoise').checked;
+            const useDeepFilter = document.getElementById('useDeepFilter').checked;
             const newSettings = {
-                noiseSuppression: useRNNoise ? false : document.getElementById('noiseSuppression').checked,
+                noiseSuppression: (useRNNoise || useDeepFilter) ? false : document.getElementById('noiseSuppression').checked,
                 echoCancellation: document.getElementById('echoCancellation').checked,
                 autoGainControl: document.getElementById('autoGainControl').checked,
-                useRNNoise
+                useRNNoise,
+                useDeepFilter
             };
             
             audioModule.updateAudioSettings(newSettings);
@@ -2483,6 +2482,7 @@
         }
 
         document.getElementById('useRNNoise')?.addEventListener('change', syncAudioSettingsFormState);
+        document.getElementById('useDeepFilter')?.addEventListener('change', syncAudioSettingsFormState);
         document.getElementById('noiseSuppression')?.addEventListener('change', () => {
             const useRNNoiseEl = document.getElementById('useRNNoise');
             if (useRNNoiseEl?.checked && document.getElementById('noiseSuppression').checked) {
@@ -2665,7 +2665,7 @@
                     loadingDiv.style.cssText = 'display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 20px; color: var(--text-secondary);';
                     loadingDiv.innerHTML = `
                         <div style="font-size: 24px; margin-bottom: 10px;">⏳</div>
-                        <div style="font-weight: bold; margin-bottom: 5px;">${videoData.display}</div>
+                        <div style="font-weight: bold; margin-bottom: 5px;">${Utils.escapeHtml(videoData.display || '')}</div>
                         <div style="font-size: 14px;">Загрузка ${videoData.videoType === 'screen' ? 'демонстрации экрана' : 'веб-камеры'}...</div>
                     `;
                     videoWrapper.appendChild(loadingDiv);

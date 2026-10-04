@@ -25,9 +25,23 @@ var AudioModule = {
         echoCancellation: true,
         autoGainControl: true,
         useRNNoise: false,
+        useDeepFilter: null, // null = по умолчанию (вкл. на десктопе, выкл. на мобильных)
+        deepFilterAttenDb: 100, // предел подавления DeepFilterNet в дБ (100 = максимум)
         monitorLocalAudio: false // Воспроизведение локального аудио для мониторинга (side-tone) - по умолчанию выключено
     },
-    
+
+    // DeepFilterNet 3 (site/vendor/deepfilternet3)
+    deepFilterNode: null,
+    deepFilterAssets: null, // { wasmModule, modelBytes }
+    deepFilterAssetsPromise: null,
+    deepFilterWorkletContext: null,
+    deepFilterFailed: false, // не загрузился или не тянет CPU — до конца сессии работаем на RNNoise
+    deepFilterOverloadCount: 0,
+    micHighpassNode: null,
+    voiceAgcNode: null,
+    voiceAgcWorkletContext: null,
+    _micChainPromise: null,
+
     // RNNoise настройки
     rnnoiseEnabled: false,
     rnnoiseModule: null,
@@ -36,7 +50,6 @@ var AudioModule = {
     rnnoiseProcessor: null,
     rnnoiseSourceNode: null,
     rnnoiseDestinationNode: null,
-    rnnoiseWasmBinary: null,
     rnnoiseWorkletContext: null,
     streamVolumes: new Map(), // Map<PublisherId, {gainNode, source, volume, display}>
     remoteStreams: new Map(), // Map<PublisherId, MediaStream>
@@ -75,8 +88,13 @@ var AudioModule = {
     reconnectTimerId: null,
     reconnectAttemptInFlight: false,
     reconnectIntervalMs: 500,
-    reconnectMaxDurationMs: 600000,
     reconnectStartedAt: null,
+    reconnectAttempts: 0,
+    nextReconnectAt: 0,
+    _healthTimerId: null,
+    _publisherDisconnectedSince: null,
+    _republishVideoAfterReconnect: false,
+    _reconnectGeneration: 0,
     _isSoftTeardown: false,
     _reconnectListenersBound: false,
     _webrtcDownTimer: null,
@@ -97,6 +115,69 @@ var AudioModule = {
         this._reconnectListenersBound = true;
         this._onNetworkOffline = () => this.handleConnectionLost('offline');
         window.addEventListener('offline', this._onNetworkOffline);
+
+        // Сеть вернулась - не ждём паузу между попытками, пробуем сразу
+        window.addEventListener('online', () => {
+            if (this.isReconnecting) {
+                this.nextReconnectAt = 0;
+                this.attemptReconnect();
+            } else {
+                this.checkConnectionHealth();
+            }
+        });
+
+        // Вкладка/ноутбук проснулись: соединение могло умереть, пока таймеры были заморожены
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+                this.checkConnectionHealth();
+            }
+        });
+
+        // Сторож: обрыв не всегда приходит событием (смена Wi-Fi, сон, "подвисший" сокет)
+        this._healthTimerId = setInterval(() => this.checkConnectionHealth(), 3000);
+    },
+
+    // Проверить, живо ли соединение, и запустить переподключение, если нет
+    checkConnectionHealth() {
+        if (!this.wasConnected || this.intentionalDisconnect || this.isReconnecting || !this.channelId || !this.roomId) {
+            return;
+        }
+
+        if (!this.janus || !this.janus.isConnected()) {
+            this.handleConnectionLost('janus-not-connected');
+            return;
+        }
+
+        const pc = this.publisherHandle && this.publisherHandle.webrtcStuff ? this.publisherHandle.webrtcStuff.pc : null;
+        if (pc) {
+            const state = pc.connectionState || pc.iceConnectionState;
+            if (state === 'failed' || state === 'closed') {
+                this.handleConnectionLost(`publisher-${state}`);
+                return;
+            }
+            if (state === 'disconnected') {
+                // Кратковременный disconnected браузер часто чинит сам - даём ему 6 секунд
+                if (!this._publisherDisconnectedSince) {
+                    this._publisherDisconnectedSince = Date.now();
+                } else if (Date.now() - this._publisherDisconnectedSince > 6000) {
+                    this._publisherDisconnectedSince = null;
+                    this.handleConnectionLost('publisher-disconnected');
+                    return;
+                }
+            } else {
+                this._publisherDisconnectedSince = null;
+            }
+        }
+
+        // Своя связь жива, но могла отвалиться подписка на конкретного участника:
+        // тогда его просто перестаёт быть слышно. Пересоздаём только её.
+        this.subscriberHandles.forEach((handle, publisherIdStr) => {
+            const subPc = handle.webrtcStuff ? handle.webrtcStuff.pc : null;
+            if (subPc && (subPc.connectionState || subPc.iceConnectionState) === 'failed') {
+                console.warn(`⚠️ Подписка на ${publisherIdStr} потеряла соединение, пересоздаём`);
+                this.resubscribePublisher(publisherIdStr);
+            }
+        });
     },
 
     handleConnectionLost(reason) {
@@ -119,6 +200,9 @@ var AudioModule = {
         }
         this.isReconnecting = true;
         this.reconnectStartedAt = Date.now();
+        this.reconnectAttempts = 0;
+        this.nextReconnectAt = 0;
+        this._publisherDisconnectedSince = null;
         console.log('🔄 Reconnect loop started (every', this.reconnectIntervalMs, 'ms)');
         if (window.onAudioReconnecting) {
             window.onAudioReconnecting();
@@ -177,27 +261,59 @@ var AudioModule = {
             this.stopReconnectLoop();
             return;
         }
-        if (this.reconnectStartedAt && Date.now() - this.reconnectStartedAt > this.reconnectMaxDurationMs) {
-            console.error('❌ Reconnect timeout exceeded');
-            this.stopReconnectLoop();
-            if (window.onAudioReconnectFailed) {
-                window.onAudioReconnectFailed();
-            }
+        // Пока браузер знает, что сети нет, пытаться бессмысленно - ждём события online
+        if (navigator.onLine === false) {
             return;
         }
+        if (Date.now() < this.nextReconnectAt) {
+            return;
+        }
+        // Лимита по времени нет намеренно: раньше через 10 минут (а после сна ноутбука -
+        // мгновенно, т.к. считалось по часам) попытки прекращались, и человек оставался
+        // "в канале" без связи. Пока пользователь сам не нажал "Отключиться" - возвращаем его.
 
         this.reconnectAttemptInFlight = true;
+        // Если шла демонстрация экрана/камера - после восстановления опубликуем её заново
+        const videoTrack = this.localVideoStream ? this.localVideoStream.getVideoTracks()[0] : null;
+        if (videoTrack && videoTrack.readyState === 'live' && (this.isScreenSharing || this.isCameraEnabled)) {
+            this._republishVideoAfterReconnect = true;
+        }
         try {
-            await this.softTeardownJanusHandles();
-            await this.createJanusConnection(true);
-            await this.joinAsPublisher({ reuseMicrophone: true });
-            await this.waitForParticipantJoined(8000);
+            // Номер попытки: если она зависла и уже началась следующая, запоздалое продолжение
+            // старой не должно подключить нас к комнате второй раз
+            const generation = ++this._reconnectGeneration;
+            const ensureCurrent = () => {
+                if (generation !== this._reconnectGeneration || this.intentionalDisconnect) {
+                    throw new Error('Reconnect attempt superseded');
+                }
+            };
+            await this._withTimeout((async () => {
+                await this.softTeardownJanusHandles();
+                ensureCurrent();
+                await this.createJanusConnection(true);
+                ensureCurrent();
+                await this.joinAsPublisher({ reuseMicrophone: true });
+                ensureCurrent();
+                await this.waitForParticipantJoined(8000);
+            })(), 15000, 'Reconnect attempt timeout');
             console.log('🔄 Reconnect attempt completed successfully');
         } catch (error) {
-            console.warn('🔄 Reconnect attempt failed:', error.message || error);
+            this.reconnectAttempts++;
+            // Первые попытки частые (обрыв обычно короткий), дальше реже, чтобы не долбить сервер
+            const delay = this.reconnectAttempts < 10 ? 500 : (this.reconnectAttempts < 40 ? 2000 : 5000);
+            this.nextReconnectAt = Date.now() + delay;
+            console.warn(`🔄 Reconnect attempt ${this.reconnectAttempts} failed:`, error.message || error);
         } finally {
             this.reconnectAttemptInFlight = false;
         }
+    },
+
+    _withTimeout(promise, timeoutMs, message) {
+        let timer = null;
+        const timeout = new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+        });
+        return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
     },
 
     createJanusConnection(isReconnectAttempt) {
@@ -205,7 +321,10 @@ var AudioModule = {
             const wsUrl = this.getJanusServerUrl();
             console.log('🔌 Janus URL:', wsUrl);
 
-            this.janus = new Janus({
+            // Колбэки старого (уже заменённого) экземпляра не должны влиять на новое соединение:
+            // запоздалый 'destroyed' от прошлой сессии иначе рвал только что восстановленную связь
+            let assigned = false;
+            const instance = new Janus({
                 server: wsUrl,
                 success: () => {
                     console.log('✅ Janus connected successfully');
@@ -217,6 +336,13 @@ var AudioModule = {
                     console.error('Janus connection error:', errorMsg);
                     if (isReconnectAttempt) {
                         reject(new Error(errorMsg));
+                        // Ошибка могла прийти и после успешного переподключения (сокет упал позже)
+                        if (this.janus === instance && !this.isReconnecting) {
+                            this.handleConnectionLost('janus-error');
+                        }
+                        return;
+                    }
+                    if (assigned && this.janus !== instance) {
                         return;
                     }
                     if (this.wasConnected && !this.intentionalDisconnect && this.channelId) {
@@ -230,7 +356,7 @@ var AudioModule = {
                 },
                 destroyed: () => {
                     console.log('Janus connection destroyed');
-                    if (this._isSoftTeardown) {
+                    if (this._isSoftTeardown || (assigned && this.janus !== instance)) {
                         return;
                     }
                     if (this.wasConnected && !this.intentionalDisconnect && this.channelId) {
@@ -247,6 +373,8 @@ var AudioModule = {
                     { urls: 'stun:stun2.l.google.com:19302' }
                 ]
             });
+            this.janus = instance;
+            assigned = true;
         });
     },
 
@@ -317,17 +445,25 @@ var AudioModule = {
             this.participantId = null;
 
             if (this.janus) {
+                const oldJanus = this.janus;
+                // Сразу отвязываем: поздние колбэки старого экземпляра будут проигнорированы
+                this.janus = null;
                 await new Promise((resolve) => {
+                    // На "подвисшем" сокете (сеть пропала, а TCP ещё не понял) janus.js ждёт ответ
+                    // на destroy бесконечно. Без таймаута переподключение застревало на первой же
+                    // попытке и не продолжалось, даже когда сеть возвращалась.
+                    const timer = setTimeout(resolve, 1500);
+                    const done = () => { clearTimeout(timer); resolve(); };
                     try {
-                        this.janus.destroy({
-                            success: () => resolve(),
-                            error: () => resolve()
+                        oldJanus.destroy({
+                            success: done,
+                            error: done,
+                            notifyDestroyed: false
                         });
                     } catch (e) {
-                        resolve();
+                        done();
                     }
                 });
-                this.janus = null;
             }
         } finally {
             this._isSoftTeardown = false;
@@ -368,6 +504,18 @@ var AudioModule = {
 
             if (window.onAudioConnected) {
                 window.onAudioConnected();
+            }
+
+            if (this._republishVideoAfterReconnect) {
+                this._republishVideoAfterReconnect = false;
+                const videoTrack = this.localVideoStream ? this.localVideoStream.getVideoTracks()[0] : null;
+                if (videoTrack && videoTrack.readyState === 'live') {
+                    console.log('📤 Восстанавливаем видео-трансляцию после переподключения');
+                    this.publishVideo(this.localVideoStream);
+                } else if (this.isScreenSharing || this.isCameraEnabled) {
+                    // Захват за время обрыва закончился - приводим состояние и кнопки в порядок
+                    this.stopVideo();
+                }
             }
         } else {
             console.log('❌ WebRTC соединение разорвано');
@@ -488,6 +636,16 @@ var AudioModule = {
             if (this.rnnoiseProcessor) {
                 this.teardownRnnoiseProcessor();
             }
+            this.teardownDeepFilterNode();
+            this.teardownVoiceAgcNode();
+            if (this.micHighpassNode) {
+                try {
+                    this.micHighpassNode.disconnect();
+                } catch (e) {
+                    /* ignore */
+                }
+                this.micHighpassNode = null;
+            }
             if (this.micSourceNode) {
                 try {
                     this.micSourceNode.disconnect();
@@ -562,7 +720,7 @@ var AudioModule = {
     },
 
     /**
-     * Граф: micRawStream -> micGain -> publishSumGain -> MediaStreamDestination (эфир).
+     * Граф: micRawStream -> highpass -> [DeepFilterNet | RNNoise] -> [voice AGC] -> micGain -> publishSumGain -> MediaStreamDestination (эфир).
      * Эффекты подключаются к publishSumGain на время воспроизведения.
      */
     async buildPublishAudioGraph(micStream) {
@@ -744,7 +902,11 @@ var AudioModule = {
         console.log('🔌 Присоединяемся к Videoroom как Publisher...');
 
         this.applyDefaultRNNoiseIfUnset();
-        
+
+        if (this.isDeepFilterEnabled() && this.isDeepFilterSupported() && !this.deepFilterFailed) {
+            this.loadDeepFilterAssets().catch((e) => console.warn('DeepFilterNet preload:', e));
+        }
+
         const reuseMicrophone = options.reuseMicrophone === true;
         const constraints = this.getAudioConstraints();
         const hasLiveMic = reuseMicrophone && this.micRawStream &&
@@ -994,50 +1156,85 @@ var AudioModule = {
 
     // Получить настройки аудио constraints
     getAudioConstraints() {
-        const useRNNoise = this.isRNNoiseEnabled();
+        const useNeuralDenoiser = this.isRNNoiseEnabled() || this.isDeepFilterEnabled();
         return {
             audio: {
-                noiseSuppression: useRNNoise ? false : this.audioSettings.noiseSuppression,
+                noiseSuppression: useNeuralDenoiser ? false : this.audioSettings.noiseSuppression,
                 echoCancellation: this.audioSettings.echoCancellation,
-                autoGainControl: this.audioSettings.autoGainControl
+                // С нейросетевым шумоподавителем усиливаем сами, уже после него (voice-agc-worklet)
+                autoGainControl: useNeuralDenoiser ? false : this.audioSettings.autoGainControl
             },
             video: false
         };
     },
 
+    /** RNNoise 0.2 лежит локально (site/vendor/rnnoise), нужен только AudioWorklet + WASM. */
     isRNNoiseLibraryAvailable() {
-        const lib = typeof window !== 'undefined' ? window.RNNoiseLib : null;
-        return !!(lib && typeof lib.loadRnnoise === 'function' && lib.RnnoiseWorkletNode);
-    },
-
-    getRNNoiseLibBaseUrl() {
-        if (typeof window !== 'undefined' && window.RNNoiseLib && window.RNNoiseLib.baseUrl) {
-            return window.RNNoiseLib.baseUrl;
-        }
-        return 'https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.3.5/dist';
+        return typeof WebAssembly !== 'undefined' && typeof AudioWorkletNode !== 'undefined';
     },
 
     async ensureRnnoiseWorkletReady() {
-        const lib = typeof window !== 'undefined' ? window.RNNoiseLib : null;
-        if (!lib || !this.audioContext) {
-            return null;
-        }
-
-        if (!this.rnnoiseWasmBinary) {
-            const baseUrl = this.getRNNoiseLibBaseUrl();
-            this.rnnoiseWasmBinary = await lib.loadRnnoise({
-                url: `${baseUrl}/rnnoise.wasm`,
-                simdUrl: `${baseUrl}/rnnoise_simd.wasm`
-            });
+        if (!this.audioContext) {
+            return false;
         }
 
         if (this.rnnoiseWorkletContext !== this.audioContext) {
-            const baseUrl = this.getRNNoiseLibBaseUrl();
-            await this.audioContext.audioWorklet.addModule(`${baseUrl}/rnnoise/workletProcessor.js`);
+            const url = new URL('vendor/rnnoise/rnnoise-worklet.js', window.location.href).toString();
+            await this.audioContext.audioWorklet.addModule(url);
             this.rnnoiseWorkletContext = this.audioContext;
         }
 
-        return this.rnnoiseWasmBinary;
+        return true;
+    },
+
+    /** Ждёт от worklet-процессора сообщение { type: 'ready' } (или ошибку инициализации). */
+    waitWorkletReady(node, label) {
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error(`${label} init timeout`)), 15000);
+            node.port.onmessage = (event) => {
+                const data = event.data || {};
+                if (data.type === 'ready') {
+                    clearTimeout(timer);
+                    resolve();
+                } else if (data.type === 'error') {
+                    clearTimeout(timer);
+                    reject(new Error(data.message));
+                }
+            };
+        });
+    },
+
+    /** Своё автоусиление после шумоподавителя — вместо браузерного, которое стоит до него и вытягивает шум. */
+    async createVoiceAgcNode() {
+        const ctx = this.audioContext;
+        try {
+            if (this.voiceAgcWorkletContext !== ctx) {
+                const url = new URL('js/worklets/voice-agc-worklet.js', window.location.href).toString();
+                await ctx.audioWorklet.addModule(url);
+                this.voiceAgcWorkletContext = ctx;
+            }
+            return new AudioWorkletNode(ctx, 'voice-agc-processor', {
+                numberOfInputs: 1,
+                numberOfOutputs: 1,
+                channelCount: 1,
+                channelCountMode: 'explicit',
+                outputChannelCount: [1]
+            });
+        } catch (error) {
+            console.warn('⚠️ Автоусиление после шумоподавителя недоступно:', error);
+            return null;
+        }
+    },
+
+    teardownVoiceAgcNode() {
+        if (this.voiceAgcNode) {
+            try {
+                this.voiceAgcNode.disconnect();
+            } catch (e) {
+                /* ignore */
+            }
+            this.voiceAgcNode = null;
+        }
     },
 
     isRNNoiseEnabled() {
@@ -1067,7 +1264,129 @@ var AudioModule = {
         this.rnnoiseDestinationNode = null;
     },
 
-    async connectMicToPublishChain() {
+    isLowPowerDevice() {
+        return typeof navigator !== 'undefined' && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
+    },
+
+    isDeepFilterEnabled() {
+        const value = this.audioSettings.useDeepFilter;
+        if (value === true || value === false) {
+            return value;
+        }
+        return !this.isLowPowerDevice();
+    },
+
+    isDeepFilterSupported() {
+        return typeof WebAssembly !== 'undefined' && typeof AudioWorkletNode !== 'undefined';
+    },
+
+    getDeepFilterBaseUrl() {
+        return new URL('vendor/deepfilternet3/', window.location.href).toString();
+    },
+
+    /** Загружает и компилирует WASM + модель DeepFilterNet 3 (один раз, ~24 МБ, дальше из кеша браузера). */
+    loadDeepFilterAssets() {
+        if (this.deepFilterAssets) {
+            return Promise.resolve(this.deepFilterAssets);
+        }
+        if (!this.deepFilterAssetsPromise) {
+            const baseUrl = this.getDeepFilterBaseUrl();
+            const fetchBytes = async (name) => {
+                const res = await fetch(baseUrl + name);
+                if (!res.ok) {
+                    throw new Error(`fetch failed ${name} ${res.status}`);
+                }
+                return res.arrayBuffer();
+            };
+            this.deepFilterAssetsPromise = Promise.all([
+                fetchBytes('df_bg.wasm').then((bytes) => WebAssembly.compile(bytes)),
+                fetchBytes('DeepFilterNet3_onnx.tar.gz')
+            ]).then(([wasmModule, modelBytes]) => {
+                this.deepFilterAssets = { wasmModule, modelBytes };
+                console.log('✅ DeepFilterNet 3 загружен');
+                return this.deepFilterAssets;
+            }).catch((error) => {
+                this.deepFilterAssetsPromise = null;
+                throw error;
+            });
+        }
+        return this.deepFilterAssetsPromise;
+    },
+
+    /** Создаёт worklet node DeepFilterNet и ждёт инициализации модели в аудиопотоке. */
+    async createDeepFilterNode() {
+        const assets = await this.loadDeepFilterAssets();
+        const ctx = this.audioContext;
+        if (this.deepFilterWorkletContext !== ctx) {
+            await ctx.audioWorklet.addModule(this.getDeepFilterBaseUrl() + 'df-worklet.js');
+            this.deepFilterWorkletContext = ctx;
+        }
+
+        const node = new AudioWorkletNode(ctx, 'deepfilter-audio-processor', {
+            numberOfInputs: 1,
+            numberOfOutputs: 1,
+            channelCount: 1,
+            channelCountMode: 'explicit',
+            outputChannelCount: [1],
+            processorOptions: {
+                wasmModule: assets.wasmModule,
+                modelBytes: assets.modelBytes,
+                suppressionLevel: this.audioSettings.deepFilterAttenDb
+            }
+        });
+
+        await this.waitWorkletReady(node, 'DeepFilterNet');
+
+        this.deepFilterOverloadCount = 0;
+        node.port.onmessage = (event) => this.handleDeepFilterStats(node, event.data);
+        return node;
+    },
+
+    /** Кадр DeepFilterNet — 10 мс. Если обработка стабильно занимает больше 6 мс, устройство не тянет: уходим на RNNoise. */
+    handleDeepFilterStats(node, data) {
+        if (!data || data.type !== 'stats' || node !== this.deepFilterNode) {
+            return;
+        }
+        this.deepFilterOverloadCount = data.avgFrameMs > 6 ? this.deepFilterOverloadCount + 1 : 0;
+        if (this.deepFilterOverloadCount >= 2) {
+            console.warn(`⚠️ DeepFilterNet перегружает CPU (${data.avgFrameMs.toFixed(1)} мс на кадр), переключаемся на RNNoise`);
+            this.deepFilterFailed = true;
+            this.connectMicToPublishChain().catch((e) => console.warn('connectMicToPublishChain:', e));
+        }
+    },
+
+    teardownDeepFilterNode() {
+        if (this.deepFilterNode) {
+            try {
+                this.deepFilterNode.port.onmessage = null;
+                this.deepFilterNode.disconnect();
+            } catch (e) {
+                /* ignore */
+            }
+            this.deepFilterNode = null;
+        }
+    },
+
+    /** Выход шумоподавителя -> [своё автоусиление, если включено в настройках] -> micGain. */
+    async connectDenoiserOutput(denoiserNode) {
+        const agcNode = this.audioSettings.autoGainControl ? await this.createVoiceAgcNode() : null;
+        if (agcNode) {
+            this.voiceAgcNode = agcNode;
+            denoiserNode.connect(agcNode);
+            agcNode.connect(this.micGainNode);
+        } else {
+            denoiserNode.connect(this.micGainNode);
+        }
+    },
+
+    /** Вызовы идут строго по очереди: параллельная пересборка цепи дала бы двойное подключение микрофона. */
+    connectMicToPublishChain() {
+        const run = () => this._connectMicToPublishChain();
+        this._micChainPromise = (this._micChainPromise || Promise.resolve()).then(run, run);
+        return this._micChainPromise;
+    },
+
+    async _connectMicToPublishChain() {
         if (!this.micSourceNode || !this.micGainNode) {
             return false;
         }
@@ -1077,27 +1396,76 @@ var AudioModule = {
         } catch (e) {
             /* ignore */
         }
+        if (this.micHighpassNode) {
+            try {
+                this.micHighpassNode.disconnect();
+            } catch (e) {
+                /* ignore */
+            }
+        }
 
         if (this.rnnoiseProcessor) {
             this.teardownRnnoiseProcessor();
         }
+        this.teardownDeepFilterNode();
+        this.teardownVoiceAgcNode();
 
-        const wantRNNoise = this.isRNNoiseEnabled();
+        // Срезаем гул и удары по столу ниже голосового диапазона — до шумоподавителя
+        const highpass = this.audioContext.createBiquadFilter();
+        highpass.type = 'highpass';
+        highpass.frequency.value = 80;
+        highpass.Q.value = 0.707;
+        this.micHighpassNode = highpass;
+        this.micSourceNode.connect(highpass);
+
+        // Модель работает только на 48 кГц
+        const wantDeepFilter = this.isDeepFilterEnabled() && !this.deepFilterFailed &&
+            this.isDeepFilterSupported() && this.audioContext.sampleRate === 48000;
+        if (wantDeepFilter) {
+            if (this.deepFilterAssets) {
+                try {
+                    const node = await this.createDeepFilterNode();
+                    this.deepFilterNode = node;
+                    highpass.connect(node);
+                    await this.connectDenoiserOutput(node);
+                    console.log('✅ DeepFilterNet 3 подключён в граф публикации');
+                    return true;
+                } catch (error) {
+                    console.error('❌ Ошибка создания DeepFilterNet:', error);
+                    this.deepFilterFailed = true;
+                }
+            } else {
+                // Не задерживаем вход в канал на время загрузки: пока работаем на RNNoise, потом переключимся
+                this.loadDeepFilterAssets().then(() => {
+                    if (this.micSourceNode && this.micGainNode) {
+                        return this.connectMicToPublishChain();
+                    }
+                }).catch((error) => {
+                    console.error('❌ Не удалось загрузить DeepFilterNet:', error);
+                    this.deepFilterFailed = true;
+                });
+            }
+        }
+
+        // RNNoise — по своей настройке либо как запасной вариант для DeepFilterNet
+        const wantRNNoise = this.isRNNoiseEnabled() || (this.isDeepFilterEnabled() && this.isRNNoiseLibraryAvailable());
         if (wantRNNoise) {
             const processor = await this.createRnnoiseProcessorNode();
             if (processor) {
                 this.rnnoiseProcessor = processor;
-                this.micSourceNode.connect(this.rnnoiseProcessor);
-                this.rnnoiseProcessor.connect(this.micGainNode);
+                highpass.connect(this.rnnoiseProcessor);
+                await this.connectDenoiserOutput(this.rnnoiseProcessor);
                 console.log('✅ RNNoise подключён в граф публикации');
                 return true;
             }
 
             console.warn('⚠️ RNNoise недоступен, используем прямой микрофон');
-            this.updateAudioSettings({ useRNNoise: false });
+            if (this.isRNNoiseEnabled()) {
+                this.updateAudioSettings({ useRNNoise: false });
+            }
         }
 
-        this.micSourceNode.connect(this.micGainNode);
+        highpass.connect(this.micGainNode);
         return true;
     },
 
@@ -1117,7 +1485,15 @@ var AudioModule = {
                 /* ignore */
             }
         }
-        
+
+        if (settings.useDeepFilter !== undefined) {
+            // Явное применение настройки — даём DeepFilterNet ещё одну попытку
+            this.deepFilterFailed = false;
+            if (settings.useDeepFilter === true) {
+                this.audioSettings.noiseSuppression = false;
+            }
+        }
+
         // Сохраняем в localStorage
         try {
             localStorage.setItem('audioSettings', JSON.stringify(this.audioSettings));
@@ -1293,6 +1669,9 @@ var AudioModule = {
     // Отключиться
     async disconnect(userInitiated = true) {
         this.stopReconnectLoop();
+        // Обрываем возможную незавершённую попытку переподключения
+        this._reconnectGeneration++;
+        this._republishVideoAfterReconnect = false;
         if (userInitiated) {
             this.intentionalDisconnect = true;
         }
@@ -1440,7 +1819,11 @@ var AudioModule = {
         this.teardownRnnoiseProcessor();
         this.rnnoiseEnabled = this.audioSettings.useRNNoise === true;
         this.rnnoiseWorkletContext = null;
-        
+        this.teardownDeepFilterNode();
+        this.deepFilterWorkletContext = null;
+        this.teardownVoiceAgcNode();
+        this.voiceAgcWorkletContext = null;
+
         // Закрываем Janus соединение
         if (this.janus) {
             this.janus.destroy();
@@ -4310,9 +4693,8 @@ var AudioModule = {
 
     /** Создаёт RNNoise worklet node (вставка в граф micSource -> micGain). */
     async createRnnoiseProcessorNode() {
-        const lib = typeof window !== 'undefined' ? window.RNNoiseLib : null;
-        if (!lib || !lib.RnnoiseWorkletNode) {
-            console.warn('⚠️ RNNoise библиотека не загружена.');
+        if (!this.isRNNoiseLibraryAvailable()) {
+            console.warn('⚠️ RNNoise недоступен: браузер не поддерживает AudioWorklet/WASM.');
             return null;
         }
 
@@ -4320,16 +4702,28 @@ var AudioModule = {
             this.initializeAudioContext();
         }
 
+        // Модель работает только на 48 кГц
+        if (this.audioContext.sampleRate !== 48000) {
+            console.warn('⚠️ RNNoise недоступен: AudioContext не 48 кГц.');
+            return null;
+        }
+
         try {
-            const wasmBinary = await this.ensureRnnoiseWorkletReady();
-            if (!wasmBinary) {
+            if (!(await this.ensureRnnoiseWorkletReady())) {
                 return null;
             }
 
-            return new lib.RnnoiseWorkletNode(this.audioContext, {
-                maxChannels: 1,
-                wasmBinary
+            const node = new AudioWorkletNode(this.audioContext, 'rnnoise2-processor', {
+                numberOfInputs: 1,
+                numberOfOutputs: 1,
+                channelCount: 1,
+                channelCountMode: 'explicit',
+                outputChannelCount: [1],
+                processorOptions: { vadGate: true }
             });
+            await this.waitWorkletReady(node, 'RNNoise');
+            node.port.onmessage = null;
+            return node;
         } catch (error) {
             console.error('❌ Ошибка создания RNNoise:', error);
             return null;

@@ -149,8 +149,11 @@ const API = {
     },
 
     _shouldAttemptRefreshOn401(errorInfo, url) {
+        // Пустое тело - это ответ JWT-middleware: токен истёк или не дошёл. Именно тут
+        // и нужен refresh. (Бизнес-отказы приходят с текстом ошибки.) Раньше здесь был
+        // return false, и после истечения токена запросы падали до перезагрузки страницы.
         if (errorInfo.empty) {
-            return false;
+            return true;
         }
         if (this._isBusinessAuthorizationError(errorInfo.message)) {
             return false;
@@ -284,6 +287,15 @@ const API = {
         return this.request(url, { method: 'DELETE' });
     },
 
+    // Был ли последний неудачный refresh отказом сервера (401), а не сбоем сети
+    _refreshRejected: false,
+
+    // Свежий ли access-токен в cookie (его могла только что обновить другая вкладка)
+    _hasFreshToken(minLifetimeMs) {
+        const exp = this._getAccessTokenExpMs();
+        return !!exp && exp - Date.now() > minLifetimeMs;
+    },
+
     // Попытка обновить токен
     async tryRefreshToken() {
         // Если уже идёт refresh, ждём результат
@@ -291,40 +303,60 @@ const API = {
             return this._refreshPromise;
         }
 
+        this.initBaseUrls();
         this._isRefreshing = true;
         this._refreshPromise = (async () => {
-            try {
+            const expBefore = this._getAccessTokenExpMs();
+
+            const doRefresh = async () => {
+                // Refresh-токен одноразовый (ротация). Если две вкладки обновляются одновременно,
+                // вторая получает 401 по уже использованному токену. Поэтому обновление идёт под
+                // общей для вкладок блокировкой, а внутри проверяем - не обновила ли уже другая.
+                const expNow = this._getAccessTokenExpMs();
+                if (expNow && expNow !== expBefore && this._hasFreshToken(10 * 60 * 1000)) {
+                    console.log('Token already refreshed by another tab');
+                    return true;
+                }
+
                 const response = await fetch(`${this.baseUrls.auth}/api/Auth/refresh`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     credentials: 'include',
                     body: JSON.stringify({})
                 });
-                
+
                 if (response.ok) {
                     console.log('Token refreshed successfully');
                     try {
                         const data = await response.json();
                         this.saveTokenFromResponse(data);
                     } catch (e) {
-                        // Ответ без JSON — полагаемся на HttpOnly cookie
+                        // Ответ без JSON — полагаемся на cookie
                     }
-                    await new Promise(resolve => setTimeout(resolve, 100));
+                    this._refreshRejected = false;
+                    this._lastRefreshTime = Date.now();
                     return true;
                 }
-                
-                // Получаем детали ошибки
-                let errorMessage = `Status: ${response.status}`;
-                try {
-                    const errorData = await response.json();
-                    errorMessage = errorData.error || errorMessage;
-                } catch (e) {
-                    // Игнорируем ошибку парсинга JSON
+
+                // Другая вкладка могла успеть обновить токен без блокировки (старый браузер)
+                if (this._hasFreshToken(10 * 60 * 1000)) {
+                    this._refreshRejected = false;
+                    return true;
                 }
-                
-                console.error('Token refresh failed:', errorMessage);
+
+                this._refreshRejected = response.status === 401 || response.status === 403;
+                console.error('Token refresh failed, status:', response.status);
                 return false;
+            };
+
+            try {
+                if (navigator.locks && navigator.locks.request) {
+                    return await navigator.locks.request('audio-token-refresh', doRefresh);
+                }
+                return await doRefresh();
             } catch (error) {
+                // Сбой сети - это не разлогин, позже попробуем ещё раз
+                this._refreshRejected = false;
                 console.error('Token refresh error:', error);
                 return false;
             } finally {
@@ -334,6 +366,15 @@ const API = {
         })();
 
         return this._refreshPromise;
+    },
+
+    // Гарантировать живой access-токен перед действием, которому он нужен прямо сейчас
+    // (подключение SignalR, отправка сообщения)
+    async ensureFreshToken(minLifetimeMs = 60 * 1000) {
+        if (this._hasFreshToken(minLifetimeMs)) {
+            return true;
+        }
+        return this.tryRefreshToken();
     },
 
     // Плановое обновление: за несколько минут до exp JWT или каждые 15 мин (если exp не виден — HttpOnly)
@@ -360,17 +401,25 @@ const API = {
                     (exp ? ` (exp JWT ~${new Date(exp).toISOString()})` : '')
             );
 
-            this._refreshInterval = setTimeout(async () => {
+            const retry = async () => {
                 console.log('Auto-refreshing token...');
                 const refreshed = await this.tryRefreshToken();
                 if (refreshed) {
                     this._lastRefreshTime = Date.now();
                     scheduleNext();
-                } else {
-                    console.warn('Auto-refresh failed, stopping automatic refresh');
+                } else if (this._refreshRejected) {
+                    // Сервер отверг refresh-токен (вышли из аккаунта / вошли с другого устройства)
+                    console.warn('Auto-refresh rejected by server, stopping automatic refresh');
                     this.stopAutoRefresh();
+                } else {
+                    // Сеть моргнула - не бросаем сессию, пробуем снова через 30 секунд.
+                    // Раньше одна неудача навсегда отключала обновление, и через полчаса
+                    // у сидящего в канале человека истекал токен.
+                    console.warn('Auto-refresh failed (network), retrying in 30s');
+                    this._refreshInterval = setTimeout(retry, 30 * 1000);
                 }
-            }, delay);
+            };
+            this._refreshInterval = setTimeout(retry, delay);
         };
 
         scheduleNext();
@@ -387,6 +436,8 @@ const API = {
     
     // Время последнего обновления токена
     _lastRefreshTime: null,
+    // На этой странице был авторизованный пользователь (видели access-токен)
+    _sessionSeen: false,
     
     // Обновить токен при возврате на вкладку / активности: без «мёртвой зоны» 5–25 минут
     async refreshIfNeeded() {
@@ -397,7 +448,12 @@ const API = {
         }
 
         const exp = this._getAccessTokenExpMs();
-        if (!exp || exp - now > 3 * 60 * 1000) {
+        if (exp && exp - now > 3 * 60 * 1000) {
+            return true;
+        }
+        // exp нет: cookie access-токена истекла и удалена браузером (вкладка спала дольше
+        // срока жизни токена). Если сессия была - восстанавливаем её по refresh-токену.
+        if (!exp && !this._sessionSeen) {
             return true;
         }
 
@@ -438,6 +494,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         if (hasToken) {
             console.log('[API] Обнаружен токен при загрузке страницы');
+            API._sessionSeen = true;
             API._lastRefreshTime = Date.now();
             API.startAutoRefresh();
             console.log('[API] ✅ Auto-refresh запущен');
@@ -452,9 +509,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 document.addEventListener('visibilitychange', async () => {
     if (document.visibilityState === 'visible') {
         const hasToken = document.cookie.split(';').some(c => c.trim().startsWith('access_token='));
-        if (hasToken) {
+        if (hasToken || API._sessionSeen) {
             console.log('[API] Вкладка стала активной, проверяем токен...');
-            await API.refreshIfNeeded();
+            const refreshed = await API.refreshIfNeeded();
+            // Таймер мог остановиться или "проспать" вместе с вкладкой - запускаем заново
+            if (refreshed) {
+                API.startAutoRefresh();
+            }
         }
     }
 });
@@ -468,7 +529,7 @@ const ACTIVITY_REFRESH_INTERVAL = 10 * 60 * 1000; // 10 минут
         const now = Date.now();
         if (now - lastActivityRefresh > ACTIVITY_REFRESH_INTERVAL) {
             const hasToken = document.cookie.split(';').some(c => c.trim().startsWith('access_token='));
-            if (hasToken) {
+            if (hasToken || API._sessionSeen) {
                 lastActivityRefresh = now;
                 // Проверяем в фоне, не блокируя
                 API.refreshIfNeeded().catch(e => console.warn('[API] Ошибка обновления токена:', e));
