@@ -144,9 +144,21 @@ code {
 }
 
 .navbar-brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
     font-size: 18px;
     font-weight: 600;
     color: var(--accent-blue);
+}
+
+.navbar-logo {
+    flex-shrink: 0;
+    width: 34px;
+    height: 34px;
+    /* Эмблема выше строки текста: отрицательные поля, чтобы шапка не стала выше
+       (высота страницы группы рассчитана от неё) */
+    margin: -6px 0;
 }
 
 .navbar-nav {

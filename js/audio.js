@@ -37,6 +37,9 @@ var AudioModule = {
     deepFilterWorkletContext: null,
     deepFilterFailed: false, // не загрузился или не тянет CPU — до конца сессии работаем на RNNoise
     deepFilterOverloadCount: 0,
+    deepFilterSuspended: false, // вкладка скрыта (только браузер) — временно работаем на RNNoise
+    _deepFilterVisibilityBound: false,
+    _deepFilterVisibilityTimer: null,
     micHighpassNode: null,
     voiceAgcNode: null,
     voiceAgcWorkletContext: null,
@@ -902,6 +905,7 @@ var AudioModule = {
         console.log('🔌 Присоединяемся к Videoroom как Publisher...');
 
         this.applyDefaultRNNoiseIfUnset();
+        this.bindDeepFilterVisibility();
 
         if (this.isDeepFilterEnabled() && this.isDeepFilterSupported() && !this.deepFilterFailed) {
             this.loadDeepFilterAssets().catch((e) => console.warn('DeepFilterNet preload:', e));
@@ -1367,18 +1371,6 @@ var AudioModule = {
         }
     },
 
-    /** Выход шумоподавителя -> [своё автоусиление, если включено в настройках] -> micGain. */
-    async connectDenoiserOutput(denoiserNode) {
-        const agcNode = this.audioSettings.autoGainControl ? await this.createVoiceAgcNode() : null;
-        if (agcNode) {
-            this.voiceAgcNode = agcNode;
-            denoiserNode.connect(agcNode);
-            agcNode.connect(this.micGainNode);
-        } else {
-            denoiserNode.connect(this.micGainNode);
-        }
-    },
-
     /** Вызовы идут строго по очереди: параллельная пересборка цепи дала бы двойное подключение микрофона. */
     connectMicToPublishChain() {
         const run = () => this._connectMicToPublishChain();
@@ -1386,8 +1378,76 @@ var AudioModule = {
         return this._micChainPromise;
     },
 
+    /** Нужен ли сейчас DeepFilterNet (настройка, поддержка, не перегружен, вкладка не скрыта). */
+    wantsDeepFilter() {
+        // Модель работает только на 48 кГц
+        return this.isDeepFilterEnabled() && !this.deepFilterFailed && !this.deepFilterSuspended &&
+            this.isDeepFilterSupported() && !!this.audioContext && this.audioContext.sampleRate === 48000;
+    },
+
+    /**
+     * Создаёт шумоподавитель для цепи публикации: DeepFilterNet, иначе RNNoise, иначе null (прямой микрофон).
+     * Узел ещё никуда не подключён.
+     */
+    async createPublishDenoiser() {
+        if (this.wantsDeepFilter()) {
+            if (this.deepFilterAssets) {
+                try {
+                    return { kind: 'deepfilter', node: await this.createDeepFilterNode() };
+                } catch (error) {
+                    console.error('❌ Ошибка создания DeepFilterNet:', error);
+                    this.deepFilterFailed = true;
+                }
+            } else {
+                // Не задерживаем вход в канал на время загрузки: пока работаем на RNNoise, потом переключимся
+                this.loadDeepFilterAssets().then(() => {
+                    if (this.micSourceNode && this.micGainNode && this.wantsDeepFilter()) {
+                        return this.connectMicToPublishChain();
+                    }
+                }).catch((error) => {
+                    console.error('❌ Не удалось загрузить DeepFilterNet:', error);
+                    this.deepFilterFailed = true;
+                });
+            }
+        }
+
+        // RNNoise — по своей настройке либо как запасной вариант для DeepFilterNet
+        const wantRNNoise = this.isRNNoiseEnabled() || (this.isDeepFilterEnabled() && this.isRNNoiseLibraryAvailable());
+        if (wantRNNoise) {
+            const processor = await this.createRnnoiseProcessorNode();
+            if (processor) {
+                return { kind: 'rnnoise', node: processor };
+            }
+
+            console.warn('⚠️ RNNoise недоступен, используем прямой микрофон');
+            if (this.isRNNoiseEnabled()) {
+                this.updateAudioSettings({ useRNNoise: false });
+            }
+        }
+        return null;
+    },
+
     async _connectMicToPublishChain() {
         if (!this.micSourceNode || !this.micGainNode) {
+            return false;
+        }
+
+        // Сначала готовим новый шумоподавитель и только потом снимаем старый: инициализация модели
+        // занимает заметное время, и всё это время собеседники не слышали бы микрофон
+        const denoiser = await this.createPublishDenoiser();
+        const agcNode = denoiser && this.audioSettings.autoGainControl ? await this.createVoiceAgcNode() : null;
+
+        // Пока узлы готовились, из канала могли выйти
+        if (!this.micSourceNode || !this.micGainNode) {
+            [denoiser && denoiser.node, agcNode].forEach((node) => {
+                if (!node) return;
+                try {
+                    if (node.port) node.port.onmessage = null;
+                    node.disconnect();
+                } catch (e) {
+                    /* ignore */
+                }
+            });
             return false;
         }
 
@@ -1418,55 +1478,79 @@ var AudioModule = {
         this.micHighpassNode = highpass;
         this.micSourceNode.connect(highpass);
 
-        // Модель работает только на 48 кГц
-        const wantDeepFilter = this.isDeepFilterEnabled() && !this.deepFilterFailed &&
-            this.isDeepFilterSupported() && this.audioContext.sampleRate === 48000;
-        if (wantDeepFilter) {
-            if (this.deepFilterAssets) {
-                try {
-                    const node = await this.createDeepFilterNode();
-                    this.deepFilterNode = node;
-                    highpass.connect(node);
-                    await this.connectDenoiserOutput(node);
-                    console.log('✅ DeepFilterNet 3 подключён в граф публикации');
-                    return true;
-                } catch (error) {
-                    console.error('❌ Ошибка создания DeepFilterNet:', error);
-                    this.deepFilterFailed = true;
-                }
-            } else {
-                // Не задерживаем вход в канал на время загрузки: пока работаем на RNNoise, потом переключимся
-                this.loadDeepFilterAssets().then(() => {
-                    if (this.micSourceNode && this.micGainNode) {
-                        return this.connectMicToPublishChain();
-                    }
-                }).catch((error) => {
-                    console.error('❌ Не удалось загрузить DeepFilterNet:', error);
-                    this.deepFilterFailed = true;
-                });
-            }
+        if (!denoiser) {
+            highpass.connect(this.micGainNode);
+            return true;
         }
 
-        // RNNoise — по своей настройке либо как запасной вариант для DeepFilterNet
-        const wantRNNoise = this.isRNNoiseEnabled() || (this.isDeepFilterEnabled() && this.isRNNoiseLibraryAvailable());
-        if (wantRNNoise) {
-            const processor = await this.createRnnoiseProcessorNode();
-            if (processor) {
-                this.rnnoiseProcessor = processor;
-                highpass.connect(this.rnnoiseProcessor);
-                await this.connectDenoiserOutput(this.rnnoiseProcessor);
-                console.log('✅ RNNoise подключён в граф публикации');
-                return true;
-            }
-
-            console.warn('⚠️ RNNoise недоступен, используем прямой микрофон');
-            if (this.isRNNoiseEnabled()) {
-                this.updateAudioSettings({ useRNNoise: false });
-            }
+        if (denoiser.kind === 'deepfilter') {
+            this.deepFilterNode = denoiser.node;
+        } else {
+            this.rnnoiseProcessor = denoiser.node;
         }
+        highpass.connect(denoiser.node);
 
-        highpass.connect(this.micGainNode);
+        // Выход шумоподавителя -> [своё автоусиление, если включено в настройках] -> micGain
+        if (agcNode) {
+            this.voiceAgcNode = agcNode;
+            denoiser.node.connect(agcNode);
+            agcNode.connect(this.micGainNode);
+        } else {
+            denoiser.node.connect(this.micGainNode);
+        }
+        console.log(denoiser.kind === 'deepfilter'
+            ? '✅ DeepFilterNet 3 подключён в граф публикации'
+            : '✅ RNNoise подключён в граф публикации');
         return true;
+    },
+
+    // ---------- DeepFilterNet и свёрнутая вкладка ----------
+
+    /** Страница открыта внутри приложения AudioChat (MAUI): там app.js объявляет window.AppPages. */
+    isNativeApp() {
+        return typeof window !== 'undefined' && !!window.AppPages;
+    },
+
+    /**
+     * Только в браузере: пока вкладка скрыта (окно свёрнуто, перекрыто игрой, другая вкладка),
+     * вместо DeepFilterNet работает RNNoise. Браузер отдаёт фоновой вкладке меньше процессора,
+     * тяжёлая модель не успевает обработать кадр - у собеседников "робот". RNNoise в десятки раз легче.
+     * В приложении это не нужно: там процессам WebView выдаётся повышенный приоритет.
+     */
+    bindDeepFilterVisibility() {
+        if (this._deepFilterVisibilityBound || this.isNativeApp() || typeof document === 'undefined') {
+            return;
+        }
+        this._deepFilterVisibilityBound = true;
+        this.deepFilterSuspended = document.visibilityState === 'hidden';
+        document.addEventListener('visibilitychange', () => this.onVisibilityForDeepFilter());
+    },
+
+    onVisibilityForDeepFilter() {
+        clearTimeout(this._deepFilterVisibilityTimer);
+        const hidden = document.visibilityState === 'hidden';
+        // Быстрый alt-tab туда-обратно не трогаем: на скрытие реагируем почти сразу (игра нагружает
+        // процессор с первых секунд), на возврат - с запасом, чтобы окно не дёргалось при переключениях
+        this._deepFilterVisibilityTimer = setTimeout(() => {
+            this._deepFilterVisibilityTimer = null;
+            if ((document.visibilityState === 'hidden') !== hidden || this.deepFilterSuspended === hidden) {
+                return;
+            }
+            this.deepFilterSuspended = hidden;
+
+            if (!this.micSourceNode || !this.micGainNode) {
+                return;
+            }
+            // Перестраиваем цепь, только если это что-то меняет
+            const needsRebuild = hidden ? !!this.deepFilterNode : (!this.deepFilterNode && this.wantsDeepFilter());
+            if (!needsRebuild) {
+                return;
+            }
+            console.log(hidden
+                ? '🌙 Вкладка скрыта: DeepFilterNet -> RNNoise'
+                : '☀️ Вкладка снова видна: возвращаем DeepFilterNet');
+            this.connectMicToPublishChain().catch((e) => console.warn('connectMicToPublishChain:', e));
+        }, hidden ? 300 : 1500);
     },
 
     // Обновить настройки аудио
