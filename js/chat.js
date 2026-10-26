@@ -151,6 +151,15 @@ const Chat = {
 
     // Отправить сообщение
     async sendMessage(content) {
+        await this._send({ content: content });
+    },
+
+    // Отправить стикер (ID из каталога Stickers)
+    async sendSticker(stickerId) {
+        await this._send({ stickerId: stickerId });
+    },
+
+    async _send(message) {
         if (!this.connection || this.connection.state !== signalR.HubConnectionState.Connected) {
             throw new Error('Чат не подключен');
         }
@@ -161,7 +170,7 @@ const Chat = {
             await API.ensureFreshToken();
             await this.connection.invoke('SendMessage', {
                 groupId: this.groupId,
-                content: content,
+                ...message,
                 accessToken: API.getToken() || undefined
             });
         } catch (error) {
