@@ -582,8 +582,11 @@
             height: 40px;
             margin-left: auto;
             padding: 0;
+            gap: 0; /* текст скрыт (font-size: 0), но отступ до него сдвигал иконку влево */
             border-radius: 50%;
             font-size: 0;
+            /* Кнопка сразу появляется красной: переход от синей «Подключиться» мог застрять на синем */
+            transition: none;
         }
 
         .audio-channel.active .join-audio-btn::before {
@@ -643,10 +646,11 @@
             margin-bottom: 4px;
         }
 
+        /* Имя целиком (до половины строки), ужимается ползунок громкости */
         .audio-channel.active .participant-row__head {
-            flex: 0 1 auto;
+            flex: 0 0 auto;
             min-width: 0;
-            max-width: 46%;
+            max-width: 50%;
             gap: 8px;
         }
 
@@ -661,8 +665,8 @@
         }
 
         .audio-channel.active .participant-row__volume {
-            flex: 1 1 auto;
-            min-width: 0;
+            flex: 1 1 60px;
+            min-width: 60px;
             margin: 0;
             gap: 6px;
         }
@@ -961,6 +965,163 @@
         }
 
         /* ---------- Узкие экраны: всё в одну колонку ---------- */
+        /* ---------- Колонка «Люди» и приглашение ---------- */
+        .invite-card {
+            flex-shrink: 0;
+            position: relative;
+            display: grid;
+            grid-template-columns: 56px minmax(0, 1fr);
+            align-items: center;
+            gap: 4px 12px;
+            margin-bottom: 18px;
+            padding: 14px;
+            border-radius: 20px;
+            background-color: var(--accent-soft);
+        }
+
+        .invite-card[hidden] {
+            display: none;
+        }
+
+        .invite-card__mascot {
+            width: 56px;
+            height: 56px;
+            transform: rotate(-6deg);
+        }
+
+        .invite-card__text {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            min-width: 0;
+        }
+
+        .invite-card__text strong {
+            font-size: 15px;
+            color: var(--text-primary);
+        }
+
+        .invite-card__text span {
+            font-size: 13px;
+            line-height: 1.35;
+            color: var(--text-strong);
+        }
+
+        .invite-card .btn {
+            grid-column: 1 / -1;
+            margin-top: 8px;
+        }
+
+        .sidebar .group-column-header h3 {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            white-space: nowrap;
+        }
+
+        /* Узкая колонка: кнопка «Изменить роли» уходит на свою строку, а не за край карточки */
+        .sidebar .group-column-header {
+            flex-wrap: wrap;
+            row-gap: 8px;
+        }
+
+        #membersHeaderActions {
+            margin-left: auto;
+        }
+
+        #membersHeaderActions .btn {
+            white-space: nowrap;
+        }
+
+        .voice-now {
+            white-space: nowrap;
+            padding: 2px 8px;
+            border-radius: var(--radius-pill);
+            background-color: #DDF5EA;
+            color: #0E6B4B;
+            font-size: 11px;
+            letter-spacing: 0.02em;
+            text-transform: none;
+            vertical-align: 1px;
+        }
+
+        .voice-now[hidden] {
+            display: none;
+        }
+
+        /* Участник сейчас в голосовом канале */
+        .member-voice {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            max-width: 100%;
+            margin-top: 2px;
+            padding: 1px 8px 1px 6px;
+            border-radius: var(--radius-pill);
+            background-color: #DDF5EA;
+            color: #0E6B4B;
+            font-size: 12px;
+            overflow: hidden;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+        }
+
+        .member-voice::before {
+            content: "";
+            flex-shrink: 0;
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background-color: #12A37A;
+            animation: voice-live 1.8s ease-in-out infinite;
+        }
+
+        .member-row.in-voice .avatar {
+            box-shadow: 0 0 0 2px var(--bg-secondary), 0 0 0 4px #12A37A;
+        }
+
+        @keyframes voice-live {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.35; transform: scale(0.75); }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .member-voice::before {
+                animation: none;
+            }
+        }
+
+        /* Широкий экран: три колонки - каналы, чат, люди */
+        @media (min-width: 1280px) {
+            .group-layout {
+                grid-template-columns: 300px minmax(0, 1fr) 300px;
+                grid-template-rows: minmax(0, 1fr);
+                grid-template-areas: "channels chat members";
+            }
+
+            .invite-card:not([hidden]) {
+                display: grid;
+            }
+
+            /* Приглашение уже есть в колонке - дублирующая кнопка в шапке не нужна */
+            #inviteBtn {
+                display: none !important;
+            }
+        }
+
+        @media (min-width: 1600px) {
+            .group-layout {
+                grid-template-columns: 340px minmax(0, 1fr) 320px;
+            }
+        }
+
+        /* На узком экране приглашение - кнопкой в шапке */
+        @media (max-width: 1279px) {
+            .invite-card {
+                display: none !important;
+            }
+        }
+
         @media (max-width: 900px) {
             .group-layout {
                 grid-template-columns: minmax(0, 1fr);
@@ -1056,8 +1217,17 @@
                 <div class="group-layout">
                     <!-- Участники -->
                     <div class="sidebar">
+                        <!-- Приглашение: на широком экране вместо кнопки в шапке -->
+                        <div class="invite-card" id="inviteCard" hidden>
+                            <img class="invite-card__mascot" src="images/mascot-joy.webp" alt="">
+                            <div class="invite-card__text">
+                                <strong>Позовите друзей</strong>
+                                <span id="inviteCardHint">Одна ссылка — и они сразу здесь, даже без регистрации</span>
+                            </div>
+                            <button type="button" class="btn btn-primary btn-sm" id="inviteCardBtn"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.6 0l3-3a4 4 0 0 0-5.6-5.6l-1 1"/><path d="M14 10a4 4 0 0 0-5.6 0l-3 3a4 4 0 0 0 5.6 5.6l1-1"/></svg>Скопировать ссылку</button>
+                        </div>
                         <div class="group-column-header">
-                            <h3>В группе</h3>
+                            <h3>В группе <span class="voice-now" id="voiceNowCount" hidden></span></h3>
                             <div id="membersHeaderActions"></div>
                         </div>
                         <div id="membersList">
@@ -1746,6 +1916,10 @@
                 const inviteBtn = document.getElementById('inviteBtn');
                 inviteBtn.style.display = 'inline-flex';
                 inviteBtn.onclick = () => shareInviteLink(null);
+                // Из колонки «Люди»: если вы в голосовом канале - ссылка ведёт прямо в него
+                document.getElementById('inviteCard').hidden = false;
+                document.getElementById('inviteCardBtn').onclick = () => shareInviteLink(currentAudioChannel || null);
+                refreshVoicePresence();
 
                 // Ссылка вела в голосовой канал - подключаемся сразу
                 await autoConnectFromInviteLink();
@@ -1997,7 +2171,7 @@
 
                 const memberName = member.nickName || member.userId || 'Пользователь';
                 return `
-                <div class="member-row${isYou ? ' is-you' : ''}">
+                <div class="member-row${isYou ? ' is-you' : ''}" data-member-name="${Utils.escapeHtml(memberName.toLowerCase().trim())}">
                     ${avatarHtml(memberName, 'avatar--sm')}
                     <div class="member-info">
                         <div class="member-name">${Utils.escapeHtml(memberName)}${isYou ? ' <small>· вы</small>' : ''}</div>
@@ -2021,6 +2195,8 @@
             container.querySelectorAll('.leave-group-btn').forEach(btn => {
                 btn.addEventListener('click', leaveCurrentGroup);
             });
+
+            refreshVoicePresence();
 
             container.querySelectorAll('.member-role-select').forEach(select => {
                 select.addEventListener('change', (event) => {
@@ -2395,6 +2571,61 @@
             if (channelId === currentAudioChannel) {
                 displayAudioParticipants(participantsArray);
             }
+
+            refreshVoicePresence();
+        }
+
+        // Кто из участников группы сейчас в голосе: бейдж «в канале» у строки, счётчик в заголовке,
+        // подсказка в приглашении. Сопоставляем по имени - так же, как подписан участник в Janus.
+        function refreshVoicePresence() {
+            const channelNames = new Map();
+            document.querySelectorAll('#audioChannelsList .audio-channel').forEach((card) => {
+                const nameEl = card.querySelector('.audio-channel__name');
+                channelNames.set(card.dataset.channelId, nameEl ? nameEl.textContent : '');
+            });
+
+            const voiceByName = new Map();
+            channelParticipantsMap.forEach((participants, channelId) => {
+                participants.forEach((p) => {
+                    const name = String(p.displayName || p.display || p.name || '').toLowerCase().trim();
+                    if (name) {
+                        voiceByName.set(name, channelNames.get(String(channelId)) || '');
+                    }
+                });
+            });
+
+            let inVoice = 0;
+            document.querySelectorAll('#membersList .member-row').forEach((row) => {
+                const channelName = voiceByName.get(row.dataset.memberName);
+                const info = row.querySelector('.member-info');
+                let badge = row.querySelector('.member-voice');
+                row.classList.toggle('in-voice', channelName !== undefined);
+                if (channelName === undefined) {
+                    if (badge) badge.remove();
+                    return;
+                }
+                inVoice++;
+                if (!badge) {
+                    badge = document.createElement('span');
+                    badge.className = 'member-voice';
+                    info.appendChild(badge);
+                }
+                badge.textContent = channelName ? `в «${channelName}»` : 'в голосе';
+            });
+
+            const counter = document.getElementById('voiceNowCount');
+            if (counter) {
+                counter.hidden = inVoice === 0;
+                counter.textContent = `${inVoice} в голосе`;
+            }
+
+            const hint = document.getElementById('inviteCardHint');
+            if (hint) {
+                const currentName = currentAudioChannel ? channelNames.get(String(currentAudioChannel)) : null;
+                hint.textContent = currentName
+                    ? `Ссылка приведёт прямо к вам в «${currentName}»`
+                    : 'Одна ссылка — и они сразу здесь, даже без регистрации';
+            }
         }
 
         window.onParticipantsUpdate = (participants, participantId) => {
@@ -2731,6 +2962,7 @@
                 currentParticipantId = null;
                 button.textContent = 'Подключиться';
                 button.closest('.audio-channel').classList.remove('active');
+                refreshVoicePresence();
                 
                 // Убираем все кнопки управления
                 const channelCard = button.closest('.audio-channel');
