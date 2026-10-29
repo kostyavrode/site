@@ -13,6 +13,42 @@ const Auth = {
         }
     },
 
+    // Вход без регистрации: сервер создаёт гостя с именем «Гость-NNNN» и сразу ставит cookie
+    async loginAsGuest() {
+        try {
+            const response = await API.post(`${API.baseUrls.auth}/api/Auth/guest`, {});
+            API.saveTokenFromResponse(response);
+            API._sessionSeen = true;
+            API._lastRefreshTime = Date.now();
+            API.startAutoRefresh();
+            return response;
+        } catch (error) {
+            Utils.showError(error.message || 'Не удалось войти гостем');
+            throw error;
+        }
+    },
+
+    // Куда вернуться после входа или регистрации: ?return=... (только путь на этом же сайте).
+    // Так ссылка-приглашение переживает вход: человек попадает туда, куда его позвали.
+    getReturnUrl(fallback = 'groups.html') {
+        const returnPath = new URLSearchParams(window.location.search).get('return');
+        if (!returnPath || returnPath.includes('://') || returnPath.startsWith('//') ||
+            /(^|\/)(login|register)(\.html)?(\?|$)/.test(returnPath)) {
+            return fallback;
+        }
+        return returnPath;
+    },
+
+    // Ссылка на вход/регистрацию, сохраняющая текущий ?return
+    keepReturn(href) {
+        const returnPath = new URLSearchParams(window.location.search).get('return');
+        if (!returnPath) {
+            return href;
+        }
+        const separator = href.includes('?') ? '&' : '?';
+        return `${href}${separator}return=${encodeURIComponent(returnPath)}`;
+    },
+
     async login(nickName, password) {
         try {
             const response = await API.post(`${API.baseUrls.auth}/api/Auth/login`, {

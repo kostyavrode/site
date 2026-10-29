@@ -115,6 +115,10 @@
                             Нет аккаунта? <a href="register.html">Зарегистрироваться</a>
                         </p>
                     </form>
+
+                    <div class="auth-divider"><span>или</span></div>
+                    <button type="button" id="guestLoginBtn" class="btn btn-soft btn-lg" style="width: 100%;">Войти гостем</button>
+                    <p class="auth-guest-note">Без регистрации, имя выдадим автоматически</p>
                 </div>
             </div>
         </main>
@@ -122,16 +126,38 @@
 
     <script src="js/api.js"></script>
     <script src="js/utils.js?v=2"></script>
-    <script src="js/auth.js"></script>
+    <script src="js/auth.js?v=2"></script>
     <script>
         function getLoginRedirectUrl() {
-            const params = new URLSearchParams(window.location.search);
-            const returnPath = params.get('return');
-            if (returnPath && !returnPath.includes('login.html') && !returnPath.includes('://') && !returnPath.startsWith('//')) {
-                return returnPath;
-            }
-            return 'groups.html';
+            return Auth.getReturnUrl('groups.html');
         }
+
+        // Ссылки «Вход» / «Регистрация» не теряют ?return - ссылку-приглашение, по которой пришли
+        document.querySelectorAll('a[href^="register"], a[href^="login"]').forEach((link) => {
+            link.setAttribute('href', Auth.keepReturn(link.getAttribute('href')));
+        });
+
+        // Пришли по приглашению в группу - говорим об этом прямо в карточке
+        if (/group(\.html)?\?/.test(Auth.getReturnUrl(''))) {
+            const subtitle = document.querySelector('.auth-card-heading p');
+            if (subtitle) {
+                subtitle.textContent = 'Вас пригласили в группу — войдите, зарегистрируйтесь или зайдите гостем';
+            }
+        }
+
+        // Вход гостем: без формы, имя «Гость-NNNN» выдаёт сервер
+        document.getElementById('guestLoginBtn').addEventListener('click', async (e) => {
+            const button = e.currentTarget;
+            button.disabled = true;
+            button.textContent = 'Входим...';
+            try {
+                await Auth.loginAsGuest();
+                window.location.href = Auth.getReturnUrl('groups.html');
+            } catch (error) {
+                button.disabled = false;
+                button.textContent = 'Войти гостем';
+            }
+        });
 
         // Проверка, не авторизован ли уже пользователь
         document.addEventListener('DOMContentLoaded', async () => {

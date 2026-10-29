@@ -69,10 +69,12 @@ const Groups = {
     },
 
     // Присоединиться к группе
-    async joinGroup(groupId, password) {
+    async joinGroup(groupId, password, inviteCode = null) {
         try {
             const url = `${API.baseUrls.groups}/api/Groups/${groupId}/join`;
             const data = password ? { password } : {};
+            // Ключ из ссылки-приглашения: с ним пароль группы не нужен
+            if (inviteCode) data.inviteCode = inviteCode;
             const response = await API.post(url, data);
             Utils.showSuccess('Вы успешно присоединились к группе!');
             return response;
@@ -85,6 +87,12 @@ const Groups = {
             Utils.showError(error.message || 'Ошибка при присоединении к группе');
             throw error;
         }
+    },
+
+    // Ключ ссылки-приглашения (только владелец и админы). reset - выдать новый, старые ссылки перестанут работать
+    async getInviteCode(groupId, reset = false) {
+        const response = await API.post(`${API.baseUrls.groups}/api/Groups/${groupId}/invite${reset ? '?reset=true' : ''}`, {});
+        return response && (response.inviteCode || response.InviteCode);
     },
 
     // Покинуть группу

@@ -143,6 +143,10 @@
                             Уже есть аккаунт? <a href="login.html">Войти</a>
                         </p>
                     </form>
+
+                    <div class="auth-divider"><span>или</span></div>
+                    <button type="button" id="guestLoginBtn" class="btn btn-soft btn-lg" style="width: 100%;">Войти гостем</button>
+                    <p class="auth-guest-note">Без регистрации, имя выдадим автоматически</p>
                 </div>
             </div>
         </main>
@@ -150,8 +154,35 @@
 
     <script src="js/api.js"></script>
     <script src="js/utils.js?v=2"></script>
-    <script src="js/auth.js"></script>
+    <script src="js/auth.js?v=2"></script>
     <script>
+        // Ссылки «Вход» / «Регистрация» не теряют ?return - ссылку-приглашение, по которой пришли
+        document.querySelectorAll('a[href^="register"], a[href^="login"]').forEach((link) => {
+            link.setAttribute('href', Auth.keepReturn(link.getAttribute('href')));
+        });
+
+        // Пришли по приглашению в группу - говорим об этом прямо в карточке
+        if (/group(\.html)?\?/.test(Auth.getReturnUrl(''))) {
+            const subtitle = document.querySelector('.auth-card-heading p');
+            if (subtitle) {
+                subtitle.textContent = 'Вас пригласили в группу — войдите, зарегистрируйтесь или зайдите гостем';
+            }
+        }
+
+        // Вход гостем: без формы, имя «Гость-NNNN» выдаёт сервер
+        document.getElementById('guestLoginBtn').addEventListener('click', async (e) => {
+            const button = e.currentTarget;
+            button.disabled = true;
+            button.textContent = 'Входим...';
+            try {
+                await Auth.loginAsGuest();
+                window.location.href = Auth.getReturnUrl('groups.html');
+            } catch (error) {
+                button.disabled = false;
+                button.textContent = 'Войти гостем';
+            }
+        });
+
         document.getElementById('registerForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             
@@ -192,8 +223,9 @@
 
             try {
                 await Auth.register(nickName, password, confirmPassword, email);
+                // После регистрации - туда, куда звали (группа из приглашения), иначе к группам
                 setTimeout(() => {
-                    window.location.href = 'groups.html';
+                    window.location.href = Auth.getReturnUrl('groups.html');
                 }, 1000);
             } catch (error) {
                 submitButton.disabled = false;

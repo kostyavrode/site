@@ -754,6 +754,30 @@ body > .alert {
     transform: rotate(7deg);
 }
 
+.auth-divider {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 20px 0 14px;
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+.auth-divider::before,
+.auth-divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--border-color);
+}
+
+.auth-guest-note {
+    margin: 8px 0 0;
+    text-align: center;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
 .auth-switch {
     margin: 0;
     text-align: center;
