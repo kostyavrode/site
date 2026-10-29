@@ -34,6 +34,30 @@
     --success: #12805C;
     --warning: #A15C07;
 
+    /* Второстепенное */
+    --link-color: #1A66F0;
+    --link-hover: #0F55D6;
+    --card-border: #E8EEF8;
+    --card-border-hover: #C9DAF8;
+    --placeholder: #8A96AE;
+    --lead-text: #46536E;
+    --soft-hover: #D3E2FF;
+    --focus-ring: rgba(26, 102, 240, 0.12);
+    --backdrop: rgba(13, 26, 51, 0.35);
+    --divider: rgba(13, 26, 51, 0.08);
+    --overlay-bg: rgba(245, 248, 253, 0.97);
+    --scroll-thumb: #CBD6E8;
+    --scroll-thumb-hover: #A9BBDA;
+    --success-soft: #E3F6EE;
+    --success-ink: #0E6B4B;
+    --error-soft: #FDECEC;
+    --error-ink: #B42318;
+    --warning-soft: #FFF4E0;
+    --warning-ink: #7A4300;
+    --voice-soft: #DDF5EA;
+    --voice-ink: #0E6B4B;
+    --voice-dot: #12A37A;
+
     /* Формы */
     --border-radius: 14px;
     --radius-lg: 24px;
@@ -50,6 +74,161 @@
     /* Шрифты */
     --font-sans: 'Onest', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
     --font-display: 'Unbounded', 'Onest', system-ui, sans-serif;
+}
+
+/* Тёмная тема: выбрана вручную (data-theme ставит js/theme.js) или в системе, если выбора не было */
+:root[data-theme="dark"] {
+    /* Поверхности */
+    --bg-primary: #0E1525;
+    --bg-secondary: #161F33;
+    --bg-tertiary: #1D2840;
+    --hover-bg: #24314C;
+    --border-color: #27344F;
+    --input-bg: #121A2C;
+    --input-border: #2E3C5A;
+
+    /* Текст */
+    --text-primary: #E7ECF6;
+    --text-secondary: #97A3BB;
+    --text-strong: #C3CCDD;
+
+    /* Акцент: заливка темнее (белый текст на кнопках читается), текст ссылок - светлее */
+    --accent-blue: #2F6BEA;
+    --accent-blue-hover: #4079F2;
+    --accent-soft: #1B2B4D;
+    --accent-ink: #A9C6FF;
+    --accent-green: #14A87E;
+
+    /* Состояния */
+    --error: #FF7A7F;
+    --success: #4FD1A1;
+    --warning: #F2B460;
+
+    /* Второстепенное */
+    --link-color: #7EABFF;
+    --link-hover: #A9C6FF;
+    --card-border: #222E47;
+    --card-border-hover: #34466B;
+    --placeholder: #6F7B93;
+    --lead-text: #A7B2C7;
+    --soft-hover: #243866;
+    --focus-ring: rgba(126, 171, 255, 0.22);
+    --backdrop: rgba(3, 7, 15, 0.6);
+    --divider: rgba(255, 255, 255, 0.08);
+    --overlay-bg: rgba(14, 21, 37, 0.97);
+    --scroll-thumb: #2E3B57;
+    --scroll-thumb-hover: #3F5076;
+    --success-soft: #11372D;
+    --success-ink: #7BE0BA;
+    --error-soft: #3A1A1F;
+    --error-ink: #FFB1B4;
+    --warning-soft: #3A2A12;
+    --warning-ink: #F7C98A;
+    --voice-soft: #12382D;
+    --voice-ink: #7BE0BA;
+    --voice-dot: #3DDC97;
+
+    --shadow-pop: 0 1px 2px rgba(0, 0, 0, 0.3), 0 20px 48px -16px rgba(0, 0, 0, 0.6);
+    --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.3), 0 24px 64px -24px rgba(0, 0, 0, 0.55);
+}
+
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+        /* Поверхности */
+        --bg-primary: #0E1525;
+        --bg-secondary: #161F33;
+        --bg-tertiary: #1D2840;
+        --hover-bg: #24314C;
+        --border-color: #27344F;
+        --input-bg: #121A2C;
+        --input-border: #2E3C5A;
+
+        /* Текст */
+        --text-primary: #E7ECF6;
+        --text-secondary: #97A3BB;
+        --text-strong: #C3CCDD;
+
+        /* Акцент: заливка темнее (белый текст на кнопках читается), текст ссылок - светлее */
+        --accent-blue: #2F6BEA;
+        --accent-blue-hover: #4079F2;
+        --accent-soft: #1B2B4D;
+        --accent-ink: #A9C6FF;
+        --accent-green: #14A87E;
+
+        /* Состояния */
+        --error: #FF7A7F;
+        --success: #4FD1A1;
+        --warning: #F2B460;
+
+        /* Второстепенное */
+        --link-color: #7EABFF;
+        --link-hover: #A9C6FF;
+        --card-border: #222E47;
+        --card-border-hover: #34466B;
+        --placeholder: #6F7B93;
+        --lead-text: #A7B2C7;
+        --soft-hover: #243866;
+        --focus-ring: rgba(126, 171, 255, 0.22);
+        --backdrop: rgba(3, 7, 15, 0.6);
+        --divider: rgba(255, 255, 255, 0.08);
+        --overlay-bg: rgba(14, 21, 37, 0.97);
+        --scroll-thumb: #2E3B57;
+        --scroll-thumb-hover: #3F5076;
+        --success-soft: #11372D;
+        --success-ink: #7BE0BA;
+        --error-soft: #3A1A1F;
+        --error-ink: #FFB1B4;
+        --warning-soft: #3A2A12;
+        --warning-ink: #F7C98A;
+        --voice-soft: #12382D;
+        --voice-ink: #7BE0BA;
+        --voice-dot: #3DDC97;
+
+        --shadow-pop: 0 1px 2px rgba(0, 0, 0, 0.3), 0 20px 48px -16px rgba(0, 0, 0, 0.6);
+        --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.3), 0 24px 64px -24px rgba(0, 0, 0, 0.55);
+    }
+}
+
+:root[data-theme="dark"] body {
+    color-scheme: dark;
+}
+
+/* Наклейки и маскот на тёмном фоне чуть приглушаем, чтобы не слепили */
+:root[data-theme="dark"] .auth-sticker,
+:root[data-theme="dark"] .empty-state img {
+    filter: brightness(0.92);
+}
+
+/* Кнопка темы в шапке: в светлой показываем луну, в тёмной - солнце */
+.theme-toggle {
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    border: 1px solid var(--border-color);
+    border-radius: 50%;
+    background-color: var(--bg-secondary);
+    color: var(--text-strong);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: background-color 0.2s, border-color 0.2s;
+}
+
+.theme-toggle:hover {
+    border-color: var(--accent-blue);
+}
+
+.theme-toggle__sun {
+    display: none;
+}
+
+:root[data-theme="dark"] .theme-toggle__sun {
+    display: block;
+}
+
+:root[data-theme="dark"] .theme-toggle__moon {
+    display: none;
 }
 
 * {
@@ -96,12 +275,12 @@ p {
 }
 
 a {
-    color: var(--accent-blue);
+    color: var(--link-color);
     text-decoration: none;
 }
 
 a:hover {
-    color: var(--accent-blue-hover);
+    color: var(--link-hover);
     text-decoration: underline;
 }
 
@@ -136,8 +315,8 @@ code {
 
 .maintenance-banner {
     display: none;
-    background: #FFF4E0;
-    color: #6B3A00;
+    background: var(--warning-soft);
+    color: var(--warning-ink);
     padding: 16px var(--spacing-md);
     text-align: center;
     flex-shrink: 0;
@@ -315,8 +494,8 @@ code {
 }
 
 .btn-soft:hover {
-    background-color: #D3E2FF;
-    border-color: #D3E2FF;
+    background-color: var(--soft-hover);
+    border-color: var(--soft-hover);
     color: var(--accent-ink);
 }
 
@@ -414,7 +593,7 @@ code {
 
 .form-input::placeholder,
 .form-textarea::placeholder {
-    color: #8A96AE;
+    color: var(--placeholder);
 }
 
 .form-input:focus,
@@ -423,7 +602,7 @@ code {
     outline: none;
     background-color: var(--bg-secondary);
     border-color: var(--accent-blue);
-    box-shadow: 0 0 0 4px rgba(26, 102, 240, 0.12);
+    box-shadow: 0 0 0 4px var(--focus-ring);
 }
 
 .form-textarea {
@@ -467,7 +646,7 @@ input[type="checkbox"] {
 
 .card {
     background-color: var(--bg-secondary);
-    border: 1px solid #E8EEF8;
+    border: 1px solid var(--card-border);
     border-radius: var(--radius-lg);
     padding: var(--spacing-lg);
     margin-bottom: var(--spacing-md);
@@ -499,7 +678,7 @@ input[type="checkbox"] {
 .modal-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(13, 26, 51, 0.35);
+    background: var(--backdrop);
     -webkit-backdrop-filter: blur(6px);
     backdrop-filter: blur(6px);
     display: flex;
@@ -534,18 +713,18 @@ input[type="checkbox"] {
 }
 
 .alert-success {
-    background-color: #E3F6EE;
-    color: #0E6B4B;
+    background-color: var(--success-soft);
+    color: var(--success-ink);
 }
 
 .alert-error {
-    background-color: #FDECEC;
-    color: #B42318;
+    background-color: var(--error-soft);
+    color: var(--error-ink);
 }
 
 .alert-warning {
-    background-color: #FFF4E0;
-    color: #7A4300;
+    background-color: var(--warning-soft);
+    color: var(--warning-ink);
 }
 
 .alert-info {
@@ -655,7 +834,7 @@ body > .alert {
     margin: 0;
     font-family: var(--font-display);
     font-weight: 500;
-    font-size: clamp(36px, 5vw, 56px);
+    font-size: clamp(34px, 4.2vw, 50px);
     line-height: 1.08;
     letter-spacing: -0.03em;
 }
@@ -664,7 +843,7 @@ body > .alert {
     margin: 0;
     max-width: 500px;
     font-size: 18px;
-    color: #46536E;
+    color: var(--lead-text);
 }
 
 .auth-features {
@@ -869,12 +1048,12 @@ body > .alert {
     padding: 22px;
     border-radius: var(--radius-lg);
     background: var(--bg-secondary);
-    border: 1px solid #E8EEF8;
+    border: 1px solid var(--card-border);
     transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
 }
 
 .group-card:hover {
-    border-color: #C9DAF8;
+    border-color: var(--card-border-hover);
     box-shadow: var(--shadow-soft);
 }
 
@@ -1002,7 +1181,7 @@ body > .alert {
 
 * {
     scrollbar-width: thin;
-    scrollbar-color: #CBD6E8 transparent;
+    scrollbar-color: var(--scroll-thumb) transparent;
 }
 
 *::-webkit-scrollbar {
@@ -1015,12 +1194,12 @@ body > .alert {
 }
 
 *::-webkit-scrollbar-thumb {
-    background: #CBD6E8;
+    background: var(--scroll-thumb);
     border-radius: 4px;
 }
 
 *::-webkit-scrollbar-thumb:hover {
-    background: #A9BBDA;
+    background: var(--scroll-thumb-hover);
 }
 
 /* ============================================

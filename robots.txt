@@ -1,16 +1,12 @@
-# robots.txt for audio-chat.ru
+# robots.txt - один файл для обоих доменов (audio-kostya.online и audio-chat.ru)
 User-agent: *
 Allow: /
 
-# Main pages
-Allow: /index.html
-Allow: /login.html
-Allow: /register.html
-Allow: /groups.html
-
-# Disallow private pages
+# Закрытые страницы: нужен вход, в поиске им делать нечего
 Disallow: /group.html
 Disallow: /admin.html
+Disallow: /test/
 
-# Sitemap
-Sitemap: https://audio-chat.ru/sitemap.xml
+# У каждого домена свой sitemap: поиск берёт тот, что относится к домену, остальной пропускает
+Sitemap: https://audio-kostya.online/sitemap-audio-kostya.online.xml
+Sitemap: https://audio-chat.ru/sitemap-audio-chat.ru.xml
