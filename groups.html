@@ -20,7 +20,7 @@
     <meta property="og:url" content="https://audio-chat.ru/groups.html">
     <meta property="og:type" content="website">
     
-    <link rel="stylesheet" href="css/main.css?v=2">
+    <link rel="stylesheet" href="css/main.css?v=3">
     <!-- Проверка браузера: должна идти первым скриптом (см. комментарий в файле) -->
     <script src="js/browser-check.js?v=1"></script>
     <script>
@@ -64,24 +64,21 @@
 
         <main class="content">
             <div class="container">
-                <div class="d-flex" style="justify-content: space-between; align-items: center; margin-bottom: var(--spacing-lg);">
+                <div class="page-header">
                     <h1>Группы</h1>
-                    <button class="btn btn-primary" id="createGroupBtn">Создать группу</button>
+                    <button class="btn btn-primary" id="createGroupBtn"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>Создать группу</button>
                 </div>
 
                 <!-- Поиск -->
-                <div class="card mb-md">
-                    <div class="card-body">
-                        <div class="form-group" style="margin-bottom: 0;">
-                            <input 
-                                type="text" 
-                                id="searchInput" 
-                                class="form-input" 
-                                placeholder="Поиск групп..."
-                                style="margin-bottom: 0;"
-                            >
-                        </div>
-                    </div>
+                <div class="search-field">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+                    <label class="visually-hidden" for="searchInput">Поиск групп</label>
+                    <input 
+                        type="text" 
+                        id="searchInput" 
+                        class="form-input" 
+                        placeholder="Найти группу по названию"
+                    >
                 </div>
 
                 <!-- Секции групп (порядок меняется при поиске через flex order) -->
@@ -89,16 +86,16 @@
 
                     <!-- Мои группы -->
                     <div id="myGroupsSection" style="order: 1;">
-                        <h2>Мои группы</h2>
-                        <div id="myGroupsList" class="mb-lg">
+                        <h2 class="section-title">Мои группы</h2>
+                        <div id="myGroupsList" class="groups-grid">
                             <p style="color: var(--text-secondary);">Загрузка...</p>
                         </div>
                     </div>
 
                     <!-- Глобальные группы -->
                     <div id="globalGroupsSection" style="order: 2;">
-                        <h2>Глобальные группы</h2>
-                        <div id="globalGroupsList" class="mb-md">
+                        <h2 class="section-title">Все группы</h2>
+                        <div id="globalGroupsList" class="groups-grid mb-md">
                             <p style="color: var(--text-secondary);">Загрузка...</p>
                         </div>
                         <div id="globalGroupsPagination" class="d-flex gap-sm" style="justify-content: center; align-items: center; flex-wrap: wrap;">
@@ -110,8 +107,8 @@
 
                     <!-- Результаты поиска (вместо глобальных групп) -->
                     <div id="searchResultsSection" class="hidden" style="order: 1;">
-                        <h2>Результаты поиска</h2>
-                        <div id="searchResultsList">
+                        <h2 class="section-title">Результаты поиска</h2>
+                        <div id="searchResultsList" class="groups-grid">
                             <p style="color: var(--text-secondary);">Введите запрос для поиска</p>
                         </div>
                     </div>
@@ -122,7 +119,7 @@
     </div>
 
     <!-- Модальное окно создания группы -->
-    <div id="createGroupModal" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 1000;">
+    <div id="createGroupModal" class="modal-backdrop hidden">
         <div class="card" style="max-width: 500px; width: 90%; max-height: 90vh; overflow-y: auto;">
             <div class="card-header">
                 <h3 class="card-title">Создать группу</h3>
@@ -153,7 +150,7 @@
     </div>
 
     <script src="js/api.js"></script>
-    <script src="js/utils.js"></script>
+    <script src="js/utils.js?v=2"></script>
     <script src="js/auth.js"></script>
     <script src="js/groups.js"></script>
     <script>
@@ -393,31 +390,40 @@
         function displayGroups(groups, containerId) {
             const container = document.getElementById(containerId);
             if (!groups || groups.length === 0) {
-                container.innerHTML = '<p style="color: var(--text-secondary);">Группы не найдены</p>';
+                container.innerHTML = '<div class="empty-state"><img src="images/mascot-peek.webp" alt=""><p>Здесь пока пусто</p></div>';
                 return;
             }
 
-            container.innerHTML = groups.map(group => `
-                <div class="card">
-                    <div class="card-body">
-                        <div class="d-flex" style="justify-content: space-between; align-items: start;">
-                            <div style="flex: 1;">
-                                <h3 style="margin-bottom: var(--spacing-sm);">${Utils.escapeHtml(group.name)}</h3>
-                                ${group.description ? `<p style="color: var(--text-secondary); margin-bottom: var(--spacing-sm);">${Utils.escapeHtml(group.description)}</p>` : ''}
-                                <p style="color: var(--text-secondary); font-size: 12px;">
-                                    Участников: ${group.memberCount || 0} | 
-                                    ${group.hasPassword ? '🔒 Защищена паролем' : '🌐 Публичная'}
-                                </p>
-                            </div>
-                            <div class="d-flex gap-sm">
-                                <a href="group.html?id=${group.id}" class="btn btn-sm btn-primary">Открыть</a>
-                            </div>
-                        </div>
+            container.innerHTML = groups.map(group => {
+                const name = group.name || 'Без названия';
+                return `
+                <article class="group-card">
+                    <div class="group-card__head">
+                        <span class="group-card__avatar" aria-hidden="true">${Utils.escapeHtml(name.trim().charAt(0).toUpperCase() || '#')}</span>
+                        <h3 class="group-card__name">${Utils.escapeHtml(name)}</h3>
                     </div>
-                </div>
-            `).join('');
+                    ${group.description ? `<p class="group-card__desc">${Utils.escapeHtml(group.description)}</p>` : ''}
+                    <div class="group-card__meta">
+                        <span class="chip">${formatMembersCount(group.memberCount || 0)}</span>
+                        <span class="chip">${group.hasPassword ? 'С паролем' : 'Открытая'}</span>
+                    </div>
+                    <div class="group-card__footer">
+                        <a href="group.html?id=${group.id}" class="btn btn-sm btn-primary">Открыть</a>
+                    </div>
+                </article>
+            `;
+            }).join('');
         }
         
+        function formatMembersCount(count) {
+            const mod10 = count % 10;
+            const mod100 = count % 100;
+            const word = mod10 === 1 && mod100 !== 11 ? 'участник'
+                : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14) ? 'участника'
+                : 'участников';
+            return `${count} ${word}`;
+        }
+
         // Скрытая статистика участников аудиоканалов (только для администратора)
         async function initHiddenStats() {
             const statsElement = document.getElementById('hidden-stats');

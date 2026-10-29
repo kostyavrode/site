@@ -41,12 +41,34 @@ const Utils = {
         return div.innerHTML;
     },
 
+    // Уведомления для всей страницы собираются в стопку сверху, а не ложатся друг на друга
+    _placeAlert(alert, container) {
+        if (container !== document.body) {
+            container.insertBefore(alert, container.firstChild);
+            return;
+        }
+        let stack = document.getElementById('toastStack');
+        if (!stack) {
+            stack = document.createElement('div');
+            stack.id = 'toastStack';
+            stack.className = 'toast-stack';
+            stack.setAttribute('role', 'status');
+            stack.setAttribute('aria-live', 'polite');
+            document.body.appendChild(stack);
+        }
+        stack.insertBefore(alert, stack.firstChild);
+        // Больше трёх одновременно не показываем
+        while (stack.children.length > 3) {
+            stack.lastChild.remove();
+        }
+    },
+
     // Показать сообщение об ошибке
     showError(message, container = document.body) {
         const alert = document.createElement('div');
         alert.className = 'alert alert-error';
         alert.textContent = message;
-        container.insertBefore(alert, container.firstChild);
+        Utils._placeAlert(alert, container);
         setTimeout(() => alert.remove(), 5000);
     },
 
@@ -55,7 +77,7 @@ const Utils = {
         const alert = document.createElement('div');
         alert.className = 'alert alert-success';
         alert.textContent = message;
-        container.insertBefore(alert, container.firstChild);
+        Utils._placeAlert(alert, container);
         setTimeout(() => alert.remove(), 5000);
     },
 
@@ -64,7 +86,7 @@ const Utils = {
         const alert = document.createElement('div');
         alert.className = 'alert alert-info';
         alert.textContent = message;
-        container.insertBefore(alert, container.firstChild);
+        Utils._placeAlert(alert, container);
         setTimeout(() => alert.remove(), 5000);
     },
 

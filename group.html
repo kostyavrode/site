@@ -10,7 +10,7 @@
     <meta name="keywords" content="аудио чат, голосовой канал, audio chat, аналог discord, голосовое общение, демонстрация экрана">
     <meta name="robots" content="noindex, nofollow">
     
-    <link rel="stylesheet" href="css/main.css?v=2">
+    <link rel="stylesheet" href="css/main.css?v=3">
     <!-- Проверка браузера: должна идти первым скриптом (см. комментарий в файле) -->
     <script src="js/browser-check.js?v=1"></script>
     <script src="https://unpkg.com/@microsoft/signalr@7.0.0/dist/browser/signalr.min.js"></script>
@@ -122,36 +122,109 @@
         }
     </script>
     <style>
+        /* ---------- Рабочий экран во всю ширину: шапка сайта тоже ---------- */
+        .navbar-content {
+            max-width: none;
+        }
+
+        .navbar {
+            padding-left: var(--spacing-md);
+            padding-right: var(--spacing-md);
+        }
+
+        /* ---------- Шапка группы ---------- */
+        .group-header {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            margin-bottom: 18px;
+            flex-wrap: wrap;
+        }
+
+        .group-header__title {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .group-header__title h1 {
+            margin: 0;
+            font-size: 26px;
+            overflow-wrap: anywhere;
+        }
+
+        .group-header__title p {
+            margin: 2px 0 0;
+            color: var(--text-secondary);
+        }
+
+        .group-header__title p:empty {
+            display: none;
+        }
+
+        .group-header__actions {
+            display: flex;
+            gap: var(--spacing-sm);
+        }
+
+        /* На телефоне каналы видны прямо на странице - отдельное окно не нужно */
+        #mobileAudioBtn {
+            display: none !important;
+        }
+
+        /* ---------- Раскладка: слева каналы и участники, справа чат ---------- */
         .group-layout {
             display: grid;
-            grid-template-columns: 300px 1fr 250px;
-            gap: var(--spacing-md);
-            height: calc(100vh - 200px);
-            min-height: 0;
-            align-items: stretch;
+            grid-template-columns: 320px minmax(0, 1fr);
+            grid-template-rows: minmax(0, 1.7fr) minmax(0, 1fr);
+            grid-template-areas:
+                "channels chat"
+                "members chat";
+            gap: 20px;
+            height: calc(100vh - 176px);
+            min-height: 520px;
         }
-        
+
         .sidebar,
         .main-content,
         .audio-channels {
-            height: 100%;
             min-height: 0;
             display: flex;
             flex-direction: column;
             overflow: hidden;
+            background-color: var(--bg-secondary);
+            border-radius: var(--radius-lg);
         }
-        
+
+        .audio-channels {
+            grid-area: channels;
+            padding: 18px;
+        }
+
         .sidebar {
-            border-right: 1px solid var(--border-color);
+            grid-area: members;
+            padding: 18px;
+        }
+
+        .main-content {
+            grid-area: chat;
         }
 
         .group-column-header {
             flex-shrink: 0;
-            margin-bottom: var(--spacing-md);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: var(--spacing-sm);
+            margin-bottom: 14px;
         }
 
         .group-column-header h3 {
-            margin-bottom: 0;
+            margin: 0;
+            font-size: 13px;
+            font-weight: 600;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--text-secondary);
         }
 
         #membersList,
@@ -163,14 +236,413 @@
 
         #audioParticipantsSection {
             flex-shrink: 0;
+            max-height: 45%;
+            overflow-y: auto;
         }
-        
-        .main-content {
+
+        #audioParticipantsSection h3 {
+            font-size: 13px;
+            font-weight: 600;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--text-secondary);
+        }
+
+        /* ---------- Участники группы ---------- */
+        .avatar {
+            flex-shrink: 0;
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .avatar--sm {
+            width: 30px;
+            height: 30px;
+            font-size: 13px;
+        }
+
+        .member-row {
             display: flex;
-            flex-direction: column;
-            overflow: hidden;
+            align-items: center;
+            gap: 10px;
+            padding: 6px 8px;
+            margin-bottom: 2px;
+            border-radius: 14px;
         }
-        
+
+        .member-row.is-you {
+            background-color: var(--bg-tertiary);
+        }
+
+        .member-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .member-name {
+            font-weight: 500;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .member-name small {
+            font-weight: 400;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .member-role {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .member-actions {
+            display: flex;
+            align-items: center;
+            gap: var(--spacing-sm);
+            flex-shrink: 0;
+        }
+
+        .member-role-select {
+            font-size: 13px;
+            padding: 4px 8px;
+        }
+
+        /* ---------- Голосовые каналы ---------- */
+        .audio-channel {
+            padding: 14px;
+            margin-bottom: 10px;
+            background-color: var(--bg-tertiary);
+            border-radius: 18px;
+            transition: background-color 0.2s;
+        }
+
+        .audio-channel.active {
+            background-color: var(--accent-soft);
+        }
+
+        .audio-channel__head {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .audio-channel__head svg {
+            flex-shrink: 0;
+            color: var(--text-secondary);
+        }
+
+        .audio-channel.active .audio-channel__head svg,
+        .audio-channel.active .audio-channel__name {
+            color: var(--accent-ink);
+        }
+
+        .audio-channel__name {
+            flex: 1;
+            min-width: 0;
+            font-weight: 600;
+            overflow-wrap: anywhere;
+        }
+
+        .audio-channel__count {
+            flex-shrink: 0;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .audio-channel__desc {
+            margin-top: 4px;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .channel-participants {
+            margin-top: 8px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .channel-participants:empty {
+            display: none;
+        }
+
+        .channel-participant {
+            display: inline-flex;
+            align-items: center;
+            padding: 2px 10px;
+            border-radius: var(--radius-pill);
+            background-color: var(--bg-secondary);
+            color: var(--text-strong);
+        }
+
+        .audio-channel-controls {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px;
+            margin-top: 12px;
+        }
+
+        .audio-channel-controls .join-audio-btn,
+        .audio-channel-controls .audio-watch-btn,
+        .audio-channel-controls .audio-effects-panel {
+            flex: 1 1 100%;
+        }
+
+        .audio-channel.active .join-audio-btn {
+            order: 10;
+            background-color: var(--danger);
+            border-color: var(--danger);
+        }
+
+        .audio-channel.active .join-audio-btn:hover {
+            background-color: #D13438;
+            border-color: #D13438;
+        }
+
+        .audio-channel-controls .btn-icon {
+            background-color: var(--bg-secondary);
+            border-color: transparent;
+            color: var(--text-strong);
+        }
+
+        .audio-channel-controls .btn-icon:hover {
+            background-color: #FFFFFF;
+            border-color: var(--input-border);
+        }
+
+        /* Включённая демонстрация экрана или камера (скрипт красит фон в --accent-green) */
+        .audio-channel-controls .btn-icon[style*="accent-green"] {
+            color: #FFFFFF;
+            border-color: transparent;
+        }
+
+        .audio-channel-controls .audio-mute-btn.is-muted {
+            background-color: var(--danger);
+            border-color: var(--danger);
+            color: #FFFFFF;
+        }
+
+        .audio-effects-panel {
+            border-top-color: rgba(13, 26, 51, 0.08) !important;
+        }
+
+        .audio-sfx-btn {
+            background-color: var(--bg-secondary);
+            border-color: transparent;
+        }
+
+        .audio-participants-list {
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid rgba(13, 26, 51, 0.08);
+        }
+
+        .audio-participants-title {
+            margin-bottom: 8px;
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--text-secondary);
+        }
+
+        [id^="audioParticipantsContainer-"] {
+            max-height: 220px;
+            overflow-y: auto;
+        }
+
+        .participant-row {
+            padding: 6px 8px;
+            margin-bottom: 4px;
+            border-radius: 14px;
+            background-color: var(--bg-secondary);
+        }
+
+        .participant-row__head {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .participant-row__name {
+            flex: 1;
+            min-width: 0;
+            font-weight: 500;
+            font-size: 14px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .participant-row__name small {
+            font-weight: 400;
+            color: var(--text-secondary);
+        }
+
+        .participant-row__volume {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin: 6px 2px 2px 40px;
+        }
+
+        .participant-row__volume svg {
+            flex-shrink: 0;
+            color: var(--text-secondary);
+        }
+
+        .participant-row__volume span {
+            min-width: 36px;
+            text-align: right;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        /* ---------- Подключённый канал: всё управление в одном экране ----------
+           Порядок: кнопки в одну строку -> участники с громкостью -> «Смотреть» -> аудиоэффекты.
+           Контейнер кнопок раскрываем (display: contents), чтобы его элементы встали в общий поток карточки. */
+        .audio-channel.active {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px;
+            padding: 12px;
+        }
+
+        .audio-channel.active > * {
+            flex: 1 1 100%;
+            margin: 0;
+        }
+
+        .audio-channel.active .channel-participants {
+            display: none;
+        }
+
+        .audio-channel.active .audio-channel-controls {
+            display: contents;
+        }
+
+        .audio-channel.active .audio-channel-controls .btn-icon {
+            flex: 0 0 auto;
+            order: 1;
+            width: 40px;
+            height: 40px;
+        }
+
+        /* «Отключиться» - круглая красная кнопка «положить трубку» в той же строке; текст остаётся для экранного диктора */
+        .audio-channel.active .join-audio-btn {
+            flex: 0 0 auto;
+            order: 2;
+            width: 40px;
+            height: 40px;
+            margin-left: auto;
+            padding: 0;
+            border-radius: 50%;
+            font-size: 0;
+        }
+
+        .audio-channel.active .join-audio-btn::before {
+            content: "";
+            width: 20px;
+            height: 20px;
+            background-color: #FFFFFF;
+            -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 14.5c5-4.7 13-4.7 18 0l-2.2 2.7-3.3-1.6v-2.8a11 11 0 0 0-7 0v2.8l-3.3 1.6z'/%3E%3C/svg%3E") center / contain no-repeat;
+            mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 14.5c5-4.7 13-4.7 18 0l-2.2 2.7-3.3-1.6v-2.8a11 11 0 0 0-7 0v2.8l-3.3 1.6z'/%3E%3C/svg%3E") center / contain no-repeat;
+        }
+
+        .audio-channel.active .audio-participants-list {
+            order: 3;
+            padding-top: 8px;
+        }
+
+        .audio-channel.active .audio-participants-title {
+            display: none;
+        }
+
+        .audio-channel.active [id^="audioParticipantsContainer-"] {
+            max-height: none;
+        }
+
+        .audio-channel.active .audio-watch-btn {
+            order: 4;
+        }
+
+        .audio-channel.active .audio-effects-panel {
+            order: 5;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 6px;
+            margin: 0 !important;
+            padding: 8px 0 0 !important;
+        }
+
+        /* Подпись «Аудиоэффекты» не нужна: у кнопок есть подсказки */
+        .audio-channel.active .audio-effects-panel > div:first-child {
+            display: none;
+        }
+
+        .audio-channel.active .audio-sfx-btn {
+            width: 32px;
+            height: 32px;
+            padding: 0;
+            font-size: 15px;
+        }
+
+        /* Участник: аватар, имя и громкость в одну строку */
+        .audio-channel.active .participant-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 4px 8px 4px 4px;
+            margin-bottom: 4px;
+        }
+
+        .audio-channel.active .participant-row__head {
+            flex: 0 1 auto;
+            min-width: 0;
+            max-width: 46%;
+            gap: 8px;
+        }
+
+        .audio-channel.active .participant-row__head .avatar {
+            width: 26px;
+            height: 26px;
+            font-size: 12px;
+        }
+
+        .audio-channel.active .participant-row__name {
+            font-size: 13px;
+        }
+
+        .audio-channel.active .participant-row__volume {
+            flex: 1 1 auto;
+            min-width: 0;
+            margin: 0;
+            gap: 6px;
+        }
+
+        .audio-channel.active .participant-row__volume svg {
+            display: none;
+        }
+
+        .audio-channel.active .participant-row__volume span {
+            min-width: 32px;
+            font-size: 11px;
+        }
+
+        /* ---------- Чат ---------- */
         .chat-container {
             flex: 1;
             display: flex;
@@ -178,58 +650,79 @@
             overflow: hidden;
             min-height: 0;
         }
-        
-        .audio-channel-controls {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: var(--spacing-xs);
-            margin-top: var(--spacing-sm);
-        }
-        
-        .audio-channel-controls .join-audio-btn {
-            grid-column: 1 / -1;
-        }
-        
-        .audio-channel-controls .audio-watch-btn {
-            grid-column: 1 / -1;
-        }
-        
+
         .messages-container {
             flex: 1;
             min-height: 0;
             overflow-y: auto;
-            padding: var(--spacing-md);
-            background-color: var(--bg-primary);
+            padding: 24px 28px 8px;
         }
-        
+
         .message {
-            margin-bottom: var(--spacing-md);
-            padding: var(--spacing-sm);
-            background-color: var(--bg-secondary);
-            border-left: 2px solid var(--accent-blue);
-            border-radius: var(--border-radius);
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            margin-bottom: 18px;
         }
-        
+
+        .message-body {
+            min-width: 0;
+            max-width: min(78%, 620px);
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 4px;
+        }
+
         .message-header {
             display: flex;
-            justify-content: space-between;
-            margin-bottom: 4px;
-            font-size: 12px;
-            color: var(--text-secondary);
+            align-items: baseline;
+            gap: 8px;
+            font-size: 13px;
         }
-        
+
         .message-author {
-            color: var(--accent-blue);
+            color: var(--text-primary);
             font-weight: 600;
+            font-size: 14px;
         }
-        
+
         .message-time {
             color: var(--text-secondary);
         }
-        
+
         .message-content {
+            padding: 10px 16px;
+            border-radius: 4px 18px 18px 18px;
+            background-color: var(--bg-tertiary);
             color: var(--text-primary);
-            word-wrap: break-word;
+            overflow-wrap: anywhere;
+            white-space: pre-wrap;
+        }
+
+        .message--own {
+            flex-direction: row-reverse;
+        }
+
+        .message--own .message-body {
+            align-items: flex-end;
+        }
+
+        .message--own .message-header {
+            flex-direction: row-reverse;
+        }
+
+        .message--own .message-content {
+            border-radius: 18px 4px 18px 18px;
+            background-color: var(--accent-blue);
+            color: #FFFFFF;
+        }
+
+        .message-content--sticker,
+        .message--own .message-content--sticker {
+            padding: 0;
+            background: none;
+            color: var(--text-secondary);
         }
 
         .message-sticker {
@@ -242,46 +735,65 @@
         .chat-input-container {
             position: relative; /* окно стикеров открывается над полем ввода */
             flex-shrink: 0;
-            border-top: 1px solid var(--border-color);
-            padding: var(--spacing-md);
-            background-color: var(--bg-secondary);
+            padding: 12px 20px 20px;
         }
 
         .chat-input-form {
             display: flex;
-            gap: var(--spacing-sm);
+            align-items: center;
+            gap: 6px;
+            padding: 5px 5px 5px 20px;
+            border-radius: var(--radius-pill);
+            background-color: var(--bg-tertiary);
+            transition: box-shadow 0.2s;
         }
 
-        .chat-input {
+        .chat-input-form:focus-within {
+            box-shadow: 0 0 0 2px rgba(26, 102, 240, 0.35);
+        }
+
+        .chat-input-form .chat-input {
             flex: 1;
             min-width: 0;
+            padding: 10px 0;
+            border: 0;
+            background: transparent;
+            box-shadow: none;
+            font-size: 15px;
+        }
+
+        .chat-input-form .chat-input:focus {
+            background: transparent;
+            box-shadow: none;
         }
 
         .chat-sticker-btn {
-            flex-shrink: 0;
-            padding: var(--spacing-sm) 10px;
-            font-size: 18px;
-            line-height: 1;
+            background: transparent;
+            border-color: transparent;
+            color: var(--text-strong);
         }
 
+        .chat-sticker-btn:hover,
         .chat-sticker-btn[aria-expanded="true"] {
-            border-color: var(--accent-blue);
-            background-color: var(--bg-tertiary);
+            background-color: var(--accent-soft);
+            border-color: transparent;
+            color: var(--accent-ink);
         }
 
+        /* ---------- Окно стикеров ---------- */
         .sticker-picker {
             position: absolute;
-            right: var(--spacing-md);
-            bottom: calc(100% + 4px);
+            right: 20px;
+            bottom: calc(100% - 4px);
             z-index: 50;
-            width: min(340px, calc(100% - 2 * var(--spacing-md)));
+            width: min(360px, calc(100% - 40px));
             height: 320px;
             display: flex;
             flex-direction: column;
+            padding: 8px;
             background-color: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            border-radius: 6px;
-            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow-pop);
         }
 
         .sticker-picker[hidden] {
@@ -291,10 +803,9 @@
         .sticker-picker-tabs {
             flex-shrink: 0;
             display: flex;
-            gap: 2px;
-            padding: 4px;
+            gap: 4px;
+            padding: 2px 2px 8px;
             overflow-x: auto;
-            border-bottom: 1px solid var(--border-color);
             scrollbar-width: thin;
         }
 
@@ -304,16 +815,16 @@
 
         .sticker-picker-tab {
             flex-shrink: 0;
-            width: 36px;
-            height: 36px;
-            padding: 3px;
+            width: 40px;
+            height: 40px;
+            padding: 4px;
             display: flex;
             align-items: center;
             justify-content: center;
             background: none;
             border: none;
-            border-radius: 4px;
-            color: var(--text-primary);
+            border-radius: 12px;
+            color: var(--text-strong);
             font-size: 18px;
             cursor: pointer;
         }
@@ -323,8 +834,7 @@
         }
 
         .sticker-picker-tab.active {
-            background-color: var(--bg-tertiary);
-            box-shadow: inset 0 -2px 0 var(--accent-blue);
+            background-color: var(--accent-soft);
         }
 
         .sticker-picker-tab img {
@@ -338,31 +848,33 @@
             min-height: 0;
             overflow-y: auto;
             overscroll-behavior: contain;
-            padding: var(--spacing-sm);
+            padding: 2px;
         }
 
         .sticker-picker-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+            grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
             gap: 4px;
         }
 
         .sticker-picker-item {
             aspect-ratio: 1;
-            padding: 4px;
+            padding: 6px;
             display: flex;
             align-items: center;
             justify-content: center;
             background: none;
             border: none;
-            border-radius: 4px;
+            border-radius: 14px;
             cursor: pointer;
+            transition: background-color 0.15s, transform 0.15s;
         }
 
         .sticker-picker-item:hover,
         .sticker-picker-item:focus-visible {
             background-color: var(--bg-tertiary);
             outline: none;
+            transform: scale(1.04);
         }
 
         .sticker-picker-item img {
@@ -382,209 +894,75 @@
             padding: var(--spacing-md);
             text-align: center;
             color: var(--text-secondary);
-            font-size: 13px;
+            font-size: 14px;
         }
 
         .sticker-picker-retry {
             margin-top: var(--spacing-sm);
         }
 
-        .audio-channels {
-            border-left: 1px solid var(--border-color);
-        }
-        
-        .audio-channel {
-            padding: var(--spacing-md);
-            margin-bottom: var(--spacing-sm);
-            background-color: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            border-radius: var(--border-radius);
-        }
-        
-        .audio-channel.active {
-            border-color: var(--accent-blue);
-        }
-        
-        .audio-controls {
+        /* ---------- Окна ---------- */
+        .settings-option {
             display: flex;
-            gap: var(--spacing-sm);
-            margin-top: var(--spacing-sm);
+            align-items: center;
+            justify-content: space-between;
+            gap: var(--spacing-md);
+            cursor: pointer;
+            padding: 12px 14px;
+            border-radius: 16px;
+            background-color: var(--bg-tertiary);
         }
-        
-        /* Планшеты - скрываем участников, оставляем аудиоканалы */
-        @media (max-width: 1200px) {
-            .group-layout {
-                grid-template-columns: 1fr 250px;
-            }
-            .sidebar {
-                display: none;
-            }
+
+        .settings-option input {
+            flex-shrink: 0;
         }
-        
-        /* Мобильные устройства - аудиоканалы слева */
-        @media (max-width: 768px) {
-            .group-layout {
-                grid-template-columns: 200px 1fr;
-                gap: var(--spacing-sm);
-            }
-            .sidebar {
-                display: none;
-            }
-            .audio-channels {
-                display: block;
-                order: -1; /* Перемещаем аудиоканалы влево */
-                border-right: 1px solid var(--border-color);
-                border-left: none;
-            }
-            .main-content {
-                order: 1;
-            }
-            #mobileAudioBtn {
-                display: none; /* Кнопка не нужна, т.к. аудиоканалы видны */
-            }
-        }
-        
-        /* Очень маленькие экраны */
-        @media (max-width: 480px) {
-            .group-layout {
-                grid-template-columns: 150px 1fr;
-            }
-            .audio-channels h3 {
-                font-size: 14px;
-            }
-            .audio-channels .btn-sm {
-                padding: 2px 6px;
-                font-size: 10px;
-            }
-        }
-        
-        @media (min-width: 769px) {
-            #mobileAudioBtn {
-                display: none;
-            }
-        }
-        
-        /* Модальное окно аудиоканалов - больше не нужно на мобильных */
+
+        /* Мобильное окно каналов больше не используется: каналы видны на странице */
         .audio-channels-modal {
             display: none;
         }
-        
+
         .audio-channels-modal.active {
             display: flex;
         }
 
-        /* Тёмные полосы прокрутки */
-        .sidebar,
-        .messages-container,
-        .audio-channels,
-        #mobileAudioChannelsList,
-        [id^="audioParticipantsContainer-"] {
-            scrollbar-width: thin;
-            scrollbar-color: #3e3e42 #1e1e1e;
-        }
+        /* ---------- Узкие экраны: всё в одну колонку ---------- */
+        @media (max-width: 900px) {
+            .group-layout {
+                grid-template-columns: minmax(0, 1fr);
+                grid-template-rows: auto minmax(0, 1fr) auto;
+                grid-template-areas:
+                    "channels"
+                    "chat"
+                    "members";
+                height: auto;
+                min-height: 0;
+            }
 
-        .sidebar::-webkit-scrollbar,
-        .messages-container::-webkit-scrollbar,
-        .audio-channels::-webkit-scrollbar,
-        #mobileAudioChannelsList::-webkit-scrollbar,
-        [id^="audioParticipantsContainer-"]::-webkit-scrollbar {
-            width: 8px;
-            height: 8px;
-        }
+            .audio-channels {
+                max-height: 46vh;
+            }
 
-        .sidebar::-webkit-scrollbar-track,
-        .messages-container::-webkit-scrollbar-track,
-        .audio-channels::-webkit-scrollbar-track,
-        #mobileAudioChannelsList::-webkit-scrollbar-track,
-        [id^="audioParticipantsContainer-"]::-webkit-scrollbar-track {
-            background: #1e1e1e;
-        }
+            .main-content {
+                height: 72vh;
+                min-height: 420px;
+            }
 
-        .sidebar::-webkit-scrollbar-thumb,
-        .messages-container::-webkit-scrollbar-thumb,
-        .audio-channels::-webkit-scrollbar-thumb,
-        #mobileAudioChannelsList::-webkit-scrollbar-thumb,
-        [id^="audioParticipantsContainer-"]::-webkit-scrollbar-thumb {
-            background: #3e3e42;
-            border: 1px solid #2d2d30;
-            border-radius: 4px;
-        }
+            .sidebar {
+                max-height: 50vh;
+            }
 
-        .sidebar::-webkit-scrollbar-thumb:hover,
-        .messages-container::-webkit-scrollbar-thumb:hover,
-        .audio-channels::-webkit-scrollbar-thumb:hover,
-        #mobileAudioChannelsList::-webkit-scrollbar-thumb:hover,
-        [id^="audioParticipantsContainer-"]::-webkit-scrollbar-thumb:hover {
-            background: #569cd6;
-        }
+            .messages-container {
+                padding: 18px 16px 8px;
+            }
 
-        /* Тёмные слайдеры громкости */
-        .sidebar input[type="range"],
-        .audio-channels input[type="range"],
-        .audio-participants-list input[type="range"],
-        [id^="audioParticipantsContainer-"] input[type="range"],
-        .participant-volume-slider {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 100%;
-            height: 6px;
-            background: transparent;
-            border: none;
-            border-radius: 3px;
-            outline: none;
-            cursor: pointer;
-            accent-color: #569cd6;
-        }
+            .message-body {
+                max-width: 85%;
+            }
 
-        .sidebar input[type="range"]::-webkit-slider-runnable-track,
-        .audio-channels input[type="range"]::-webkit-slider-runnable-track,
-        .audio-participants-list input[type="range"]::-webkit-slider-runnable-track,
-        [id^="audioParticipantsContainer-"] input[type="range"]::-webkit-slider-runnable-track,
-        .participant-volume-slider::-webkit-slider-runnable-track {
-            height: 6px;
-            background: #2d2d30;
-            border: 1px solid #3e3e42;
-            border-radius: 3px;
-        }
-
-        .sidebar input[type="range"]::-webkit-slider-thumb,
-        .audio-channels input[type="range"]::-webkit-slider-thumb,
-        .audio-participants-list input[type="range"]::-webkit-slider-thumb,
-        [id^="audioParticipantsContainer-"] input[type="range"]::-webkit-slider-thumb,
-        .participant-volume-slider::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 14px;
-            height: 14px;
-            margin-top: -5px;
-            background: #569cd6;
-            border: 1px solid #3e3e42;
-            border-radius: 50%;
-            cursor: pointer;
-        }
-
-        .sidebar input[type="range"]::-moz-range-track,
-        .audio-channels input[type="range"]::-moz-range-track,
-        .audio-participants-list input[type="range"]::-moz-range-track,
-        [id^="audioParticipantsContainer-"] input[type="range"]::-moz-range-track,
-        .participant-volume-slider::-moz-range-track {
-            height: 6px;
-            background: #2d2d30;
-            border: 1px solid #3e3e42;
-            border-radius: 3px;
-        }
-
-        .sidebar input[type="range"]::-moz-range-thumb,
-        .audio-channels input[type="range"]::-moz-range-thumb,
-        .audio-participants-list input[type="range"]::-moz-range-thumb,
-        [id^="audioParticipantsContainer-"] input[type="range"]::-moz-range-thumb,
-        .participant-volume-slider::-moz-range-thumb {
-            width: 14px;
-            height: 14px;
-            background: #569cd6;
-            border: 1px solid #3e3e42;
-            border-radius: 50%;
-            cursor: pointer;
+            .chat-input-container {
+                padding: 10px 12px 14px;
+            }
         }
     </style>
     <script>
@@ -628,23 +1006,23 @@
 
         <main class="content" style="padding: var(--spacing-md);">
             <div id="groupContent" class="hidden">
-                <div class="d-flex" style="justify-content: space-between; align-items: center; margin-bottom: var(--spacing-md);">
-                    <div>
+                <div class="group-header">
+                    <a href="groups.html" class="btn btn-icon" aria-label="Назад к группам" title="Назад к группам"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></a>
+                    <div class="group-header__title">
                         <h1 id="groupName">Загрузка...</h1>
-                        <p id="groupDescription" style="color: var(--text-secondary);"></p>
+                        <p id="groupDescription"></p>
                     </div>
-                    <div class="d-flex gap-sm">
-                        <button class="btn btn-sm" id="joinGroupBtn" style="display: none;">Присоединиться</button>
-                        <button class="btn btn-sm btn-primary" id="mobileAudioBtn" style="display: none;">🎤 Аудио</button>
-                        <a href="groups.html" class="btn btn-sm">Назад к группам</a>
+                    <div class="group-header__actions">
+                        <button class="btn btn-primary" id="joinGroupBtn" style="display: none;">Присоединиться</button>
+                        <button class="btn btn-sm btn-primary" id="mobileAudioBtn" style="display: none;">Аудио</button>
                     </div>
                 </div>
 
                 <div class="group-layout">
                     <!-- Участники -->
                     <div class="sidebar">
-                        <div class="group-column-header d-flex" style="justify-content: space-between; align-items: center;">
-                            <h3>Участники группы</h3>
+                        <div class="group-column-header">
+                            <h3>В группе</h3>
                             <div id="membersHeaderActions"></div>
                         </div>
                         <div id="membersList">
@@ -653,7 +1031,7 @@
                         
                         <!-- Участники аудио канала -->
                         <div id="audioParticipantsSection" style="display: none; margin-top: var(--spacing-lg); padding-top: var(--spacing-lg); border-top: 1px solid var(--border-color);">
-                            <h3 style="margin-bottom: var(--spacing-md);">В аудио канале</h3>
+                            <h3 style="margin-bottom: var(--spacing-sm);">В голосовом канале</h3>
                             <div id="audioParticipantsList">
                                 <p style="color: var(--text-secondary);">Загрузка...</p>
                             </div>
@@ -662,24 +1040,22 @@
 
                     <!-- Чат -->
                     <div class="main-content">
-                        <div class="group-column-header">
-                            <h3>Чат</h3>
-                        </div>
                         <div class="chat-container">
                             <div class="messages-container" id="messagesContainer">
                                 <p style="color: var(--text-secondary); text-align: center;">Загрузка сообщений...</p>
                             </div>
                             <div class="chat-input-container">
                                 <form id="messageForm" class="chat-input-form">
-                                    <input 
-                                        type="text" 
-                                        id="messageInput" 
-                                        class="form-input chat-input" 
-                                        placeholder="Введите сообщение..."
+                                    <label class="visually-hidden" for="messageInput">Сообщение</label>
+                                    <input
+                                        type="text"
+                                        id="messageInput"
+                                        class="form-input chat-input"
+                                        placeholder="Напишите сообщение…"
                                         autocomplete="off"
                                     >
-                                    <button type="button" id="stickerButton" class="btn chat-sticker-btn" title="Стикеры" aria-label="Стикеры">😊</button>
-                                    <button type="submit" class="btn btn-primary">Отправить</button>
+                                    <button type="button" id="stickerButton" class="btn btn-icon chat-sticker-btn" title="Стикеры" aria-label="Стикеры"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5c1 1.2 2.2 1.8 3.5 1.8s2.5-.6 3.5-1.8"/><path d="M9 9.5h.01"/><path d="M15 9.5h.01"/></svg></button>
+                                    <button type="submit" class="btn btn-icon btn-primary" aria-label="Отправить" title="Отправить"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg></button>
                                 </form>
                             </div>
                         </div>
@@ -687,9 +1063,9 @@
 
                     <!-- Аудио каналы -->
                     <div class="audio-channels">
-                        <div class="group-column-header d-flex" style="justify-content: space-between; align-items: center;">
-                            <h3>Аудио каналы</h3>
-                            <button class="btn btn-sm btn-primary" id="createAudioChannelBtn">+</button>
+                        <div class="group-column-header">
+                            <h3>Голосовые каналы</h3>
+                            <button class="btn btn-sm btn-icon" id="createAudioChannelBtn" aria-label="Создать голосовой канал" title="Создать голосовой канал"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg></button>
                         </div>
                         <div id="audioChannelsList">
                             <p style="color: var(--text-secondary);">Загрузка...</p>
@@ -707,7 +1083,7 @@
     </div>
 
     <!-- Модальное окно присоединения к группе -->
-    <div id="joinGroupModal" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 1000;">
+    <div id="joinGroupModal" class="modal-backdrop hidden">
         <div class="card" style="max-width: 400px; width: 90%;">
             <div class="card-header">
                 <h3 class="card-title">Присоединиться к группе</h3>
@@ -729,8 +1105,8 @@
     </div>
 
     <!-- Модальное окно аудио каналов (для мобильных) -->
-    <div id="audioChannelsModal" class="audio-channels-modal" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.9); z-index: 1001; flex-direction: column;">
-        <div style="padding: var(--spacing-md); border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; background: var(--bg-secondary);">
+    <div id="audioChannelsModal" class="audio-channels-modal" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: var(--bg-primary); z-index: 1001; flex-direction: column;">
+        <div style="padding: var(--spacing-md); display: flex; justify-content: space-between; align-items: center; background: var(--bg-secondary);">
             <h2 style="margin: 0;">Аудио каналы</h2>
             <button class="btn btn-sm" onclick="document.getElementById('audioChannelsModal').classList.remove('active')">✕ Закрыть</button>
         </div>
@@ -740,14 +1116,14 @@
     </div>
 
     <!-- Модальное окно настроек аудио -->
-    <div id="audioSettingsModal" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 1002;">
+    <div id="audioSettingsModal" class="modal-backdrop hidden" style="z-index: 1002;">
         <div class="card" style="max-width: 450px; width: 90%;">
             <div class="card-header">
-                <h3 class="card-title">⚙️ Настройки аудио</h3>
+                <h3 class="card-title">Настройки звука</h3>
             </div>
             <div class="card-body">
-                <div class="form-group">
-                    <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: var(--spacing-sm);">
+                <div class="form-group" style="margin-bottom: 10px;">
+                    <label class="settings-option">
                         <span>
                             <strong>Шумоподавление (браузер)</strong>
                             <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">
@@ -758,8 +1134,8 @@
                     </label>
                 </div>
 
-                <div class="form-group" style="margin-top: var(--spacing-md);">
-                    <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: var(--spacing-sm);">
+                <div class="form-group" style="margin-bottom: 10px;">
+                    <label class="settings-option">
                         <span>
                             <strong>DeepFilterNet 3 (максимальное шумоподавление)</strong>
                             <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">
@@ -770,8 +1146,8 @@
                     </label>
                 </div>
 
-                <div class="form-group" style="margin-top: var(--spacing-md);">
-                    <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: var(--spacing-sm);">
+                <div class="form-group" style="margin-bottom: 10px;">
+                    <label class="settings-option">
                         <span>
                             <strong>RNNoise (AI шумоподавление)</strong>
                             <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">
@@ -783,8 +1159,8 @@
                     <p id="rnnoiseAvailabilityHint" style="font-size: 12px; color: var(--text-secondary); margin-top: 4px; display: none;"></p>
                 </div>
                 
-                <div class="form-group" style="margin-top: var(--spacing-md);">
-                    <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: var(--spacing-sm);">
+                <div class="form-group" style="margin-bottom: 10px;">
+                    <label class="settings-option">
                         <span>
                             <strong>Эхоподавление</strong>
                             <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">
@@ -795,8 +1171,8 @@
                     </label>
                 </div>
                 
-                <div class="form-group" style="margin-top: var(--spacing-md);">
-                    <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: var(--spacing-sm);">
+                <div class="form-group" style="margin-bottom: 10px;">
+                    <label class="settings-option">
                         <span>
                             <strong>Автоматическая регулировка громкости</strong>
                             <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">
@@ -818,10 +1194,10 @@
     </div>
 
     <!-- Модальное окно создания аудио канала -->
-    <div id="createAudioChannelModal" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 1000;">
+    <div id="createAudioChannelModal" class="modal-backdrop hidden">
         <div class="card" style="max-width: 400px; width: 90%;">
             <div class="card-header">
-                <h3 class="card-title">Создать аудио канал</h3>
+                <h3 class="card-title">Новый голосовой канал</h3>
             </div>
             <div class="card-body">
                 <form id="createAudioChannelForm">
@@ -843,7 +1219,7 @@
     </div>
 
     <!-- Модальное окно ошибки -->
-    <div id="errorModal" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 1003;">
+    <div id="errorModal" class="modal-backdrop hidden" style="z-index: 1003;">
         <div class="card" style="max-width: 400px; width: 90%;">
             <div class="card-header">
                 <h3 class="card-title" style="color: var(--error);">Ошибка</h3>
@@ -856,7 +1232,7 @@
     </div>
 
     <script src="js/api.js"></script>
-    <script src="js/utils.js"></script>
+    <script src="js/utils.js?v=2"></script>
     <script src="js/auth.js"></script>
     <script src="js/groups.js"></script>
     <script src="js/chat.js?v=2"></script>
@@ -886,6 +1262,65 @@
         let isEditingRoles = false;
         let currentMembersList = [];
         let pendingRoleChanges = {};
+
+        // ---------- Оформление: иконки, аватары, сообщения ----------
+        const ICON_ATTRS = 'width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"';
+        const ICONS = {
+            mic: `<svg ${ICON_ATTRS}><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg>`,
+            micOff: `<svg ${ICON_ATTRS}><path d="M9 9v2a3 3 0 0 0 5.1 2.1"/><path d="M15 9.3V5a3 3 0 0 0-5.9-.6"/><path d="M19 11a7 7 0 0 1-1.2 3.9"/><path d="M5 11a7 7 0 0 0 11 5.7"/><path d="M12 18v3"/><path d="M3 3l18 18"/></svg>`,
+            settings: `<svg ${ICON_ATTRS}><path d="M4 7h10"/><path d="M18 7h2"/><circle cx="16" cy="7" r="2"/><path d="M4 17h4"/><path d="M12 17h8"/><circle cx="10" cy="17" r="2"/></svg>`,
+            screen: `<svg ${ICON_ATTRS}><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8"/><path d="M12 16v4"/></svg>`,
+            camera: `<svg ${ICON_ATTRS}><rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10l5-3v10l-5-3"/></svg>`,
+            eye: `<svg ${ICON_ATTRS}><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>`,
+            speaker: `<svg ${ICON_ATTRS}><path d="M11 5L6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg>`,
+            volume: `<svg ${ICON_ATTRS}><path d="M11 5L6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>`
+        };
+
+        const AVATAR_COLORS = [
+            ['#DCE8FF', '#1A4FB8'], ['#FFE3CF', '#9A3A0B'], ['#D6F2E6', '#1B6B4A'],
+            ['#F3E1FA', '#7A2E8E'], ['#FFF0C2', '#7A5A00'], ['#DDF1F6', '#1F6475']
+        ];
+
+        // Кружок с первой буквой имени; цвет стабилен для одного и того же имени
+        function avatarHtml(name, sizeClass = '') {
+            const text = String(name || '?').trim();
+            let hash = 0;
+            for (let i = 0; i < text.length; i++) {
+                hash = (hash * 31 + text.charCodeAt(i)) | 0;
+            }
+            const [bg, fg] = AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+            return `<span class="avatar ${sizeClass}" style="background-color: ${bg}; color: ${fg};" aria-hidden="true">${Utils.escapeHtml(text.charAt(0).toUpperCase() || '?')}</span>`;
+        }
+
+        function formatParticipantsCount(count) {
+            const mod10 = count % 10;
+            const mod100 = count % 100;
+            const word = mod10 === 1 && mod100 !== 11 ? 'участник'
+                : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14) ? 'участника'
+                : 'участников';
+            return `${count} ${word}`;
+        }
+
+        function isOwnMessage(msg) {
+            return !!currentUserId && !!msg && String(msg.userId) === String(currentUserId);
+        }
+
+        function renderMessageHtml(msg) {
+            const author = msg.userNickName || 'Пользователь';
+            const own = isOwnMessage(msg);
+            const stickerClass = Stickers.isSticker(msg) ? ' message-content--sticker' : '';
+            return `
+                <div class="message${own ? ' message--own' : ''}">
+                    ${avatarHtml(author)}
+                    <div class="message-body">
+                        <div class="message-header">
+                            <span class="message-author">${own ? 'Вы' : Utils.escapeHtml(author)}</span>
+                            <span class="message-time">${Utils.formatRelativeTime(msg.createdAt)}</span>
+                        </div>
+                        <div class="message-content${stickerClass}">${Stickers.renderContent(msg)}</div>
+                    </div>
+                </div>`;
+        }
         
         // Функция для получения Audio модуля
         function getAudioModule() {
@@ -1343,26 +1778,24 @@
                 const memberUserId = getMemberUserId(member);
                 const selectedRole = pendingRoleChanges[memberUserId] || getAssignableRoleFromMember(member);
 
+                const memberName = member.nickName || member.userId || 'Пользователь';
                 return `
-                <div style="padding: var(--spacing-sm); margin-bottom: var(--spacing-sm); background-color: var(--bg-secondary); border-radius: var(--border-radius);${isYou ? ' border-left: 3px solid var(--accent-blue);' : ''}">
-                    <div style="display: flex; align-items: center; justify-content: space-between; gap: var(--spacing-sm);">
-                        <div style="min-width: 0;">
-                            <div style="font-weight: 600;${isYou ? ' color: var(--accent-blue);' : ''}">
-                                ${Utils.escapeHtml(member.nickName || member.userId || 'Пользователь')}${isYou ? ' (Вы)' : ''}
-                            </div>
-                            ${showRoleSelect ? '' : `<div style="font-size: 12px; color: var(--text-secondary);">${Utils.escapeHtml(getRoleLabel(member.role || member.Role))}</div>`}
-                        </div>
-                        <div style="display: flex; align-items: center; gap: var(--spacing-sm); flex-shrink: 0;">
-                            ${showRoleSelect ? `
-                                <select class="member-role-select" data-user-id="${Utils.escapeHtml(memberUserId)}" style="font-size: 12px; padding: 4px 8px;">
-                                    <option value="Member" ${selectedRole === 'Member' ? 'selected' : ''}>Участник</option>
-                                    <option value="Admin" ${selectedRole === 'Admin' ? 'selected' : ''}>Админ</option>
-                                </select>
-                            ` : ''}
-                            ${showLeaveButton ? `
-                                <button type="button" class="btn btn-sm leave-group-btn" title="Покинуть группу">Покинуть</button>
-                            ` : ''}
-                        </div>
+                <div class="member-row${isYou ? ' is-you' : ''}">
+                    ${avatarHtml(memberName, 'avatar--sm')}
+                    <div class="member-info">
+                        <div class="member-name">${Utils.escapeHtml(memberName)}${isYou ? ' <small>· вы</small>' : ''}</div>
+                        ${showRoleSelect ? '' : `<div class="member-role">${Utils.escapeHtml(getRoleLabel(member.role || member.Role))}</div>`}
+                    </div>
+                    <div class="member-actions">
+                        ${showRoleSelect ? `
+                            <select class="member-role-select" data-user-id="${Utils.escapeHtml(memberUserId)}" aria-label="Роль участника">
+                                <option value="Member" ${selectedRole === 'Member' ? 'selected' : ''}>Участник</option>
+                                <option value="Admin" ${selectedRole === 'Admin' ? 'selected' : ''}>Админ</option>
+                            </select>
+                        ` : ''}
+                        ${showLeaveButton ? `
+                            <button type="button" class="btn btn-sm leave-group-btn" title="Покинуть группу">Покинуть</button>
+                        ` : ''}
                     </div>
                 </div>
             `;
@@ -1405,22 +1838,14 @@
         function displayMessages(messages) {
             const container = document.getElementById('messagesContainer');
             if (!messages || messages.length === 0) {
-                container.innerHTML = '<p style="color: var(--text-secondary); text-align: center;">Нет сообщений</p>';
+                container.innerHTML = '<div class="empty-state"><img src="images/mascot-idea.webp" alt=""><p>Сообщений пока нет — напишите первым</p></div>';
                 return;
             }
 
             // Переворачиваем массив чтобы старые сообщения были сверху, новые снизу
             const sortedMessages = [...messages].reverse();
 
-            container.innerHTML = sortedMessages.map(msg => `
-                <div class="message">
-                    <div class="message-header">
-                        <span class="message-author">${Utils.escapeHtml(msg.userNickName || 'Пользователь')}</span>
-                        <span class="message-time">${Utils.formatRelativeTime(msg.createdAt)}</span>
-                    </div>
-                    <div class="message-content">${Stickers.renderContent(msg)}</div>
-                </div>
-            `).join('');
+            container.innerHTML = sortedMessages.map(renderMessageHtml).join('');
             container.scrollTop = container.scrollHeight;
         }
 
@@ -1502,11 +1927,11 @@
         
         function formatChannelParticipantsList(participants) {
             if (!participants || participants.length === 0) {
-                return '<span style="color: var(--text-secondary);">Пусто</span>';
+                return '';
             }
             return participants.map(p => {
                 const name = Utils.escapeHtml(p.displayName || p.display || p.name || 'User');
-                return `<div style="line-height: 1.6;">${name}</div>`;
+                return `<span class="channel-participant">${name}</span>`;
             }).join('');
         }
 
@@ -1597,26 +2022,26 @@
                 const showVolumeSlider = !isYou && isUserInChannel;
                 
                 return `
-                    <div style="padding: var(--spacing-sm); margin-bottom: var(--spacing-sm); background-color: var(--bg-secondary); border-radius: var(--border-radius); ${isYou ? 'border-left: 3px solid var(--accent-blue);' : ''}">
-                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--spacing-xs);">
-                            <div style="font-weight: 600; font-size: 13px; ${isYou ? 'color: var(--accent-blue);' : ''}">
-                                ${Utils.escapeHtml(name)}${isYou ? ' (Вы)' : ''}
-                            </div>
+                    <div class="participant-row">
+                        <div class="participant-row__head">
+                            ${avatarHtml(name, 'avatar--sm')}
+                            <span class="participant-row__name">${Utils.escapeHtml(name)}${isYou ? ' <small>· вы</small>' : ''}</span>
                         </div>
                         ${showVolumeSlider ? `
-                            <div style="display: flex; align-items: center; gap: var(--spacing-xs);">
-                                <span style="font-size: 11px; color: var(--text-secondary); min-width: 30px;">🔊</span>
-                                <input type="range" 
-                                       id="volume-${volumeKey}" 
-                                       class="participant-volume-slider" 
-                                       min="0" 
-                                       max="100" 
+                            <div class="participant-row__volume">
+                                ${ICONS.volume}
+                                <input type="range"
+                                       id="volume-${volumeKey}"
+                                       class="participant-volume-slider"
+                                       min="0"
+                                       max="100"
                                        value="${savedVolume}"
                                        data-participant-id="${participantId}"
                                        data-channel-id="${currentAudioChannel}"
                                        style="flex: 1;"
+                                       aria-label="Громкость: ${Utils.escapeHtml(name)}"
                                        title="Громкость: ${savedVolume}%">
-                                <span style="font-size: 11px; color: var(--text-secondary); min-width: 35px; text-align: right;">${savedVolume}%</span>
+                                <span>${savedVolume}%</span>
                             </div>
                         ` : ''}
                     </div>
@@ -1740,7 +2165,7 @@
             // Обновляем счетчик
             const countEl = document.getElementById(`participantsCount-${channelId}`);
             if (countEl) {
-                countEl.textContent = `${count} участников`;
+                countEl.textContent = formatParticipantsCount(count);
             }
             
             // Обновляем краткий список участников в карточке канала
@@ -1887,16 +2312,12 @@
         // Обработка получения нового сообщения
         window.onReceiveMessage = (message) => {
             const container = document.getElementById('messagesContainer');
-            const messageDiv = document.createElement('div');
-            messageDiv.className = 'message';
-            messageDiv.innerHTML = `
-                <div class="message-header">
-                    <span class="message-author">${Utils.escapeHtml(message.userNickName || 'Пользователь')}</span>
-                    <span class="message-time">${Utils.formatRelativeTime(message.createdAt)}</span>
-                </div>
-                <div class="message-content">${Stickers.renderContent(message)}</div>
-            `;
-            container.appendChild(messageDiv);
+            // Убираем заглушку «Нет сообщений», если это первое сообщение
+            const placeholder = container.querySelector(':scope > p, :scope > .empty-state');
+            if (placeholder) {
+                placeholder.remove();
+            }
+            container.insertAdjacentHTML('beforeend', renderMessageHtml(message));
             container.scrollTop = container.scrollHeight;
         };
 
@@ -2006,25 +2427,28 @@
             const mobileContainer = document.getElementById('mobileAudioChannelsList');
             
             const channelHtml = !channels || channels.length === 0 
-                ? '<p style="color: var(--text-secondary);">Нет аудио каналов</p>'
+                ? '<div class="empty-state"><img src="images/mascot-peek.webp" alt=""><p>Голосовых каналов пока нет</p></div>'
                 : channels.map(channel => {
                     // Обновляем отображение участников для этого канала после создания HTML
                     setTimeout(() => updateChannelParticipantsDisplay(channel.id), 0);
                     
                     return `
                     <div class="audio-channel" data-channel-id="${channel.id}" data-janus-room="${channel.janusRoomId}">
-                        <div style="font-weight: 600; margin-bottom: var(--spacing-sm);">${Utils.escapeHtml(channel.name)}</div>
-                        ${channel.description ? `<div style="font-size: 12px; color: var(--text-secondary); margin-bottom: var(--spacing-sm);">${Utils.escapeHtml(channel.description)}</div>` : ''}
-                        <div id="channelParticipants-${channel.id}" class="channel-participants" style="font-size: 12px; color: var(--text-secondary); margin-bottom: var(--spacing-sm);"></div>
-                        <div id="participantsCount-${channel.id}" style="font-size: 12px; color: var(--text-secondary); margin-bottom: var(--spacing-sm);">0 участников</div>
+                        <div class="audio-channel__head">
+                            ${ICONS.speaker}
+                            <span class="audio-channel__name">${Utils.escapeHtml(channel.name)}</span>
+                            <span id="participantsCount-${channel.id}" class="audio-channel__count">0 участников</span>
+                        </div>
+                        ${channel.description ? `<div class="audio-channel__desc">${Utils.escapeHtml(channel.description)}</div>` : ''}
+                        <div id="channelParticipants-${channel.id}" class="channel-participants"></div>
                         <div class="audio-channel-controls">
                             <button class="btn btn-sm btn-primary join-audio-btn" data-channel-id="${channel.id}" data-janus-room="${channel.janusRoomId}">Подключиться</button>
                         </div>
                         <!-- Список участников в канале -->
-                        <div id="audioParticipantsList-${channel.id}" class="audio-participants-list" style="display: none; margin-top: var(--spacing-md); padding-top: var(--spacing-md); border-top: 1px solid var(--border-color);">
-                            <div style="font-weight: 600; margin-bottom: var(--spacing-sm); font-size: 14px;">Участники в канале:</div>
-                            <div id="audioParticipantsContainer-${channel.id}" style="max-height: 200px; overflow-y: auto;">
-                                <p style="color: var(--text-secondary); font-size: 12px;">Загрузка...</p>
+                        <div id="audioParticipantsList-${channel.id}" class="audio-participants-list" style="display: none;">
+                            <div class="audio-participants-title">В канале</div>
+                            <div id="audioParticipantsContainer-${channel.id}">
+                                <p style="color: var(--text-secondary); font-size: 13px;">Загрузка...</p>
                             </div>
                         </div>
                     </div>
@@ -2167,9 +2591,9 @@
                     // Кнопка MUTE
                     if (!controlsContainer.querySelector('.audio-mute-btn')) {
                         const muteBtn = document.createElement('button');
-                        muteBtn.className = 'btn btn-sm audio-mute-btn';
+                        muteBtn.className = 'btn btn-icon audio-mute-btn';
                         muteBtn.title = 'Отключить микрофон';
-                        muteBtn.innerHTML = '🎤';
+                        muteBtn.innerHTML = ICONS.mic;
                         muteBtn.onclick = async () => {
                             const audioModule = getAudioModule();
                             if (audioModule) {
@@ -2194,9 +2618,10 @@
                     // Кнопка настроек
                     if (!controlsContainer.querySelector('.audio-settings-btn')) {
                         const settingsBtn = document.createElement('button');
-                        settingsBtn.className = 'btn btn-sm audio-settings-btn';
-                        settingsBtn.title = 'Настройки аудио';
-                        settingsBtn.textContent = '⚙️';
+                        settingsBtn.className = 'btn btn-icon audio-settings-btn';
+                        settingsBtn.title = 'Настройки звука';
+                        settingsBtn.setAttribute('aria-label', 'Настройки звука');
+                        settingsBtn.innerHTML = ICONS.settings;
                         settingsBtn.onclick = () => {
                             loadAudioSettingsToForm();
                             document.getElementById('audioSettingsModal').classList.remove('hidden');
@@ -2207,9 +2632,9 @@
                     // Кнопка Screen Share
                     if (!controlsContainer.querySelector('.audio-screen-share-btn')) {
                         const screenShareBtn = document.createElement('button');
-                        screenShareBtn.className = 'btn btn-sm audio-screen-share-btn';
+                        screenShareBtn.className = 'btn btn-icon audio-screen-share-btn';
                         screenShareBtn.title = 'Демонстрация экрана';
-                        screenShareBtn.textContent = '🖥️';
+                        screenShareBtn.innerHTML = ICONS.screen;
                         screenShareBtn.onclick = async () => {
                             const audioModule = getAudioModule();
                             if (!audioModule) return;
@@ -2249,9 +2674,9 @@
                     // Кнопка Webcam
                     if (!controlsContainer.querySelector('.audio-webcam-btn')) {
                         const webcamBtn = document.createElement('button');
-                        webcamBtn.className = 'btn btn-sm audio-webcam-btn';
+                        webcamBtn.className = 'btn btn-icon audio-webcam-btn';
                         webcamBtn.title = 'Веб-камера';
-                        webcamBtn.textContent = '📷';
+                        webcamBtn.innerHTML = ICONS.camera;
                         webcamBtn.onclick = async () => {
                             const audioModule = getAudioModule();
                             if (!audioModule) return;
@@ -2341,7 +2766,7 @@
                         const watchBtn = document.createElement('button');
                         watchBtn.className = 'btn btn-sm audio-watch-btn hidden';
                         watchBtn.title = 'Смотреть видео';
-                        watchBtn.textContent = '👁️ Смотреть';
+                        watchBtn.innerHTML = `${ICONS.eye}Смотреть`;
                         watchBtn.onclick = () => {
                             toggleVideoOverlay();
                         };
@@ -2497,15 +2922,11 @@
         // Обновление состояния кнопки MUTE
         function updateMuteButton(button, isMuted) {
             if (!button) return;
-            if (isMuted) {
-                button.innerHTML = '🔇';
-                button.title = 'Включить микрофон';
-                button.style.opacity = '0.6';
-            } else {
-                button.innerHTML = '🎤';
-                button.title = 'Отключить микрофон';
-                button.style.opacity = '1';
-            }
+            button.innerHTML = isMuted ? ICONS.micOff : ICONS.mic;
+            button.title = isMuted ? 'Включить микрофон' : 'Отключить микрофон';
+            button.setAttribute('aria-label', button.title);
+            button.setAttribute('aria-pressed', isMuted ? 'true' : 'false');
+            button.classList.toggle('is-muted', !!isMuted);
         }
 
         function updateRnnoiseCheckboxAvailability() {
@@ -2800,7 +3221,7 @@
             allVideoStreams.forEach(videoData => {
                 const videoWrapper = document.createElement('div');
                 videoWrapper.className = 'video-wrapper';
-                videoWrapper.style.cssText = 'position: relative; background: var(--bg-secondary); border-radius: var(--border-radius); overflow: hidden; min-height: 200px;' + (videoData.isLocal ? ' border: 2px solid var(--accent-green);' : '');
+                videoWrapper.style.cssText = 'position: relative; background: #0D1A33; border-radius: var(--radius-lg); overflow: hidden; min-height: 200px;' + (videoData.isLocal ? ' box-shadow: 0 0 0 3px var(--accent-blue);' : '');
                 
                 if (videoData.hasStream && videoData.stream) {
                     // Создаем новый video элемент и привязываем к потоку
@@ -2826,7 +3247,7 @@
                     const loadingDiv = document.createElement('div');
                     loadingDiv.style.cssText = 'display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 20px; color: var(--text-secondary);';
                     loadingDiv.innerHTML = `
-                        <div style="font-size: 24px; margin-bottom: 10px;">⏳</div>
+                        
                         <div style="font-weight: bold; margin-bottom: 5px;">${Utils.escapeHtml(videoData.display || '')}</div>
                         <div style="font-size: 14px;">Загрузка ${videoData.videoType === 'screen' ? 'демонстрации экрана' : 'веб-камеры'}...</div>
                     `;
@@ -3103,9 +3524,9 @@
     </script>
     
     <!-- Video Overlay -->
-    <div id="videoOverlay" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; height: 70vh; z-index: 1000; background: var(--bg-primary); border-bottom: 2px solid var(--border-color); box-shadow: 0 -2px 10px rgba(0,0,0,0.1); display: flex; flex-direction: column;">
+    <div id="videoOverlay" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; height: 70vh; z-index: 1000; background: rgba(245, 248, 253, 0.97); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); border-radius: 0 0 28px 28px; box-shadow: var(--shadow-pop); display: flex; flex-direction: column;">
         <div style="flex: 1; padding: var(--spacing-md); overflow: auto; position: relative;">
-            <button onclick="toggleVideoOverlay()" class="btn btn-sm" style="position: absolute; top: var(--spacing-sm); right: var(--spacing-sm); z-index: 10; background: var(--error); color: white;">✕ Закрыть</button>
+            <button onclick="toggleVideoOverlay()" class="btn btn-icon" aria-label="Закрыть видео" title="Закрыть видео" style="position: absolute; top: 24px; right: 24px; z-index: 10; box-shadow: var(--shadow-pop);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12"/><path d="M18 6L6 18"/></svg></button>
             <div id="videoOverlayContainer" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: var(--spacing-md); height: 100%;">
                 <!-- Видео будут добавлены динамически -->
             </div>
