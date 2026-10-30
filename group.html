@@ -576,16 +576,21 @@
             display: contents;
         }
 
+        /* На узкой карточке кнопки ужимаются (до 30px), а не переносят красную «трубку» на новую строку:
+           перенос считается по flex-basis, поэтому basis 0 + min-width, а растут не больше 40px */
         .audio-channel.active .audio-channel-controls .btn-icon {
-            flex: 0 0 auto;
+            flex: 1 1 0;
             order: 1;
-            width: 40px;
-            height: 40px;
+            min-width: 30px;
+            max-width: 40px;
+            width: auto;
+            height: auto;
+            aspect-ratio: 1;
         }
 
         /* «Отключиться» - круглая красная кнопка «положить трубку» в той же строке; текст остаётся для экранного диктора */
         .audio-channel.active .join-audio-btn {
-            flex: 0 0 auto;
+            flex: 0 0 40px;
             order: 2;
             width: 40px;
             height: 40px;
