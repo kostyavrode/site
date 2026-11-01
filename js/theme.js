@@ -24,7 +24,12 @@
 
     function apply() {
         const theme = effective();
+        const changed = root.getAttribute('data-theme') !== theme;
         root.setAttribute('data-theme', theme);
+        // Приложение (MAUI) красит под тему заголовок окна - сообщаем ему
+        if (changed) {
+            window.dispatchEvent(new CustomEvent('themechange', { detail: theme }));
+        }
         const button = document.getElementById('themeToggle');
         if (button) {
             const label = theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему';

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <!-- Тема ставится до отрисовки, чтобы не было белой вспышки -->
-    <script src="js/theme.js?v=1"></script>
+    <script src="js/theme.js?v=2"></script>
     <link rel="icon" href="favicon.ico" sizes="any">
     <link rel="icon" type="image/png" sizes="32x32" href="images/favicon-32.png">
     <link rel="icon" type="image/png" sizes="96x96" href="images/favicon-96.png">
@@ -19,7 +19,7 @@
     <meta name="keywords" content="аудио чат, голосовой канал, audio chat, аналог discord, голосовое общение, демонстрация экрана">
     <meta name="robots" content="noindex, nofollow">
     
-    <link rel="stylesheet" href="css/main.css?v=6">
+    <link rel="stylesheet" href="css/main.css?v=8">
     <!-- Проверка браузера: должна идти первым скриптом (см. комментарий в файле) -->
     <script src="js/browser-check.js?v=1"></script>
     <script src="https://unpkg.com/@microsoft/signalr@7.0.0/dist/browser/signalr.min.js"></script>
@@ -178,6 +178,16 @@
         /* На телефоне каналы видны прямо на странице - отдельное окно не нужно */
         #mobileAudioBtn {
             display: none !important;
+        }
+
+        .invite-row {
+            display: flex;
+            gap: var(--spacing-sm);
+        }
+
+        .invite-row .form-input {
+            flex: 1;
+            min-width: 0;
         }
 
         .audio-channel__share {
@@ -993,6 +1003,11 @@
             background-color: var(--accent-soft);
         }
 
+        #noticeBtn {
+            margin-left: auto;
+        }
+
+        #noticeBtn[hidden],
         .invite-card[hidden] {
             display: none;
         }
@@ -1239,10 +1254,11 @@
                                 <strong>Позовите друзей</strong>
                                 <span id="inviteCardHint">Одна ссылка — и они сразу здесь, даже без регистрации</span>
                             </div>
-                            <button type="button" class="btn btn-primary btn-sm" id="inviteCardBtn"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.6 0l3-3a4 4 0 0 0-5.6-5.6l-1 1"/><path d="M14 10a4 4 0 0 0-5.6 0l-3 3a4 4 0 0 0 5.6 5.6l1-1"/></svg>Скопировать ссылку</button>
+                            <button type="button" class="btn btn-primary btn-sm" id="inviteCardBtn"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.6 0l3-3a4 4 0 0 0-5.6-5.6l-1 1"/><path d="M14 10a4 4 0 0 0-5.6 0l-3 3a4 4 0 0 0 5.6 5.6l1-1"/></svg>Пригласить</button>
                         </div>
                         <div class="group-column-header">
                             <h3>В группе <span class="voice-now" id="voiceNowCount" hidden></span></h3>
+                            <button type="button" class="btn btn-icon btn-sm" id="noticeBtn" hidden aria-label="Отправить уведомление" title="Отправить уведомление"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9a6 6 0 0 1 12 0c0 6 2.5 7 2.5 7h-17S6 15 6 9"/><path d="M10 20a2.2 2.2 0 0 0 4 0"/></svg></button>
                             <div id="membersHeaderActions"></div>
                         </div>
                         <div id="membersList">
@@ -1438,6 +1454,55 @@
         </div>
     </div>
 
+    <!-- Окно приглашения: по никнейму или ссылкой -->
+    <div id="inviteModal" class="modal-backdrop hidden" style="z-index: 1002;">
+        <div class="card" style="max-width: 460px; width: 100%;">
+            <div class="card-header">
+                <h3 class="card-title" id="inviteModalTitle">Пригласить</h3>
+            </div>
+            <div class="card-body">
+                <form id="inviteForm">
+                    <label class="form-label" for="inviteNick">По никнейму</label>
+                    <div class="invite-row">
+                        <input type="text" id="inviteNick" class="form-input" autocomplete="off" maxlength="30" required>
+                        <button type="submit" class="btn btn-primary" id="inviteSendBtn">Пригласить</button>
+                    </div>
+                    <div class="form-error" id="inviteNickError"></div>
+                    <div class="form-help">Уведомление появится справа внизу и будет ждать ответа</div>
+                </form>
+                <div class="auth-divider"><span>или по ссылке</span></div>
+                <div class="invite-row">
+                    <label class="visually-hidden" for="inviteLinkField">Ссылка-приглашение</label>
+                    <input type="text" id="inviteLinkField" class="form-input" readonly>
+                    <button type="button" class="btn" id="inviteCopyBtn">Копировать</button>
+                </div>
+                <div class="form-help" id="inviteLinkNote"></div>
+                <button type="button" class="btn" id="inviteCloseBtn" style="width: 100%; margin-top: var(--spacing-md);">Закрыть</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Окно уведомления: сверху текст, ниже кому отправить -->
+    <div id="noticeModal" class="modal-backdrop hidden" style="z-index: 1002;">
+        <div class="card" style="max-width: 460px; width: 100%;">
+            <div class="card-header">
+                <h3 class="card-title">Уведомление участникам</h3>
+            </div>
+            <div class="card-body">
+                <form id="noticeForm">
+                    <label class="form-label" for="noticeText">Текст уведомления</label>
+                    <textarea id="noticeText" class="form-input" rows="4" maxlength="500" required></textarea>
+                    <div class="form-help notice-counter" id="noticeCounter">0 / 500</div>
+                    <label class="notice-all"><input type="checkbox" id="noticeAll">Выбрать всех</label>
+                    <div class="notice-members" id="noticeMembers"></div>
+                    <div class="form-error" id="noticeError"></div>
+                    <button type="submit" class="btn btn-primary" id="noticeSendBtn" style="width: 100%; margin-top: var(--spacing-md);">Отправить</button>
+                    <button type="button" class="btn" id="noticeCloseBtn" style="width: 100%; margin-top: var(--spacing-sm);">Отмена</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
     <!-- Модальное окно ошибки -->
     <div id="errorModal" class="modal-backdrop hidden" style="z-index: 1003;">
         <div class="card" style="max-width: 400px; width: 90%;">
@@ -1457,6 +1522,7 @@
     <script src="js/groups.js?v=2"></script>
     <script src="js/chat.js?v=2"></script>
     <script src="js/stickers.js?v=1"></script>
+    <script src="js/invites.js?v=2"></script>
     <script src="js/audio.js?v=8" onerror="console.error('❌ Ошибка загрузки audio.js'); alert('Ошибка загрузки audio.js. Обновите страницу.');"></script>
     <!-- Совместимость звука с Safari/iOS и возобновление после паузы браузера -->
     <script src="js/audio-compat.js?v=1"></script>
@@ -1540,9 +1606,12 @@
         // добавляют ключ приглашения - по нему вступают без пароля.
         async function buildInviteLink(channelId) {
             // В приложении страницы открываются локально - ссылка ведёт на сайт
+            // Имя страницы собрано из частей: sync-from-site.ps1 убирает .html из адресов в коде,
+            // а эта ссылка ведёт на сайт, где страница называется именно так
+            const groupPage = ['group', 'html'].join('.');
             const base = (typeof API !== 'undefined' && API.serverOrigin)
-                ? `${API.serverOrigin}/group.html`
-                : new URL('group.html', window.location.href).toString();
+                ? `${API.serverOrigin}/${groupPage}`
+                : new URL(groupPage, window.location.href).toString();
             const url = new URL(base);
             url.searchParams.set('id', currentGroupId);
             url.searchParams.set('join', '1');
@@ -1584,36 +1653,158 @@
             }
         }
 
-        async function shareInviteLink(channelId) {
+        let inviteDialogChannelId = null;
+
+        function channelNameById(channelId) {
+            const card = channelId
+                ? document.querySelector(`#audioChannelsList .audio-channel[data-channel-id="${CSS.escape(channelId)}"] .audio-channel__name`)
+                : null;
+            return card ? card.textContent : null;
+        }
+
+        async function openInviteDialog(channelId) {
+            inviteDialogChannelId = channelId;
+            const channelName = channelNameById(channelId);
+            document.getElementById('inviteModalTitle').textContent = channelName
+                ? `Пригласить в «${channelName}»`
+                : 'Пригласить в группу';
+            document.getElementById('inviteNickError').textContent = '';
+            document.getElementById('inviteForm').reset();
+
+            const field = document.getElementById('inviteLinkField');
+            const note = document.getElementById('inviteLinkNote');
+            field.value = '';
+            note.textContent = '';
+            document.getElementById('inviteModal').classList.remove('hidden');
+            document.getElementById('inviteNick').focus();
+
             try {
                 const { link, needsPassword } = await buildInviteLink(channelId);
-                const what = channelId ? 'на голосовой канал' : 'на группу';
-                // На телефоне - системное меню «Поделиться», на компьютере - в буфер обмена
-                if (navigator.share && window.matchMedia('(pointer: coarse)').matches) {
-                    try {
-                        await navigator.share({ title: document.getElementById('groupName').textContent, url: link });
-                        return;
-                    } catch (shareError) {
-                        if (shareError && shareError.name === 'AbortError') return;
-                    }
-                }
-                if (await copyText(link)) {
-                    Utils.showSuccess(needsPassword
-                        ? `Ссылка ${what} скопирована. Группа с паролем — приглашённому понадобится пароль`
-                        : `Ссылка ${what} скопирована`);
-                } else {
-                    window.prompt('Скопируйте ссылку', link);
-                }
+                field.value = link;
+                note.textContent = needsPassword ? 'Группа с паролем: по ссылке понадобится пароль' : '';
             } catch (error) {
                 console.error('Invite link error:', error);
-                Utils.showError('Не удалось создать ссылку-приглашение');
+                note.textContent = 'Не удалось создать ссылку';
             }
         }
+
+        // ---------- Уведомление участникам ----------
+
+        function noticeCheckboxes() {
+            return [...document.querySelectorAll('#noticeMembers input')];
+        }
+
+        function updateNoticeSelection() {
+            const boxes = noticeCheckboxes();
+            const selected = boxes.filter((box) => box.checked).length;
+            const all = document.getElementById('noticeAll');
+            all.checked = boxes.length > 0 && selected === boxes.length;
+            all.indeterminate = selected > 0 && selected < boxes.length;
+            const sendBtn = document.getElementById('noticeSendBtn');
+            sendBtn.disabled = selected === 0;
+            sendBtn.textContent = selected ? `Отправить (${selected})` : 'Отправить';
+        }
+
+        function updateNoticeCounter() {
+            const length = document.getElementById('noticeText').value.length;
+            document.getElementById('noticeCounter').textContent = `${length} / 500`;
+        }
+
+        function openNoticeDialog() {
+            const list = document.getElementById('noticeMembers');
+            const others = currentMembersList.filter((m) => !isCurrentMember(m) && getMemberUserId(m));
+            list.innerHTML = others.length ? '' : '<p class="form-help">В группе пока больше никого нет</p>';
+            others.forEach((member) => {
+                const name = member.nickName || member.displayName || '';
+                const row = document.createElement('label');
+                row.className = 'notice-member';
+                row.innerHTML = `<input type="checkbox" checked>${avatarHtml(name)}<span>${Utils.escapeHtml(name)}</span>`;
+                row.querySelector('input').value = getMemberUserId(member);
+                row.querySelector('input').onchange = updateNoticeSelection;
+                list.appendChild(row);
+            });
+
+            document.getElementById('noticeForm').reset();
+            document.getElementById('noticeError').textContent = '';
+            noticeCheckboxes().forEach((box) => { box.checked = true; });
+            updateNoticeCounter();
+            updateNoticeSelection();
+            document.getElementById('noticeModal').classList.remove('hidden');
+            document.getElementById('noticeText').focus();
+        }
+
+        document.getElementById('noticeBtn').onclick = openNoticeDialog;
+        document.getElementById('noticeText').oninput = updateNoticeCounter;
+        document.getElementById('noticeAll').onchange = (event) => {
+            noticeCheckboxes().forEach((box) => { box.checked = event.target.checked; });
+            updateNoticeSelection();
+        };
+        document.getElementById('noticeCloseBtn').onclick = () => {
+            document.getElementById('noticeModal').classList.add('hidden');
+        };
+
+        document.getElementById('noticeForm').onsubmit = async (event) => {
+            event.preventDefault();
+            const text = document.getElementById('noticeText').value.trim();
+            const userIds = noticeCheckboxes().filter((box) => box.checked).map((box) => box.value);
+            const error = document.getElementById('noticeError');
+            error.textContent = '';
+            if (!text) {
+                error.textContent = 'Введите текст уведомления';
+                return;
+            }
+
+            const sendBtn = document.getElementById('noticeSendBtn');
+            sendBtn.disabled = true;
+            try {
+                const result = await Invites.sendNotice(currentGroupId, text, userIds);
+                document.getElementById('noticeModal').classList.add('hidden');
+                Utils.showSuccess(`Уведомление отправлено: ${result.sent}`);
+            } catch (e) {
+                error.textContent = e.message || 'Не удалось отправить уведомление';
+            } finally {
+                updateNoticeSelection();
+            }
+        };
+
+        document.getElementById('inviteCloseBtn').onclick = () => {
+            document.getElementById('inviteModal').classList.add('hidden');
+        };
+
+        document.getElementById('inviteCopyBtn').onclick = async () => {
+            const link = document.getElementById('inviteLinkField').value;
+            if (link && await copyText(link)) {
+                Utils.showSuccess('Ссылка скопирована');
+            } else if (link) {
+                document.getElementById('inviteLinkField').select();
+            }
+        };
+
+        document.getElementById('inviteForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const input = document.getElementById('inviteNick');
+            const error = document.getElementById('inviteNickError');
+            const button = document.getElementById('inviteSendBtn');
+            const nickName = input.value.trim();
+            error.textContent = '';
+            if (!nickName) return;
+
+            button.disabled = true;
+            try {
+                await Invites.send(currentGroupId, nickName, inviteDialogChannelId, channelNameById(inviteDialogChannelId));
+                Utils.showSuccess(`Приглашение отправлено: ${nickName}`);
+                input.value = '';
+            } catch (sendError) {
+                error.textContent = sendError.message || 'Не удалось отправить приглашение';
+            } finally {
+                button.disabled = false;
+            }
+        });
 
         // Убираем из адреса параметры приглашения, чтобы обновление страницы не подключало заново
         function clearInviteLinkParams() {
             const url = new URL(window.location.href);
-            ['join', 'invite', 'channel'].forEach((key) => url.searchParams.delete(key));
+            ['join', 'invite', 'channel', 'here'].forEach((key) => url.searchParams.delete(key));
             window.history.replaceState(null, '', url.toString());
         }
 
@@ -1674,7 +1865,7 @@
             const shareButton = e.target.closest('.audio-channel__share');
             if (shareButton) {
                 e.stopPropagation();
-                shareInviteLink(shareButton.dataset.channelId);
+                openInviteDialog(shareButton.dataset.channelId);
             }
         });
 
@@ -1726,6 +1917,9 @@
 
         // Инициализация страницы
         document.addEventListener('DOMContentLoaded', async () => {
+            // Ссылка-приглашение в браузере на Windows: сначала предлагаем приложение
+            await Invites.offerOpenInApp(cameByInviteLink);
+
             // Проверка загрузки AudioModule
             if (typeof AudioModule === 'undefined' && typeof Audio === 'undefined') {
                 console.error('❌ AudioModule не загружен! Проверьте загрузку audio.js');
@@ -1750,6 +1944,7 @@
             if (user) {
                 currentUserId = user.id;
                 currentUserIsGuest = !!(user.isGuest ?? user.IsGuest);
+                Invites.start();
                 currentNickName = user.nickName || user.email || 'User';
                 const authNav = document.getElementById('auth-nav');
                 authNav.innerHTML = `
@@ -1930,10 +2125,11 @@
 
                 const inviteBtn = document.getElementById('inviteBtn');
                 inviteBtn.style.display = 'inline-flex';
-                inviteBtn.onclick = () => shareInviteLink(null);
+                inviteBtn.onclick = () => openInviteDialog(null);
                 // Из колонки «Люди»: если вы в голосовом канале - ссылка ведёт прямо в него
                 document.getElementById('inviteCard').hidden = false;
-                document.getElementById('inviteCardBtn').onclick = () => shareInviteLink(currentAudioChannel || null);
+                document.getElementById('inviteCardBtn').onclick = () => openInviteDialog(currentAudioChannel || null);
+                document.getElementById('noticeBtn').hidden = currentUserIsGuest;
                 refreshVoicePresence();
 
                 // Ссылка вела в голосовой канал - подключаемся сразу

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <!-- Тема ставится до отрисовки, чтобы не было белой вспышки -->
-    <script src="js/theme.js?v=1"></script>
+    <script src="js/theme.js?v=2"></script>
     <link rel="icon" href="favicon.ico" sizes="any">
     <link rel="icon" type="image/png" sizes="32x32" href="images/favicon-32.png">
     <link rel="icon" type="image/png" sizes="96x96" href="images/favicon-96.png">
@@ -27,7 +27,7 @@
     <meta property="og:description" content="Создавайте группы для голосового общения. Бесплатный аналог Discord.">
     <meta property="og:type" content="website">
     
-    <link rel="stylesheet" href="css/main.css?v=6">
+    <link rel="stylesheet" href="css/main.css?v=8">
     <!-- Проверка браузера: должна идти первым скриптом (см. комментарий в файле) -->
     <script src="js/browser-check.js?v=1"></script>
     <script>
@@ -161,6 +161,7 @@
     <script src="js/utils.js?v=2"></script>
     <script src="js/auth.js?v=2"></script>
     <script src="js/groups.js?v=2"></script>
+    <script src="js/invites.js?v=2"></script>
     <script>
         const GLOBAL_PAGE_SIZE = 10;
         let searchTimeout;
@@ -214,6 +215,8 @@
                     await Auth.logout();
                     window.location.href = 'groups.html';
                 };
+
+                Invites.start();
 
                 // Гости групп не создают (сервер всё равно откажет) - кнопку не показываем
                 if (user.isGuest ?? user.IsGuest) {

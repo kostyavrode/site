@@ -1290,6 +1290,138 @@ input[type="range"]::-moz-range-thumb,
     cursor: pointer;
 }
 
+/* ============================================
+   Личные приглашения
+   ============================================ */
+
+.invite-toasts {
+    position: fixed;
+    /* Поля нужны, чтобы прокрутка не обрезала тень карточек */
+    right: 8px;
+    bottom: 8px;
+    z-index: 4500;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    box-sizing: border-box;
+    width: min(364px, calc(100vw - 8px));
+    max-height: calc(100vh - 16px);
+    padding: 12px;
+    overflow-y: auto;
+    scrollbar-width: none;
+}
+
+.invite-toast {
+    padding: 14px 16px;
+    border-radius: 18px;
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--card-border);
+    box-shadow: var(--shadow-pop);
+    animation: invite-in 0.3s ease-out;
+}
+
+.invite-toast__text {
+    margin-bottom: 10px;
+    overflow-wrap: anywhere;
+}
+
+.invite-toast__actions {
+    display: flex;
+    gap: 8px;
+}
+
+.invite-toast__actions .btn {
+    flex: 1;
+}
+
+@keyframes invite-in {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .invite-toast {
+        animation: none;
+    }
+}
+
+/* Уведомление участникам группы */
+.notice-text {
+    margin-top: 6px;
+    white-space: pre-wrap;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.notice-counter {
+    text-align: right;
+}
+
+.notice-all {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.notice-members {
+    display: flex;
+    flex-direction: column;
+    max-height: 260px;
+    overflow-y: auto;
+    border-top: 1px solid var(--border-color);
+    padding-top: 4px;
+}
+
+.notice-member {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 10px;
+    border-radius: 12px;
+    cursor: pointer;
+    min-width: 0;
+}
+
+.notice-member:hover {
+    background-color: var(--bg-tertiary);
+}
+
+.notice-member span:last-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.notice-all input,
+.notice-member input {
+    flex: none;
+    width: 18px;
+    height: 18px;
+    accent-color: var(--accent-blue);
+}
+
+/* Предложение открыть ссылку в приложении */
+.open-app-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    text-align: center;
+}
+
+.open-app-card p {
+    margin: 0 0 6px;
+    color: var(--text-secondary);
+}
+
+.open-app-card__download {
+    margin-top: 4px;
+    font-size: 13px;
+}
+
 .groups-grid > p,
 .groups-grid > .empty-state {
     grid-column: 1 / -1;
