@@ -16,7 +16,9 @@ var AudioModule = {
     displayName: 'User',
     participantId: null, // Publisher ID в Videoroom
     localStream: null,
-    isMuted: false,
+    isMuted: false, // итоговое состояние: ручной мьют или отпущенная клавиша рации
+    manualMuted: false,
+    soundEffectsDisabled: false, // запрещено настройкой группы
     participantsUpdateInterval: null,
     
     // Настройки аудио
@@ -25,8 +27,12 @@ var AudioModule = {
         echoCancellation: true,
         autoGainControl: true,
         useRNNoise: false,
-        useDeepFilter: null, // null = по умолчанию (вкл. на десктопе, выкл. на мобильных)
-        deepFilterAttenDb: 100, // предел подавления DeepFilterNet в дБ (100 = максимум)
+        useDeepFilter: false, // включается только вручную в настройках
+        denoiserDefaults: 2, // версия значений по умолчанию, см. loadAudioSettings
+        pushToTalk: false, // режим рации: микрофон открыт, только пока нажата клавиша
+        pttKey: { code: 'KeyV', vk: 86, label: 'V' },
+        muteKey: { code: 'KeyM', vk: 77, label: 'M' },
+        deepFilterLimitDb: 24, // предел подавления DeepFilterNet в дБ: меньше - естественнее голос, больше - тише фон
         monitorLocalAudio: false // Воспроизведение локального аудио для мониторинга (side-tone) - по умолчанию выключено
     },
 
@@ -505,6 +511,8 @@ var AudioModule = {
                 });
             }
 
+            this.startSpeakingMonitor();
+            this.syncHotkeys();
             if (window.onAudioConnected) {
                 window.onAudioConnected();
             }
@@ -883,6 +891,9 @@ var AudioModule = {
      * @param {string} effectId pipe | pain | hammer | screenshot
      */
     async playSoundEffect(effectId) {
+        if (this.soundEffectsDisabled) {
+            return false;
+        }
         const rel = SOUND_EFFECT_URLS[effectId];
         if (!rel || !this.publishSumGain || !this.audioContext) {
             console.warn('playSoundEffect: нет графа или неизвестный id', effectId);
@@ -1172,7 +1183,7 @@ var AudioModule = {
         };
     },
 
-    /** RNNoise 0.2 лежит локально (site/vendor/rnnoise), нужен только AudioWorklet + WASM. */
+    /** RNNoise лежит локально (site/vendor/rnnoise), нужен только AudioWorklet + WASM. */
     isRNNoiseLibraryAvailable() {
         return typeof WebAssembly !== 'undefined' && typeof AudioWorkletNode !== 'undefined';
     },
@@ -1183,12 +1194,30 @@ var AudioModule = {
         }
 
         if (this.rnnoiseWorkletContext !== this.audioContext) {
-            const url = new URL('vendor/rnnoise/rnnoise-worklet.js', window.location.href).toString();
+            // ?v= обязателен: nginx кеширует js на год
+            const url = new URL('vendor/rnnoise/rnnoise-worklet.js?v=2', window.location.href).toString();
             await this.audioContext.audioWorklet.addModule(url);
             this.rnnoiseWorkletContext = this.audioContext;
         }
 
         return true;
+    },
+
+    /** Загружает и компилирует RNNoise один раз (около 3,6 МБ, дальше из кеша браузера). */
+    loadRnnoiseWasm() {
+        if (!this.rnnoiseWasmPromise) {
+            const url = new URL('vendor/rnnoise/rnnoise.wasm', window.location.href).toString();
+            this.rnnoiseWasmPromise = fetch(url).then((response) => {
+                if (!response.ok) {
+                    throw new Error(`rnnoise.wasm: HTTP ${response.status}`);
+                }
+                return response.arrayBuffer();
+            }).then((bytes) => WebAssembly.compile(bytes)).catch((error) => {
+                this.rnnoiseWasmPromise = null;
+                throw error;
+            });
+        }
+        return this.rnnoiseWasmPromise;
     },
 
     /** Ждёт от worklet-процессора сообщение { type: 'ready' } (или ошибку инициализации). */
@@ -1268,16 +1297,8 @@ var AudioModule = {
         this.rnnoiseDestinationNode = null;
     },
 
-    isLowPowerDevice() {
-        return typeof navigator !== 'undefined' && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
-    },
-
     isDeepFilterEnabled() {
-        const value = this.audioSettings.useDeepFilter;
-        if (value === true || value === false) {
-            return value;
-        }
-        return !this.isLowPowerDevice();
+        return this.audioSettings.useDeepFilter === true;
     },
 
     isDeepFilterSupported() {
@@ -1335,7 +1356,7 @@ var AudioModule = {
             processorOptions: {
                 wasmModule: assets.wasmModule,
                 modelBytes: assets.modelBytes,
-                suppressionLevel: this.audioSettings.deepFilterAttenDb
+                suppressionLevel: this.audioSettings.deepFilterLimitDb
             }
         });
 
@@ -1371,9 +1392,42 @@ var AudioModule = {
         }
     },
 
+    /** Меняет предел подавления на лету: граф и эфир не пересобираются. */
+    setDeepFilterLimit(limitDb) {
+        if (this.deepFilterNode) {
+            this.deepFilterNode.port.postMessage({ type: 'SET_SUPPRESSION_LEVEL', value: limitDb });
+        }
+    },
+
+    /** Какой фильтр реально обрабатывает микрофон и почему; пустая строка - вне голосового канала. */
+    getDenoiserStatus() {
+        if (!this.micSourceNode) {
+            return '';
+        }
+        if (this.deepFilterNode) {
+            return 'Сейчас работает DeepFilterNet 3';
+        }
+        if (!this.rnnoiseProcessor) {
+            return 'Нейросетевой фильтр сейчас не работает';
+        }
+        if (!this.isDeepFilterEnabled()) {
+            return 'Сейчас работает RNNoise';
+        }
+        if (this.deepFilterFailed) {
+            return 'Сейчас работает RNNoise: DeepFilterNet не запустился или перегрузил процессор';
+        }
+        return this.deepFilterSuspended
+            ? 'Сейчас работает RNNoise, пока вкладка скрыта'
+            : 'Сейчас работает RNNoise, пока загружается DeepFilterNet';
+    },
+
     /** Вызовы идут строго по очереди: параллельная пересборка цепи дала бы двойное подключение микрофона. */
     connectMicToPublishChain() {
-        const run = () => this._connectMicToPublishChain();
+        const run = async () => {
+            const connected = await this._connectMicToPublishChain();
+            window.dispatchEvent(new Event('denoiserchange'));
+            return connected;
+        };
         this._micChainPromise = (this._micChainPromise || Promise.resolve()).then(run, run);
         return this._micChainPromise;
     },
@@ -1578,6 +1632,14 @@ var AudioModule = {
             }
         }
 
+        if (settings.deepFilterLimitDb !== undefined) {
+            this.setDeepFilterLimit(settings.deepFilterLimitDb);
+        }
+
+        if (settings.pushToTalk !== undefined) {
+            this.applyMicState();
+        }
+
         // Сохраняем в localStorage
         try {
             localStorage.setItem('audioSettings', JSON.stringify(this.audioSettings));
@@ -1600,9 +1662,24 @@ var AudioModule = {
             if (saved) {
                 const parsed = JSON.parse(saved);
                 this.audioSettings = { ...this.audioSettings, ...parsed };
-                if (Object.prototype.hasOwnProperty.call(parsed, 'useRNNoise')) {
-                    this.rnnoiseEnabled = parsed.useRNNoise === true;
+                // Старый ключ хранил 100 у всех: настройка заменена на deepFilterLimitDb
+                delete this.audioSettings.deepFilterAttenDb;
+                // Раньше DeepFilterNet был включён сам, и «Применить» сохраняло его как выбор пользователя:
+                // один раз переводим таких на RNNoise. Кто включит его снова, того это уже не коснётся
+                if (parsed.denoiserDefaults !== 2) {
+                    if (parsed.useDeepFilter !== false) {
+                        const rnnoise = this.isRNNoiseLibraryAvailable();
+                        this.audioSettings.useDeepFilter = false;
+                        this.audioSettings.useRNNoise = rnnoise;
+                        this.audioSettings.noiseSuppression = !rnnoise;
+                    }
+                    this.audioSettings.denoiserDefaults = 2;
+                    localStorage.setItem('audioSettings', JSON.stringify(this.audioSettings));
                 }
+                if (Object.prototype.hasOwnProperty.call(parsed, 'useRNNoise')) {
+                    this.rnnoiseEnabled = this.audioSettings.useRNNoise === true;
+                }
+                this.applyMicState();
                 console.log('📥 Настройки аудио загружены из localStorage:', this.audioSettings);
             }
         } catch (e) {
@@ -1726,7 +1803,13 @@ var AudioModule = {
 
     // Переключить микрофон (mute/unmute)
     toggleMute() {
-        this.isMuted = !this.isMuted;
+        this.manualMuted = !this.manualMuted;
+        this.applyMicState();
+        return this.manualMuted;
+    },
+
+    applyMicState() {
+        this.isMuted = this.manualMuted || (this.audioSettings.pushToTalk === true && !this.pttHeld);
         if (this.publisherHandle && this.localStream) {
             // Отключаем трек в WebRTC transceiver
             if (this.publisherHandle.webrtcStuff && this.publisherHandle.webrtcStuff.pc) {
@@ -1747,7 +1830,6 @@ var AudioModule = {
             });
         }
         console.log(`Микрофон ${this.isMuted ? 'отключен' : 'включен'}`);
-        return this.isMuted;
     },
 
     // Отключиться
@@ -1917,7 +1999,9 @@ var AudioModule = {
         this.participantId = null;
         this.roomId = null;
         this.channelId = null;
-        this.isMuted = false;
+        this.manualMuted = false;
+        this.pttHeld = false;
+        this.applyMicState();
         this.wasConnected = false;
         this.intentionalDisconnect = false;
     },
@@ -4797,13 +4881,14 @@ var AudioModule = {
                 return null;
             }
 
+            const wasmModule = await this.loadRnnoiseWasm();
             const node = new AudioWorkletNode(this.audioContext, 'rnnoise2-processor', {
                 numberOfInputs: 1,
                 numberOfOutputs: 1,
                 channelCount: 1,
                 channelCountMode: 'explicit',
                 outputChannelCount: [1],
-                processorOptions: { vadGate: true }
+                processorOptions: { vadGate: true, wasmModule }
             });
             await this.waitWorkletReady(node, 'RNNoise');
             node.port.onmessage = null;

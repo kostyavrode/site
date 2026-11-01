@@ -726,6 +726,9 @@ input[type="checkbox"] {
     padding: 28px;
     box-shadow: var(--shadow-pop);
     margin-bottom: 0;
+    /* Высокое окно на низком экране: кнопки внизу должны оставаться доступны */
+    max-height: 100%;
+    overflow-y: auto;
 }
 
 /* ============================================

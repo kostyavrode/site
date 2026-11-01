@@ -90,6 +90,10 @@ const Groups = {
     },
 
     // Ключ ссылки-приглашения (только владелец и админы). reset - выдать новый, старые ссылки перестанут работать
+    setSoundEffectsDisabled(groupId, disabled) {
+        return API.put(`${API.baseUrls.groups}/api/Groups/${groupId}/sound-effects`, { disabled });
+    },
+
     async getInviteCode(groupId, reset = false) {
         const response = await API.post(`${API.baseUrls.groups}/api/Groups/${groupId}/invite${reset ? '?reset=true' : ''}`, {});
         return response && (response.inviteCode || response.InviteCode);

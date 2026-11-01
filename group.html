@@ -19,7 +19,7 @@
     <meta name="keywords" content="аудио чат, голосовой канал, audio chat, аналог discord, голосовое общение, демонстрация экрана">
     <meta name="robots" content="noindex, nofollow">
     
-    <link rel="stylesheet" href="css/main.css?v=8">
+    <link rel="stylesheet" href="css/main.css?v=9">
     <!-- Проверка браузера: должна идти первым скриптом (см. комментарий в файле) -->
     <script src="js/browser-check.js?v=1"></script>
     <script src="https://unpkg.com/@microsoft/signalr@7.0.0/dist/browser/signalr.min.js"></script>
@@ -526,6 +526,16 @@
             display: flex;
             align-items: center;
             gap: 10px;
+            opacity: 0.55;
+            transition: opacity 0.15s ease-out;
+        }
+
+        .participant-row.is-speaking .participant-row__head {
+            opacity: 1;
+        }
+
+        .participant-row.is-speaking .avatar {
+            box-shadow: 0 0 0 2px var(--accent-green);
         }
 
         .participant-row__name {
@@ -979,6 +989,110 @@
             flex-shrink: 0;
         }
 
+        .sfx-disabled .audio-effects-panel {
+            display: none !important;
+        }
+
+        #sfxBanOption[hidden] {
+            display: none;
+        }
+
+        .audio-check {
+            margin-bottom: 12px;
+        }
+
+        .audio-check__buttons {
+            display: flex;
+            gap: 8px;
+        }
+
+        .audio-check__buttons .btn {
+            flex: 1;
+        }
+
+        .mic-meter {
+            height: 6px;
+            margin-top: 10px;
+            overflow: hidden;
+            border-radius: 3px;
+            background-color: var(--bg-tertiary);
+        }
+
+        .mic-meter span {
+            display: block;
+            width: 100%;
+            height: 100%;
+            background-color: var(--accent-green);
+            transform: scaleX(0);
+            transform-origin: left;
+            transition: transform 60ms linear;
+        }
+
+        .audio-check__hint {
+            margin: 6px 0 0;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .hotkey-rows {
+            padding: 4px 14px 8px;
+        }
+
+        .hotkey-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: var(--spacing-md);
+            margin-bottom: 6px;
+            font-size: 14px;
+        }
+
+        .hotkey-row[hidden] {
+            display: none;
+        }
+
+        .hotkey-btn {
+            min-width: 96px;
+        }
+
+        .hotkey-btn.is-listening {
+            color: var(--accent-blue);
+            border-color: var(--accent-blue);
+        }
+
+        .denoiser-strength {
+            padding: 4px 14px 8px;
+        }
+
+        .denoiser-strength[hidden],
+        .denoiser-status[hidden] {
+            display: none;
+        }
+
+        .denoiser-strength__head {
+            display: flex;
+            justify-content: space-between;
+            gap: var(--spacing-md);
+            margin-bottom: 8px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .denoiser-strength input {
+            width: 100%;
+        }
+
+        .denoiser-strength__hint,
+        .denoiser-status {
+            margin-top: 6px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .denoiser-status {
+            margin: 0 14px 10px;
+        }
+
         /* Мобильное окно каналов больше не используется: каналы видны на странице */
         .audio-channels-modal {
             display: none;
@@ -1358,6 +1472,51 @@
                 <h3 class="card-title">Настройки звука</h3>
             </div>
             <div class="card-body">
+                <div class="audio-check">
+                    <div class="audio-check__buttons">
+                        <button type="button" class="btn btn-sm" id="micCheckBtn">Проверить микрофон</button>
+                        <button type="button" class="btn btn-sm" id="soundCheckBtn">Проверить звук</button>
+                    </div>
+                    <div class="mic-meter" aria-hidden="true"><span id="micMeterBar"></span></div>
+                    <p class="audio-check__hint" id="micCheckHint">Запишем 5 секунд и воспроизведём: вы услышите себя так, как слышат другие.</p>
+                </div>
+
+                <div class="form-group" id="sfxBanOption" style="margin-bottom: 10px;" hidden>
+                    <label class="settings-option">
+                        <span>
+                            <strong>Запретить звуковые эффекты</strong>
+                            <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">
+                                Для всех участников группы. Применяется сразу.
+                            </div>
+                        </span>
+                        <input type="checkbox" id="sfxBan" class="form-checkbox" style="width: 20px; height: 20px;">
+                    </label>
+                </div>
+
+                <div class="form-group" style="margin-bottom: 10px;">
+                    <label class="settings-option">
+                        <span>
+                            <strong>Режим рации</strong>
+                            <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">
+                                Вас слышно, только пока нажата клавиша.
+                            </div>
+                        </span>
+                        <input type="checkbox" id="pushToTalk" class="form-checkbox" style="width: 20px; height: 20px;">
+                    </label>
+                    <div class="hotkey-rows">
+                        <div class="hotkey-row" id="pttKeyRow">
+                            <span>Клавиша рации</span>
+                            <button type="button" class="btn btn-sm hotkey-btn" data-hotkey="pttKey"></button>
+                        </div>
+                        <div class="hotkey-row">
+                            <span>Выключить микрофон</span>
+                            <button type="button" class="btn btn-sm hotkey-btn" data-hotkey="muteKey"></button>
+                        </div>
+                        <div class="form-error" id="hotkeyError"></div>
+                        <div class="denoiser-strength__hint" id="hotkeyHint"></div>
+                    </div>
+                </div>
+
                 <div class="form-group" style="margin-bottom: 10px;">
                     <label class="settings-option">
                         <span>
@@ -1375,12 +1534,21 @@
                         <span>
                             <strong>DeepFilterNet 3 (максимальное шумоподавление)</strong>
                             <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">
-                                Самая сильная нейросеть: убирает клавиатуру, клики, вентиляторы, улицу. Нагружает процессор; на слабых устройствах автоматически заменяется на RNNoise.
+                                Самая сильная нейросеть: убирает клавиатуру, клики, вентиляторы, улицу. По умолчанию выключена: сильно нагружает процессор, а если он не справляется, автоматически заменяется на RNNoise.
                             </div>
                         </span>
                         <input type="checkbox" id="useDeepFilter" class="form-checkbox" style="width: 20px; height: 20px;">
                     </label>
+                    <div class="denoiser-strength" id="deepFilterStrength">
+                        <div class="denoiser-strength__head">
+                            <label for="deepFilterLimit">Сила шумоподавления</label>
+                            <output id="deepFilterLimitValue" for="deepFilterLimit"></output>
+                        </div>
+                        <input type="range" id="deepFilterLimit" min="6" max="60" step="3">
+                        <div class="denoiser-strength__hint">Если голос прерывается или звучит как робот, уменьшите. Если мешает фон, увеличьте. В канале меняется сразу.</div>
+                    </div>
                 </div>
+                <p class="denoiser-status" id="denoiserStatus" hidden></p>
 
                 <div class="form-group" style="margin-bottom: 10px;">
                     <label class="settings-option">
@@ -1421,7 +1589,7 @@
                 
                 <div class="form-group" style="margin-top: var(--spacing-lg);">
                     <button type="button" id="applyAudioSettingsBtn" class="btn btn-primary" style="width: 100%;">Применить настройки</button>
-                    <button type="button" class="btn" style="width: 100%; margin-top: var(--spacing-sm);" onclick="document.getElementById('audioSettingsModal').classList.add('hidden')">Отмена</button>
+                    <button type="button" class="btn" style="width: 100%; margin-top: var(--spacing-sm);" id="audioSettingsCancelBtn">Отмена</button>
                 </div>
                 
                 <div id="audioSettingsStatus" style="margin-top: var(--spacing-md); padding: var(--spacing-sm); border-radius: var(--border-radius); display: none;"></div>
@@ -1519,13 +1687,14 @@
     <script src="js/api.js"></script>
     <script src="js/utils.js?v=2"></script>
     <script src="js/auth.js?v=2"></script>
-    <script src="js/groups.js?v=2"></script>
+    <script src="js/groups.js?v=3"></script>
     <script src="js/chat.js?v=2"></script>
     <script src="js/stickers.js?v=1"></script>
     <script src="js/invites.js?v=2"></script>
-    <script src="js/audio.js?v=8" onerror="console.error('❌ Ошибка загрузки audio.js'); alert('Ошибка загрузки audio.js. Обновите страницу.');"></script>
+    <script src="js/audio.js?v=12" onerror="console.error('❌ Ошибка загрузки audio.js'); alert('Ошибка загрузки audio.js. Обновите страницу.');"></script>
     <!-- Совместимость звука с Safari/iOS и возобновление после паузы браузера -->
     <script src="js/audio-compat.js?v=1"></script>
+    <script src="js/voice-tools.js?v=1"></script>
     <script>
         // Проверка загрузки AudioModule после загрузки скрипта
         (function() {
@@ -2017,10 +2186,28 @@
         }
 
         // Загрузка информации о группе
+        function applySoundEffectsBan(disabled) {
+            document.body.classList.toggle('sfx-disabled', disabled);
+            const audioModule = getAudioModule();
+            if (audioModule) audioModule.soundEffectsDisabled = disabled;
+            document.getElementById('sfxBan').checked = disabled;
+        }
+
+        // Запрет могут включить, пока человек уже в канале
+        async function refreshSoundEffectsBan() {
+            try {
+                const group = await Groups.getGroupById(currentGroupId);
+                applySoundEffectsBan(!!(group.soundEffectsDisabled ?? group.SoundEffectsDisabled));
+            } catch (error) {
+                console.warn('Настройки группы:', error);
+            }
+        }
+
         async function loadGroup() {
             try {
                 const group = await Groups.getGroupById(currentGroupId);
                 currentGroupHasPassword = !!(group.hasPassword ?? group.HasPassword);
+                applySoundEffectsBan(!!(group.soundEffectsDisabled ?? group.SoundEffectsDisabled));
                 document.getElementById('groupName').textContent = group.name;
                 document.getElementById('groupDescription').textContent = group.description || '';
                 
@@ -2540,6 +2727,24 @@
         }
 
         // Отображение участников аудио канала
+        // Список участников перерисовывается целиком, поэтому кто говорит - храним отдельно
+        const speakingIds = new Set();
+
+        function markSpeakingRows() {
+            document.querySelectorAll('.participant-row[data-speaker-id]').forEach((row) => {
+                row.classList.toggle('is-speaking', speakingIds.has(row.dataset.speakerId));
+            });
+        }
+
+        window.onAudioSpeaking = (id, speaking) => {
+            if (speaking) {
+                speakingIds.add(id);
+            } else {
+                speakingIds.delete(id);
+            }
+            markSpeakingRows();
+        };
+
         function displayAudioParticipants(participants) {
             if (!currentAudioChannel) {
                 // Скрываем все списки участников
@@ -2626,7 +2831,7 @@
                 const showVolumeSlider = !isYou && isUserInChannel;
                 
                 return `
-                    <div class="participant-row">
+                    <div class="participant-row" data-speaker-id="${isYou ? 'me' : Utils.escapeHtml(String(participant.id ?? ''))}">
                         <div class="participant-row__head">
                             ${avatarHtml(name, 'avatar--sm')}
                             <span class="participant-row__name">${Utils.escapeHtml(name)}${isYou ? ' <small>· вы</small>' : ''}</span>
@@ -2652,6 +2857,8 @@
                 `;
             }).join('');
             
+            markSpeakingRows();
+
             // Очищаем старые обработчики для этого канала из Map
             const keysToDelete = [];
             participantVolumeControls.forEach((value, key) => {
@@ -3055,10 +3262,15 @@
         }
         window.resyncAudioParticipants = loadAllChannelParticipants;
 
+        let soundEffectsBanInterval = null;
+
         function startParticipantsPolling() {
             if (participantsUpdateInterval) clearInterval(participantsUpdateInterval);
             loadAllChannelParticipants();
             participantsUpdateInterval = setInterval(loadAllChannelParticipants, 5000);
+            if (!soundEffectsBanInterval) {
+                soundEffectsBanInterval = setInterval(refreshSoundEffectsBan, 15000);
+            }
         }
 
         // Вернулись на вкладку (браузер мог "заморозить" таймеры) - сразу пересинхронизируемся
@@ -3256,23 +3468,14 @@
                         muteBtn.title = 'Отключить микрофон';
                         muteBtn.innerHTML = ICONS.mic;
                         muteBtn.onclick = async () => {
-                            const audioModule = getAudioModule();
-                            if (audioModule) {
-                                const isMuted = audioModule.toggleMute();
-                                // Обновляем все кнопки mute для этого канала (и в десктопе, и в мобильном)
-                                document.querySelectorAll(`.audio-channel[data-channel-id="${channelId}"] .audio-mute-btn`).forEach(btn => {
-                                    updateMuteButton(btn, isMuted);
-                                });
-                                // Показываем уведомление
-                                Utils.showSuccess(isMuted ? '🔇 Микрофон отключен' : '🎤 Микрофон включен');
-                            }
+                            getAudioModule()?.toggleMuteWithSound();
                         };
                         controlsContainer.appendChild(muteBtn);
                         
                         // Инициализируем состояние кнопки
                         const audioModule = getAudioModule();
                         if (audioModule) {
-                            updateMuteButton(muteBtn, audioModule.isMuted);
+                            updateMuteButton(muteBtn, audioModule.manualMuted);
                         }
                     }
                     
@@ -3284,8 +3487,7 @@
                         settingsBtn.setAttribute('aria-label', 'Настройки звука');
                         settingsBtn.innerHTML = ICONS.settings;
                         settingsBtn.onclick = () => {
-                            loadAudioSettingsToForm();
-                            document.getElementById('audioSettingsModal').classList.remove('hidden');
+                            openAudioSettings();
                         };
                         controlsContainer.appendChild(settingsBtn);
                     }
@@ -3492,7 +3694,7 @@
                         const channelCard = button.closest('.audio-channel');
                         const muteBtn = channelCard?.querySelector('.audio-mute-btn');
                         if (muteBtn) {
-                            updateMuteButton(muteBtn, audioModule.isMuted);
+                            updateMuteButton(muteBtn, audioModule.manualMuted);
                         }
                         
                         // Если participantId уже получен, регистрируем подключение
@@ -3645,11 +3847,142 @@
                 noiseSuppressionEl.checked = settings.noiseSuppression !== false && !useRNNoiseEl?.checked && !useDeepFilterEl?.checked;
             }
 
+            document.getElementById('deepFilterLimit').value = settings.deepFilterLimitDb;
+            updateDeepFilterLimitLabel();
+            updateDenoiserStatus();
+
+            document.getElementById('sfxBanOption').hidden = !isCurrentUserGroupAdmin();
+            document.getElementById('pushToTalk').checked = settings.pushToTalk === true;
+            hotkeyDraft = { pttKey: settings.pttKey, muteKey: settings.muteKey };
+            renderHotkeys();
+
             document.getElementById('echoCancellation').checked = settings.echoCancellation !== false;
             document.getElementById('autoGainControl').checked = settings.autoGainControl !== false;
         }
 
+        function updateDeepFilterLimitLabel() {
+            const limit = document.getElementById('deepFilterLimit').value;
+            document.getElementById('deepFilterLimitValue').textContent = `${limit} дБ`;
+        }
+
+        function updateDenoiserStatus() {
+            const status = getAudioModule()?.getDenoiserStatus?.() || '';
+            const statusEl = document.getElementById('denoiserStatus');
+            statusEl.textContent = status;
+            statusEl.hidden = !status;
+        }
+
+        // ---------- Клавиши рации и мьюта ----------
+
+        let hotkeyDraft = {};
+        let stopHotkeyListening = null;
+
+        function hotkeyLabel(event) {
+            const named = { Space: 'Пробел', ControlLeft: 'Левый Ctrl', ControlRight: 'Правый Ctrl', ShiftLeft: 'Левый Shift', ShiftRight: 'Правый Shift', AltLeft: 'Левый Alt', AltRight: 'Правый Alt' };
+            if (named[event.code]) return named[event.code];
+            return event.code.replace(/^Key/, '').replace(/^Digit/, '');
+        }
+
+        function renderHotkeys() {
+            document.querySelectorAll('.hotkey-btn').forEach((btn) => {
+                const key = hotkeyDraft[btn.dataset.hotkey];
+                btn.textContent = key ? key.label : 'Не задана';
+                btn.classList.remove('is-listening');
+            });
+            document.getElementById('hotkeyError').textContent = '';
+            document.getElementById('hotkeyHint').textContent = window.AppPages
+                ? 'Клавиши работают поверх других окон и игр.'
+                : 'В браузере клавиши работают, только пока вкладка активна. Поверх игр - в приложении.';
+        }
+
+        function listenForHotkey(button) {
+            if (stopHotkeyListening) stopHotkeyListening();
+            const audioModule = getAudioModule();
+            const name = button.dataset.hotkey;
+            const other = name === 'pttKey' ? 'muteKey' : 'pttKey';
+
+            const stop = () => {
+                window.removeEventListener('keydown', onKey, true);
+                stopHotkeyListening = null;
+                if (audioModule) audioModule.hotkeysPaused = false;
+            };
+            const onKey = (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                stop();
+                if (event.code !== 'Escape') {
+                    if (hotkeyDraft[other] && hotkeyDraft[other].code === event.code) {
+                        renderHotkeys();
+                        document.getElementById('hotkeyError').textContent = 'Эта клавиша уже занята';
+                        return;
+                    }
+                    hotkeyDraft[name] = { code: event.code, vk: event.keyCode, label: hotkeyLabel(event) };
+                }
+                renderHotkeys();
+            };
+
+            if (audioModule) audioModule.hotkeysPaused = true;
+            stopHotkeyListening = () => {
+                stop();
+                renderHotkeys();
+            };
+            button.textContent = 'Нажмите клавишу';
+            button.classList.add('is-listening');
+            window.addEventListener('keydown', onKey, true);
+        }
+
+        document.querySelectorAll('.hotkey-btn').forEach((btn) => {
+            btn.addEventListener('click', () => listenForHotkey(btn));
+        });
+
+        // ---------- Проверка микрофона и звука ----------
+
+        const MIC_CHECK_HINT = 'Запишем 5 секунд и воспроизведём: вы услышите себя так, как слышат другие.';
+        let micCheckRunning = false;
+
+        document.getElementById('micCheckBtn').addEventListener('click', async (event) => {
+            const audioModule = getAudioModule();
+            if (!audioModule) return;
+            if (micCheckRunning) {
+                audioModule.cancelMicCheck();
+                return;
+            }
+
+            const button = event.currentTarget;
+            const hint = document.getElementById('micCheckHint');
+            const bar = document.getElementById('micMeterBar');
+            micCheckRunning = true;
+            button.textContent = 'Остановить';
+            try {
+                await audioModule.runMicCheck(
+                    (level) => { bar.style.transform = `scaleX(${level})`; },
+                    (phase) => {
+                        hint.textContent = phase === 'record'
+                            ? 'Говорите: идёт запись. Полоска должна двигаться в такт голосу.'
+                            : 'Воспроизводим запись.';
+                    }
+                );
+                hint.textContent = MIC_CHECK_HINT;
+            } catch (error) {
+                console.error('Проверка микрофона:', error);
+                hint.textContent = error.name === 'NotAllowedError'
+                    ? 'Нет доступа к микрофону: разрешите его в настройках браузера.'
+                    : 'Не удалось проверить микрофон. Убедитесь, что он подключён.';
+            } finally {
+                micCheckRunning = false;
+                button.textContent = 'Проверить микрофон';
+            }
+        });
+
+        document.getElementById('soundCheckBtn').addEventListener('click', () => {
+            getAudioModule()?.playSoundCheck();
+            document.getElementById('micCheckHint').textContent = 'Слышите мелодию? Значит, звук работает.';
+        });
+
         function syncAudioSettingsFormState() {
+            document.getElementById('pttKeyRow').hidden = !document.getElementById('pushToTalk').checked;
+            document.getElementById('deepFilterStrength').hidden = !document.getElementById('useDeepFilter').checked;
+
             const useRNNoiseEl = document.getElementById('useRNNoise');
             const noiseSuppressionEl = document.getElementById('noiseSuppression');
             if (!useRNNoiseEl || !noiseSuppressionEl) return;
@@ -3681,10 +4014,17 @@
                 echoCancellation: document.getElementById('echoCancellation').checked,
                 autoGainControl: document.getElementById('autoGainControl').checked,
                 useRNNoise,
-                useDeepFilter
+                useDeepFilter,
+                deepFilterLimitDb: Number(document.getElementById('deepFilterLimit').value),
+                pushToTalk: document.getElementById('pushToTalk').checked,
+                pttKey: hotkeyDraft.pttKey,
+                muteKey: hotkeyDraft.muteKey
             };
             
+            audioModule.cancelMicCheck();
+            if (stopHotkeyListening) stopHotkeyListening();
             audioModule.updateAudioSettings(newSettings);
+            audioModule.syncHotkeys();
 
             if (useRNNoise && !audioModule.isRNNoiseLibraryAvailable()) {
                 statusDiv.innerHTML = '<p style="color: var(--error);">❌ RNNoise недоступен. Проверьте загрузку библиотеки и обновите страницу.</p>';
@@ -3725,8 +4065,37 @@
             document.getElementById('audioSettingsModal').classList.remove('hidden');
         }
 
+        // Ползунок слышен сразу, а сохраняется кнопкой «Применить»; «Отмена» возвращает прежнее значение
+        document.getElementById('deepFilterLimit').addEventListener('input', (event) => {
+            updateDeepFilterLimitLabel();
+            getAudioModule()?.setDeepFilterLimit?.(Number(event.target.value));
+        });
+        document.getElementById('audioSettingsCancelBtn').addEventListener('click', () => {
+            const audioModule = getAudioModule();
+            audioModule?.setDeepFilterLimit?.(audioModule.audioSettings.deepFilterLimitDb);
+            audioModule?.cancelMicCheck();
+            if (stopHotkeyListening) stopHotkeyListening();
+            document.getElementById('audioSettingsModal').classList.add('hidden');
+        });
+        window.addEventListener('denoiserchange', updateDenoiserStatus);
+
         document.getElementById('useRNNoise')?.addEventListener('change', syncAudioSettingsFormState);
         document.getElementById('useDeepFilter')?.addEventListener('change', syncAudioSettingsFormState);
+        document.getElementById('pushToTalk').addEventListener('change', syncAudioSettingsFormState);
+        document.getElementById('sfxBan').addEventListener('change', async (event) => {
+            const box = event.currentTarget;
+            const disabled = box.checked;
+            box.disabled = true;
+            try {
+                await Groups.setSoundEffectsDisabled(currentGroupId, disabled);
+                applySoundEffectsBan(disabled);
+            } catch (error) {
+                box.checked = !disabled;
+                Utils.showError(error.message || 'Не удалось изменить настройку');
+            } finally {
+                box.disabled = false;
+            }
+        });
         document.getElementById('noiseSuppression')?.addEventListener('change', () => {
             const useRNNoiseEl = document.getElementById('useRNNoise');
             if (useRNNoiseEl?.checked && document.getElementById('noiseSuppression').checked) {
@@ -3747,23 +4116,10 @@
         });
 
 
-        // Горячая клавиша для MUTE (клавиша M)
-        document.addEventListener('keydown', async (e) => {
-            // Проверяем, что фокус не в поле ввода и нажата клавиша M
-            if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA' && 
-                e.key.toLowerCase() === 'm' && currentAudioChannel) {
-                e.preventDefault();
-                const audioModule = getAudioModule();
-                if (audioModule && audioModule.audioBridge) {
-                    const isMuted = audioModule.toggleMute();
-                    // Обновляем все кнопки MUTE для текущего канала
-                    document.querySelectorAll(`.audio-channel[data-channel-id="${currentAudioChannel}"] .audio-mute-btn`).forEach(btn => {
-                        updateMuteButton(btn, isMuted);
-                    });
-                    // Показываем уведомление
-                    Utils.showSuccess(isMuted ? '🔇 Микрофон отключен' : '🎤 Микрофон включен');
-                }
-            }
+        window.addEventListener('micmutechange', (event) => {
+            document.querySelectorAll(`.audio-channel[data-channel-id="${currentAudioChannel}"] .audio-mute-btn`).forEach((btn) => {
+                updateMuteButton(btn, event.detail.muted);
+            });
         });
 
         // Очистка при закрытии страницы

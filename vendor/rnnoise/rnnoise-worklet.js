@@ -1,12 +1,13 @@
 /*
- * RNNoise 0.2 — AudioWorklet-процессор шумоподавления (48 кГц, моно) с гейтом по VAD.
+ * RNNoise — AudioWorklet-процессор шумоподавления (48 кГц, моно) с гейтом по VAD.
  *
- * rnnoise-sync.js — синхронная сборка из @jitsi/rnnoise-wasm@0.2.1
- * (https://github.com/jitsi/rnnoise-wasm, Apache-2.0), WASM встроен в файл.
+ * rnnoise.wasm извлечён из @shiguredo/rnnoise-wasm@2025.1.5
+ * (https://github.com/shiguredo/rnnoise-wasm, Apache-2.0) — это сборка
+ * xiph/rnnoise, коммит 70f1d25 (новее тега v0.2: обновлённые модели и исправления VAD).
+ * Модуль компилируется в основном потоке и приходит в processorOptions.wasmModule.
  *
  * Сообщения в основной поток: { type: 'ready' } | { type: 'error', message }
  */
-import createRNNWasmModuleSync from './rnnoise-sync.js';
 
 const FRAME = 480; // 10 мс при 48 кГц
 const QUANTUM = 128;
@@ -19,6 +20,35 @@ const GATE_HOLD_FRAMES = 30; // 300 мс «хвоста» после речи
 const GATE_FLOOR = 0.1; // -20 дБ
 const GATE_RELEASE_STEP = 0.1; // закрытие за ~90 мс
 
+function instantiateRnnoise(wasmModule) {
+    let memory;
+    const instance = new WebAssembly.Instance(wasmModule, {
+        env: {
+            __assert_fail() {
+                throw new Error('RNNoise assertion failed');
+            },
+            emscripten_resize_heap(size) {
+                try {
+                    memory.grow(Math.ceil((size - memory.buffer.byteLength) / 65536));
+                    return 1;
+                } catch (e) {
+                    return 0;
+                }
+            }
+        },
+        wasi_snapshot_preview1: {
+            fd_write() {
+                return 0;
+            }
+        }
+    });
+    const wasm = instance.exports;
+    memory = wasm.memory;
+    wasm.emscripten_stack_init();
+    wasm.__wasm_call_ctors();
+    return wasm;
+}
+
 class RnnoiseProcessor extends AudioWorkletProcessor {
     constructor(options) {
         super();
@@ -26,9 +56,9 @@ class RnnoiseProcessor extends AudioWorkletProcessor {
         const opts = (options && options.processorOptions) || {};
         this.vadGate = opts.vadGate !== false;
         try {
-            this.module = createRNNWasmModuleSync();
-            this.state = this.module._rnnoise_create();
-            this.pcmPtr = this.module._malloc(FRAME * 4);
+            this.wasm = instantiateRnnoise(opts.wasmModule);
+            this.state = this.wasm.rnnoise_create(0);
+            this.pcmPtr = this.wasm.malloc(FRAME * 4);
             this.bufferSize = FRAME * 4;
             this.inputBuffer = new Float32Array(this.bufferSize);
             this.outputBuffer = new Float32Array(this.bufferSize);
@@ -50,15 +80,15 @@ class RnnoiseProcessor extends AudioWorkletProcessor {
     }
 
     processFrame() {
-        // HEAPF32 перечитываем каждый кадр: при росте памяти WASM старый view отсоединяется
-        const heap = this.module.HEAPF32;
+        // Представление памяти создаём каждый кадр: при росте памяти WASM старое отсоединяется
+        const heap = new Float32Array(this.wasm.memory.buffer);
         const base = this.pcmPtr >> 2;
         for (let i = 0; i < FRAME; i++) {
             heap[base + i] = this.inputBuffer[this.inputReadPos] * PCM_SCALE;
             this.inputReadPos = (this.inputReadPos + 1) % this.bufferSize;
         }
-        const vad = this.module._rnnoise_process_frame(this.state, this.pcmPtr, this.pcmPtr);
-        const out = this.module.HEAPF32;
+        const vad = this.wasm.rnnoise_process_frame(this.state, this.pcmPtr, this.pcmPtr);
+        const out = new Float32Array(this.wasm.memory.buffer);
 
         let targetGain = 1;
         if (this.vadGate) {
