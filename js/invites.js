@@ -10,6 +10,7 @@ const Invites = {
     OPEN_LINKS_KEY: 'openLinksIn', // 'app' | 'browser'
 
     _started: false,
+    _polling: false,
     _shown: new Set(),
 
     get _base() {
@@ -42,21 +43,35 @@ const Invites = {
             setTimeout(tick, document.hidden ? this.POLL_HIDDEN_MS : this.POLL_MS);
         };
         tick();
+
+        // Фоновую вкладку браузер опрашивает редко: вернулись к ней - проверяем сразу
+        const pollNow = () => {
+            if (document.visibilityState === 'visible') this._poll();
+        };
+        document.addEventListener('visibilitychange', pollNow);
+        window.addEventListener('focus', pollNow);
+        window.addEventListener('online', pollNow);
     },
 
     async _poll() {
+        if (this._polling) return;
+        this._polling = true;
+        // no-store: ответ опроса не должен браться из кеша браузера или прокси
+        const fresh = { cache: 'no-store' };
         try {
-            const invites = await API.get(this._base);
+            const invites = await API.get(this._base, fresh);
             (Array.isArray(invites) ? invites : []).forEach((invite) => this._render(invite));
         } catch (error) {
             // Нет сети или сервер обновляется - проверим в следующий раз
             console.warn('Invites poll:', error);
         }
         try {
-            const notices = await API.get(this._noticesBase);
+            const notices = await API.get(this._noticesBase, fresh);
             (Array.isArray(notices) ? notices : []).forEach((notice) => this._renderNotice(notice));
         } catch (error) {
             console.warn('Notices poll:', error);
+        } finally {
+            this._polling = false;
         }
     },
 

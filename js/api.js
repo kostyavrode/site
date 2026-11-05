@@ -261,8 +261,8 @@ const API = {
     },
 
     // GET запрос
-    async get(url) {
-        return this.request(url, { method: 'GET' });
+    async get(url, options = {}) {
+        return this.request(url, { ...options, method: 'GET' });
     },
 
     // POST запрос
